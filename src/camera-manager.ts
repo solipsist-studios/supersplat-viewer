@@ -9,6 +9,7 @@ import { Camera, type CameraFrame, type CameraController } from './cameras/camer
 import { FlyController } from './cameras/fly-controller';
 import { FpsController } from './cameras/fps-controller';
 import { OrbitController } from './cameras/orbit-controller';
+import { WalkSource } from './cameras/walk-source';
 import { easeOut } from './core/math';
 import { Annotation } from './settings';
 import { CameraMode, Global } from './types';
@@ -76,6 +77,11 @@ class CameraManager {
         controllers.fly.collider = collider;
         controllers.fps.collider = collider;
 
+        const walkSource = new WalkSource();
+        walkSource.onComplete = () => {
+            events.fire('walkComplete');
+        };
+
         const getController = (cameraMode: CameraMode): CameraController => {
             return controllers[cameraMode] as CameraController;
         };
@@ -118,6 +124,10 @@ class CameraManager {
             transitionTimer = Math.min(1, transitionTimer + deltaTime * transitionSpeed);
 
             const controller = getController(state.cameraMode);
+
+            if (state.cameraMode === 'fps') {
+                walkSource.update(dt, this.camera.position, this.camera.angles, frame);
+            }
 
             controller.update(dt, frame, target);
 
@@ -173,11 +183,14 @@ class CameraManager {
                         }
                     }
                     break;
+                case 'exitFps':
+                    if (state.cameraMode === 'fps') {
+                        state.cameraMode = preFpsMode;
+                    }
+                    break;
                 case 'cancel':
                     if (state.cameraMode === 'anim') {
                         state.cameraMode = fromMode;
-                    } else if (state.cameraMode === 'fps') {
-                        state.cameraMode = preFpsMode;
                     }
                     break;
                 case 'interrupt':
@@ -190,6 +203,10 @@ class CameraManager {
 
         // handle camera mode switching
         events.on('cameraMode:changed', (value, prev) => {
+            if (prev === 'fps') {
+                walkSource.cancelWalk();
+            }
+
             // snapshot the current pose before any controller mutation
             startTransition();
 
@@ -247,6 +264,24 @@ class CameraManager {
             controllers.orbit.goto(tmpCamera);
             target.fov = tmpCamera.fov;
             startTransition();
+        });
+
+        // tap-to-walk: start auto-walking toward a picked 3D position
+        events.on('walkTo', (position: Vec3) => {
+            if (state.cameraMode === 'fps') {
+                walkSource.walkTo(position);
+                events.fire('walkIndicator:setTarget', position);
+            }
+        });
+
+        // cancel any active auto-walk
+        events.on('walkCancel', () => {
+            walkSource.cancelWalk();
+            events.fire('walkIndicator:setTarget', null);
+        });
+
+        events.on('walkComplete', () => {
+            events.fire('walkIndicator:setTarget', null);
         });
     }
 }

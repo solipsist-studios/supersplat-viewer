@@ -242,7 +242,7 @@ const initCanvas = (global: Global) => {
         // and resetting canvas dimensions can invalidate the XRWebGLLayer
         if (app.xr?.active) return;
 
-        const s = state.hqMode ? 1.0 : 0.5;
+        const s = state.retinaDisplay ? 1.0 : 0.5;
         const w = Math.ceil(deviceSize.width * s);
         const h = Math.ceil(deviceSize.height * s);
         if (w !== canvas.width || h !== canvas.height) {
@@ -260,7 +260,7 @@ const initCanvas = (global: Global) => {
     });
     resizeObserver.observe(canvas);
 
-    events.on('hqMode:changed', () => {
+    events.on('retinaDisplay:changed', () => {
         app.renderNextFrame = true;
     });
 
@@ -283,7 +283,7 @@ const main = async (canvas: HTMLCanvasElement, settingsJson: any, config: Config
     const state = observe(events, {
         loaded: false,
         readyToRender: false,
-        hqMode: true,
+        retinaDisplay: platform.mobile ? localStorage.getItem('retinaDisplay') === 'true' : localStorage.getItem('retinaDisplay') !== 'false',
         progress: 0,
         inputMode: platform.mobile ? 'touch' : 'desktop',
         cameraMode: 'orbit',
@@ -297,7 +297,8 @@ const main = async (canvas: HTMLCanvasElement, settingsJson: any, config: Config
         hasVoxelOverlay: false,
         voxelOverlayEnabled: false,
         isFullscreen: false,
-        controlsHidden: false
+        controlsHidden: false,
+        gamingControls: localStorage.getItem('gamingControls') === 'true'
     });
 
     const global: Global = {

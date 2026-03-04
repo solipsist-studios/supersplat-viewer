@@ -31,7 +31,7 @@ type Config = {
 type State = {
     loaded: boolean;                            // true once first frame is rendered
     readyToRender: boolean;                     // don't render till this is set
-    hqMode: boolean;
+    retinaDisplay: boolean;
     progress: number;                           // content loading progress 0-100
     inputMode: InputMode;
     cameraMode: CameraMode;
@@ -46,6 +46,7 @@ type State = {
     voxelOverlayEnabled: boolean;
     isFullscreen: boolean;
     controlsHidden: boolean;
+    gamingControls: boolean;
 };
 
 type Global = {
