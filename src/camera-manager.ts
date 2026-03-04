@@ -155,7 +155,7 @@ class CameraManager {
                             state.cameraMode = 'anim';
                             state.animationPaused = false;
                         } else {
-                            // 4DGS mode — no camera animation; just toggle pause
+                            // OMG4 mode — no camera animation; just toggle pause
                             state.animationPaused = !state.animationPaused;
                         }
                     }
@@ -208,7 +208,7 @@ class CameraManager {
         // handle user scrubbing the animation timeline
         events.on('scrubAnim', (time) => {
             if (!controllers.anim) {
-                // 4DGS mode — scrubbing is handled by Omg4SplatAnimation.attach()
+                // OMG4 mode — scrubbing is handled by Omg4SplatAnimation.attach()
                 return;
             }
             // switch to animation camera if we're not already there

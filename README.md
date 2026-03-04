@@ -124,48 +124,34 @@ type ExperienceSettings = {
 
 ---
 
-## 4D Gaussian Splatting — OMG4 format (`.4dgs`)
+## 4D Gaussian Splatting — OMG4 format (`.omg4`)
 
 The viewer supports animated 4D Gaussian Splat scenes produced by the
 [OMG4](https://github.com/MinShirley/OMG4) training pipeline.
 
-### What is `.4dgs`?
+### What is `.omg4`?
 
-`.4dgs` is a web-friendly binary container that stores pre-baked per-frame
+`.omg4` is a web-friendly binary container that stores pre-baked per-frame
 Gaussian attributes (position, rotation, scale, opacity, colour) so the
-browser can play back a 4DGS animation at runtime without any GPU-side MLP
+browser can play back an OMG4 animation at runtime without any GPU-side MLP
 inference.
 
 ### Converting an OMG4 `.xz` checkpoint
 
-Run the provided converter on the machine where you trained the model (a CUDA
-GPU is required to evaluate the neural MLPs):
+Use the converter in [playcanvas/splat-transform](https://github.com/playcanvas/splat-transform)
+to produce a `.omg4` file from a trained OMG4 model. A CUDA GPU is required to
+evaluate the neural MLPs during conversion.
 
-```bash
-python scripts/omg4_to_4dgs.py \
-    --input  output/my_scene/comp.xz \
-    --output public/scene.4dgs \
-    --frames 30        \  # number of animation frames to bake
-    --fps    24        \  # playback frame rate
-    --time_min -0.5    \  # temporal range used during training
-    --time_max  0.5
-```
-
-The converter requires the full OMG4 Python environment:
-```
-torch  numpy  dahuffman  tinycudann  lzma  pickle
-```
-
-### Loading a `.4dgs` file in the viewer
+### Loading a `.omg4` file in the viewer
 
 Pass the file URL via the `content` query parameter as with any other format:
 
 ```
-https://example.com/viewer/?content=scene.4dgs
+https://example.com/viewer/?content=scene.omg4
 ```
 
 The viewer will display a play/pause button and a timeline scrubber, just like
-camera animation.  The user can orbit/fly around the scene while the 4DGS
+camera animation.  The user can orbit/fly around the scene while the OMG4
 animation plays.
 
 ### File-size guidance
@@ -176,14 +162,14 @@ animation plays.
 | 100 000       | 30         | ~84 MB            |
 | 100 000       | 50         | ~140 MB           |
 
-Standard gzip compression (e.g. `gzip -k scene.4dgs`) and serving with
+Standard gzip compression (e.g. `gzip -k scene.omg4`) and serving with
 `Content-Encoding: gzip` typically halves the transfer size.
 
 ### Binary format specification
 
 ```
 Header (28 bytes, all values little-endian):
-  uint32  magic = 0x53474434  ("4DGS")
+  uint32  magic = 0x34474D4F  ("OMG4")
   uint32  version = 1
   uint32  numSplats
   uint32  numFrames

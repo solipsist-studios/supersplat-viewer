@@ -1,9 +1,9 @@
 import { GSplatData } from 'playcanvas';
 
-// .4dgs binary format
+// .omg4 binary format
 // ─────────────────────────────────────────────────────────────────────────────
 // Header (28 bytes, little-endian):
-//   [0-3]   uint32  magic = 0x53474434 ("4DGS")
+//   [0-3]   uint32  magic = 0x34474D4F ("OMG4")
 //   [4-7]   uint32  version = 1
 //   [8-11]  uint32  numSplats  (N)
 //   [12-15] uint32  numFrames  (F)
@@ -21,7 +21,7 @@ import { GSplatData } from 'playcanvas';
 //       f_dc_*  : raw SH DC coefficients (renderer applies 0.5 + val * SH_C0)
 // ─────────────────────────────────────────────────────────────────────────────
 
-const MAGIC = 0x53474434;   // little-endian uint32 of "4DGS"
+const MAGIC = 0x34474D4F;   // little-endian uint32 of "OMG4"
 const HEADER_SIZE = 28;
 const FLOATS_PER_SPLAT = 14;
 
@@ -72,7 +72,7 @@ class Omg4Data {
         // Validate magic bytes
         const magic = view.getUint32(0, true);
         if (magic !== MAGIC) {
-            throw new Error(`Invalid .4dgs file: expected magic 0x${MAGIC.toString(16)}, got 0x${magic.toString(16)}`);
+            throw new Error(`Invalid .omg4 file: expected magic 0x${MAGIC.toString(16)}, got 0x${magic.toString(16)}`);
         }
 
         this.header = {
@@ -181,7 +181,7 @@ class Omg4Data {
     }
 }
 
-// Parse a .4dgs ArrayBuffer and return an Omg4Data instance.
+// Parse a .omg4 ArrayBuffer and return an Omg4Data instance.
 const parseOmg4 = (buffer: ArrayBuffer): Omg4Data => new Omg4Data(buffer);
 
 export { Omg4Data, parseOmg4 };

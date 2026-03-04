@@ -68,14 +68,14 @@ const loadGsplat = async (app: AppBase, config: Config, progressCallback: (progr
     });
 };
 
-// Load and animate a .4dgs (OMG4-encoded 4D Gaussian Splat) file.
+// Load and animate a .omg4 (OMG4-encoded 4D Gaussian Splat) file.
 const loadOmg4Gsplat = async (app: AppBase, config: Config, global: Global, progressCallback: (progress: number) => void) => {
     const { contentUrl, aa } = config;
 
     // Fetch with progress tracking
     const response = await fetch(contentUrl);
     if (!response.ok) {
-        throw new Error(`Failed to fetch .4dgs file: ${response.status} ${response.statusText}`);
+        throw new Error(`Failed to fetch .omg4 file: ${response.status} ${response.statusText}`);
     }
 
     const contentLength = parseInt(response.headers.get('content-length') ?? '0', 10);
@@ -108,7 +108,7 @@ const loadOmg4Gsplat = async (app: AppBase, config: Config, global: Global, prog
         offset += chunk.length;
     }
 
-    // Parse the .4dgs format and load frame 0 into the working arrays
+    // Parse the .omg4 format and load frame 0 into the working arrays
     const omg4Data = parseOmg4(buffer);
     omg4Data.loadFrame(0);
 
@@ -331,7 +331,7 @@ const main = async (canvas: HTMLCanvasElement, settingsJson: any, config: Config
 
     // Load model
     const filename = new URL(config.contentUrl, location.href).pathname.split('/').pop() ?? '';
-    const gsplatLoad = filename.toLowerCase().endsWith('.4dgs') ?
+    const gsplatLoad = filename.toLowerCase().endsWith('.omg4') ?
         loadOmg4Gsplat(app, config, global, (progress: number) => {
             state.progress = progress;
         }) :
