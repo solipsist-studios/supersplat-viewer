@@ -121,3 +121,69 @@ type ExperienceSettings = {
   "animTracks": []
 }
 ```
+
+---
+
+## 4D Gaussian Splatting — OMG4 format (`.omg4`)
+
+The viewer supports animated 4D Gaussian Splat scenes produced by the
+[OMG4](https://github.com/MinShirley/OMG4) training pipeline.
+
+### What is `.omg4`?
+
+`.omg4` is a web-friendly binary container that stores pre-baked per-frame
+Gaussian attributes (position, rotation, scale, opacity, colour) so the
+browser can play back an OMG4 animation at runtime without any GPU-side MLP
+inference.
+
+### Converting an OMG4 `.xz` checkpoint
+
+Use the converter in [playcanvas/splat-transform](https://github.com/playcanvas/splat-transform)
+to produce a `.omg4` file from a trained OMG4 model. A CUDA GPU is required to
+evaluate the neural MLPs during conversion.
+
+### Loading a `.omg4` file in the viewer
+
+Pass the file URL via the `content` query parameter as with any other format:
+
+```
+https://example.com/viewer/?content=scene.omg4
+```
+
+The viewer will display a play/pause button and a timeline scrubber, just like
+camera animation.  The user can orbit/fly around the scene while the OMG4
+animation plays.
+
+### File-size guidance
+
+| Gaussians (N) | Frames (F) | Approx. file size |
+|---------------|------------|-------------------|
+| 50 000        | 30         | ~42 MB            |
+| 100 000       | 30         | ~84 MB            |
+| 100 000       | 50         | ~140 MB           |
+
+Standard gzip compression (e.g. `gzip -k scene.omg4`) and serving with
+`Content-Encoding: gzip` typically halves the transfer size.
+
+### Binary format specification
+
+```
+Header (28 bytes, all values little-endian):
+  uint32  magic = 0x34474D4F  ("OMG4")
+  uint32  version = 1
+  uint32  numSplats
+  uint32  numFrames
+  float32 fps
+  float32 timeDurationMin
+  float32 timeDurationMax
+
+Per-frame record (repeated numFrames times):
+  float32          timestamp
+  float32[N × 14]  per-splat data, AoS layout per splat:
+    x  y  z                    — world-space position
+    rot_0  rot_1  rot_2  rot_3  — quaternion (w, x, y, z), raw
+    scale_0  scale_1  scale_2   — log-space scales (renderer applies exp)
+    opacity                     — logit-space opacity (renderer applies sigmoid)
+    f_dc_0  f_dc_1  f_dc_2      — raw SH DC coefficients
+                                  (renderer computes 0.5 + val × SH_C0)
+```

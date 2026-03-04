@@ -149,11 +149,14 @@ class CameraManager {
                     break;
                 case 'playPause':
                     if (state.hasAnimation) {
-                        if (state.cameraMode === 'anim') {
+                        if (controllers.anim && state.cameraMode === 'anim') {
                             state.animationPaused = !state.animationPaused;
-                        } else {
+                        } else if (controllers.anim) {
                             state.cameraMode = 'anim';
                             state.animationPaused = false;
+                        } else {
+                            // OMG4 mode — no camera animation; just toggle pause
+                            state.animationPaused = !state.animationPaused;
                         }
                     }
                     break;
@@ -204,6 +207,10 @@ class CameraManager {
 
         // handle user scrubbing the animation timeline
         events.on('scrubAnim', (time) => {
+            if (!controllers.anim) {
+                // OMG4 mode — scrubbing is handled by Omg4SplatAnimation.attach()
+                return;
+            }
             // switch to animation camera if we're not already there
             state.cameraMode = 'anim';
 
