@@ -18,11 +18,11 @@ import {
 import { Omg4SplatAnimation } from './animation/omg4-splat-animation';
 import { QueenSplatAnimation } from './animation/queen-splat-animation';
 import { App } from './app';
-import { fetchBinary } from './core/fetch-binary';
+import { fetchSplatAnimBuffer } from './core/fetch-binary';
 import { setupSplatAnim } from './core/load-splat-anim';
 import { observe } from './core/observe';
+import { streamQueenData } from './core/stream-queen';
 import { parseOmg4 } from './parsers/omg4';
-import { parseQueen } from './parsers/queen';
 import { importSettings } from './settings';
 import type { Config, Global } from './types';
 import { initPoster, initUI } from './ui';
@@ -74,7 +74,7 @@ const loadGsplat = async (app: AppBase, config: Config, progressCallback: (progr
 
 // Load and animate a .omg4 (OMG4-encoded 4D Gaussian Splat) file.
 const loadOmg4Gsplat = async (app: AppBase, config: Config, global: Global, progressCallback: (progress: number) => void) => {
-    const buffer = await fetchBinary(config.contentUrl, progressCallback);
+    const buffer = await fetchSplatAnimBuffer(config.contentUrl, progressCallback);
     const data = parseOmg4(buffer);
     data.loadFrame(0);
     const resource = new GSplatResource(app.graphicsDevice, data.gsplatData);
@@ -83,13 +83,24 @@ const loadOmg4Gsplat = async (app: AppBase, config: Config, global: Global, prog
 };
 
 // Load and animate a .queen (QUEEN-encoded 4D Gaussian Splat) file.
+// Playback begins as soon as the base frame is received; residual frames stream in the background.
 const loadQueenGsplat = async (app: AppBase, config: Config, global: Global, progressCallback: (progress: number) => void) => {
-    const buffer = await fetchBinary(config.contentUrl, progressCallback);
-    const data = parseQueen(buffer);
+    const data = await streamQueenData(config.contentUrl, progressCallback);
     data.loadFrame(0);
     const resource = new GSplatResource(app.graphicsDevice, data.gsplatData);
     const animation = new QueenSplatAnimation(data, resource);
     return setupSplatAnim(app, config, global, resource, animation);
+};
+
+// Load a static 3DGS scene (PLY / LOD / meta.json etc.)
+const load3dgs = (app: AppBase, config: Config, progressCallback: (progress: number) => void) => loadGsplat(app, config, progressCallback);
+
+// Load and animate a 4DGS file, dispatching to the correct format handler.
+const load4dgs = (app: AppBase, config: Config, global: Global, progressCallback: (progress: number) => void): Promise<Entity> => {
+    const lowerUrl = new URL(config.contentUrl, location.href).pathname.split('/').pop()?.toLowerCase() ?? '';
+    if (lowerUrl.endsWith('.omg4'))  return loadOmg4Gsplat(app, config, global, progressCallback);
+    if (lowerUrl.endsWith('.queen')) return loadQueenGsplat(app, config, global, progressCallback);
+    return Promise.reject(new Error(`Unsupported 4DGS format: ${lowerUrl}`));
 };
 
 const loadSkybox = (app: AppBase, url: string) => {
@@ -279,10 +290,10 @@ const main = async (canvas: HTMLCanvasElement, settingsJson: any, config: Config
     const progressCallback = (progress: number) => {
         state.progress = progress;
     };
-    const gsplatLoad =
-        lowerFilename.endsWith('.omg4') ? loadOmg4Gsplat(app, config, global, progressCallback) :
-            lowerFilename.endsWith('.queen') ? loadQueenGsplat(app, config, global, progressCallback) :
-                loadGsplat(app, config, progressCallback);
+    const is4dgs = lowerFilename.endsWith('.omg4') || lowerFilename.endsWith('.queen');
+    const gsplatLoad = is4dgs ?
+        load4dgs(app, config, global, progressCallback) :
+        load3dgs(app, config, progressCallback);
 
     // Load skybox
     const skyboxLoad = config.skyboxUrl &&

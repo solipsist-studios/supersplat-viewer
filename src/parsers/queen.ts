@@ -75,8 +75,65 @@ interface AttributeDecoder {
 // Number of f_rest SH channels for a given shDegree.
 const computeShRestCount = (shDegree: number): number => (shDegree + 1) * (shDegree + 1) * 3 - 3;
 
+// Returns the minimum number of bytes required to construct a QueenData instance (i.e. to have
+// base frame 0 fully available), or -1 if the buffer doesn't yet contain enough data to determine
+// this.  Passes through the content of `buf` up to `available` bytes only.
+const computeFrame0MinBytes = (buf: ArrayBuffer, available: number): number => {
+    if (available < HEADER_SIZE) return -1;
+
+    const dv = new DataView(buf);
+
+    const magic = dv.getUint32(0, true);
+    if (magic !== MAGIC) return -1;
+
+    const numSplats = dv.getUint32(8, true);
+    const shDegree  = dv.getUint32(28, true);
+    const frestCount = computeShRestCount(shDegree);
+
+    // Walk the decoder block to find where it ends.
+    let cursor = HEADER_SIZE;
+    let stride = 0;
+
+    for (let a = 0; a < NUM_ATTRS; a++) {
+        // type(1) + latentDim(4) + featureDim(4) = 9 bytes minimum
+        if (cursor + 9 > available) return -1;
+
+        const type       = dv.getUint8(cursor); cursor += 1;
+        const latentDim  = dv.getUint32(cursor, true); cursor += 4;
+        const featureDim = dv.getUint32(cursor, true); cursor += 4;
+        stride += featureDim;
+
+        if (type !== DECODER_IDENTITY && featureDim > 0) {
+            const weightBytes = latentDim * featureDim * 4;
+            if (cursor + weightBytes > available) return -1;
+            cursor += weightBytes;
+
+            if (cursor + 1 > available) return -1;
+            const hasBias = dv.getUint8(cursor); cursor += 1;
+
+            if (hasBias) {
+                const biasBytes = featureDim * 4;
+                if (cursor + biasBytes > available) return -1;
+                cursor += biasBytes;
+            }
+        }
+    }
+
+    // Validate expected feature dimensions against parsed stride.
+    const expectedFeatureDims = [3, 3, frestCount, 3, 4, 1];
+    const expectedStride = expectedFeatureDims.reduce((s, v) => s + v, 0);
+    if (stride !== expectedStride) return -1;
+
+    return cursor + numSplats * stride * 4;
+};
+
 class QueenData {
-    private buffer: ArrayBuffer;
+    // Growable backing store.  rawBytes always owns the bytes; _buffer === rawBytes.buffer.
+    private rawBytes: Uint8Array;
+
+    private _buffer: ArrayBuffer;
+
+    private bytesAvailable: number;
 
     readonly header: QueenHeader;
 
@@ -92,6 +149,9 @@ class QueenData {
 
     // Per-attribute pre-allocated decode buffers (reused each frame to avoid GC pressure).
     private decodeBufs: Float32Array[];
+
+    // Pre-allocated scratch space for dequantised latents (avoids per-frame allocation).
+    private floatLatentsBuf: Float32Array;
 
     // Temporal residual state: decoded output of the previous frame, per attribute.
     // Non-null only for DECODER_LATENT_RES attributes.
@@ -123,11 +183,19 @@ class QueenData {
 
     // A single GSplatData whose property storages are the mutable work arrays.
     // After calling loadFrame() the GSplatData reflects that frame's data.
-    readonly gsplatData: GSplatData;
+    private _gsplatData!: GSplatData;
+
+    get gsplatData(): GSplatData {
+        return this._gsplatData;
+    }
 
     constructor(buffer: ArrayBuffer) {
-        this.buffer = buffer;
-        const dv = new DataView(buffer);
+        // Copy the supplied buffer into a growable backing store.
+        this.rawBytes = new Uint8Array(buffer);
+        this._buffer = this.rawBytes.buffer as ArrayBuffer;
+        this.bytesAvailable = buffer.byteLength;
+
+        const dv = new DataView(this._buffer);
 
         // Validate magic bytes.
         const magic = dv.getUint32(0, true);
@@ -145,27 +213,34 @@ class QueenData {
             shDegree: dv.getUint32(28, true)
         };
 
+        this.initialize();
+    }
+
+    // Parses the decoder block, validates feature dimensions, allocates all working buffers, and
+    // constructs the GSplatData.  Called exactly once from the constructor.
+    private initialize(): void {
         const N = this.header.numSplats;
         const frestCount = computeShRestCount(this.header.shDegree);
+        const dv = new DataView(this._buffer);
 
         // Parse decoder block.
         let cursor = HEADER_SIZE;
         const decoders: AttributeDecoder[] = [];
         for (let a = 0; a < NUM_ATTRS; a++) {
-            const type      = dv.getUint8(cursor); cursor += 1;
-            const latentDim = dv.getUint32(cursor, true); cursor += 4;
+            const type       = dv.getUint8(cursor); cursor += 1;
+            const latentDim  = dv.getUint32(cursor, true); cursor += 4;
             const featureDim = dv.getUint32(cursor, true); cursor += 4;
 
             let weight: Float32Array | null = null;
             let bias: Float32Array | null = null;
 
             if (type !== DECODER_IDENTITY && featureDim > 0) {
-                weight = QueenData._readFloat32(buffer, cursor, latentDim * featureDim);
+                weight = QueenData._readFloat32(this._buffer, cursor, latentDim * featureDim);
                 cursor += latentDim * featureDim * 4;
 
                 const hasBias = dv.getUint8(cursor); cursor += 1;
                 if (hasBias) {
-                    bias = QueenData._readFloat32(buffer, cursor, featureDim);
+                    bias = QueenData._readFloat32(this._buffer, cursor, featureDim);
                     cursor += featureDim * 4;
                 }
             }
@@ -184,19 +259,18 @@ class QueenData {
             }
         }
 
-        // Base frame immediately follows the decoder block.
+        // Compute byte offsets.
         this.baseFrameByteOffset = cursor;
         const stride = decoders.reduce((s, d) => s + d.featureDim, 0);
         cursor += N * stride * 4;
 
-        // Residual frames follow the base frame.
         this.residualFramesStartOffset = cursor;
         this.residualFrameByteSize = decoders.reduce((s, d) => {
             if (d.featureDim === 0) return s;
             return s + N * d.latentDim * 2 + 4;   // int16 data + float32 quantScale
         }, 0);
 
-        // Allocate work arrays.
+        // Allocate per-splat work arrays.
         this.work = {
             x: new Float32Array(N),
             y: new Float32Array(N),
@@ -219,11 +293,11 @@ class QueenData {
             this.frestArrays.push(new Float32Array(N));
         }
 
-        // Pre-allocate decode buffers and temporal residual state.
-        this.decodeBufs  = decoders.map(d => new Float32Array(Math.max(1, N * d.featureDim)));
-        this.prevDecoded = decoders.map(d => ((d.type === DECODER_LATENT_RES && d.featureDim > 0) ?
-            new Float32Array(N * d.featureDim) :
-            null)
+        // Pre-allocate decode buffers, the dequantised-latents scratch buffer, and temporal state.
+        this.decodeBufs      = decoders.map(d => new Float32Array(Math.max(1, N * d.featureDim)));
+        const maxLatentN      = decoders.reduce((m, d) => Math.max(m, N * d.latentDim), 0);
+        this.floatLatentsBuf  = new Float32Array(Math.max(1, maxLatentN));
+        this.prevDecoded = decoders.map(d => ((d.type === DECODER_LATENT_RES && d.featureDim > 0) ? new Float32Array(N * d.featureDim) : null)
         );
 
         // Build GSplatData backed by the work arrays.
@@ -255,11 +329,37 @@ class QueenData {
             properties.push(prop(`f_rest_${k}`, this.frestArrays[k]));
         }
 
-        this.gsplatData = new GSplatData([{
+        this._gsplatData = new GSplatData([{
             name: 'vertex',
             count: N,
             properties
         }]);
+    }
+
+    // Append a newly received chunk to the internal buffer.
+    // Called by the streaming loader as each HTTP response chunk arrives.
+    appendChunk(chunk: Uint8Array): void {
+        const needed = this.bytesAvailable + chunk.length;
+        if (needed > this.rawBytes.length) {
+            // Double-or-fit growth strategy.
+            let newSize = this.rawBytes.length * 2;
+            while (newSize < needed) newSize *= 2;
+            const newBytes = new Uint8Array(newSize);
+            newBytes.set(this.rawBytes.subarray(0, this.bytesAvailable));
+            this.rawBytes = newBytes;
+            this._buffer  = newBytes.buffer as ArrayBuffer;
+        }
+        this.rawBytes.set(chunk, this.bytesAvailable);
+        this.bytesAvailable += chunk.length;
+    }
+
+    // Number of frames for which we have enough data to decode.
+    // During streaming this grows from 1 (base frame) up to numFrames as chunks arrive.
+    get availableFrames(): number {
+        if (this.header.numFrames <= 1) return this.header.numFrames;
+        const residualBytes = this.bytesAvailable - this.residualFramesStartOffset;
+        if (residualBytes <= 0) return 1;
+        return Math.min(this.header.numFrames, 1 + Math.floor(residualBytes / this.residualFrameByteSize));
     }
 
     get numFrames(): number {
@@ -272,10 +372,13 @@ class QueenData {
         return numFrames > 1 ? (numFrames - 1) / fps : 0;
     }
 
-    // Map a playback time [0..duration] to a frame index [0..numFrames-1].
+    // Map a playback time [0..duration] to a frame index [0..availableFrames-1].
+    // Clamps to the highest frame index for which data has arrived so partial-buffer
+    // playback advances only as far as the streamed data allows.
     getFrameIndex(time: number): number {
         const { numFrames, fps } = this.header;
-        return Math.max(0, Math.min(numFrames - 1, Math.round(time * fps)));
+        const maxFrame = Math.min(numFrames - 1, this.availableFrames - 1);
+        return Math.max(0, Math.min(maxFrame, Math.round(time * fps)));
     }
 
     // Decode the given frame into the work arrays (and therefore into gsplatData).
@@ -314,7 +417,7 @@ class QueenData {
         const stride = this.decoders.reduce((s, d) => s + d.featureDim, 0);
 
         // Read the dense base frame (copies to handle potential buffer alignment).
-        const baseData = QueenData._readFloat32(this.buffer, this.baseFrameByteOffset, N * stride);
+        const baseData = QueenData._readFloat32(this._buffer, this.baseFrameByteOffset, N * stride);
 
         // Compute per-attribute starting offsets within the interleaved stride.
         const attrOffset: number[] = [];
@@ -349,7 +452,7 @@ class QueenData {
 
     private _decodeResidualFrame(frameIndex: number): void {
         const { numSplats: N } = this.header;
-        const dv = new DataView(this.buffer);
+        const dv = new DataView(this._buffer);
 
         let byteOffset = this.residualFramesStartOffset + (frameIndex - 1) * this.residualFrameByteSize;
 
@@ -360,28 +463,38 @@ class QueenData {
             if (featureDim === 0) continue;
 
             // Read quantised latents (copies to handle alignment).
-            const quantLatents = QueenData._readInt16(this.buffer, byteOffset, N * latentDim);
+            const quantLatents = QueenData._readInt16(this._buffer, byteOffset, N * latentDim);
             byteOffset += N * latentDim * 2;
 
-            // Read dequantisation scale.
-            const quantScale = dv.getFloat32(byteOffset, true);
+            // Read dequantisation scale.  Use the reciprocal to replace per-element divisions
+            // with multiplications in the tight decode loops below.
+            const invScale = 1 / dv.getFloat32(byteOffset, true);
             byteOffset += 4;
 
             const buf = this.decodeBufs[a];
 
             if (type === DECODER_IDENTITY) {
-                // Identity: dequantise only (latentDim === featureDim).
+                // Identity: bulk dequantise into output buffer (no matrix multiply).
                 for (let i = 0; i < N * featureDim; i++) {
-                    buf[i] = quantLatents[i] / quantScale;
+                    buf[i] = quantLatents[i] * invScale;
                 }
             } else if (type === DECODER_LATENT || type === DECODER_LATENT_RES) {
-                // Latent / latent_res: dequantise then apply the linear decoder.
+                // Latent / latent_res: pre-dequantise into the scratch buffer, then apply the
+                // linear decoder.  Splitting the dequantisation into a separate pass allows the
+                // JIT to vectorise both loops independently and keeps the inner matrix-multiply
+                // loop free of division.
                 const { weight, bias } = decoder;
+                const floatLatents = this.floatLatentsBuf;
+
+                for (let i = 0; i < N * latentDim; i++) {
+                    floatLatents[i] = quantLatents[i] * invScale;
+                }
+
                 for (let i = 0; i < N; i++) {
                     for (let j = 0; j < featureDim; j++) {
                         let val = bias ? bias[j] : 0;
                         for (let k = 0; k < latentDim; k++) {
-                            val += (quantLatents[i * latentDim + k] / quantScale) * weight![k * featureDim + j];
+                            val += floatLatents[i * latentDim + k] * weight![k * featureDim + j];
                         }
                         buf[i * featureDim + j] = val;
                     }
@@ -482,4 +595,4 @@ class QueenData {
 // Parse a .queen ArrayBuffer and return a QueenData instance.
 const parseQueen = (buffer: ArrayBuffer): QueenData => new QueenData(buffer);
 
-export { QueenData, parseQueen };
+export { QueenData, parseQueen, computeFrame0MinBytes };
