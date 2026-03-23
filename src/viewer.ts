@@ -33,7 +33,7 @@ import type { ExperienceSettings, PostEffectSettings } from './settings';
 import type { Global } from './types';
 import type { VoxelCollider } from './voxel-collider';
 import { VoxelDebugOverlay } from './voxel-debug-overlay';
-import { WalkIndicator } from './walk-indicator';
+import { WalkCursor } from './walk-cursor';
 
 const gammaChunkGlsl = `
 vec3 prepareOutputFromGamma(vec3 gammaColor) {
@@ -129,14 +129,16 @@ class Viewer {
 
     voxelOverlay: VoxelDebugOverlay | null = null;
 
-    walkIndicator: WalkIndicator | null = null;
+    walkCursor: WalkCursor | null = null;
 
     origChunks: {
         glsl: {
-            gsplatOutputVS: string
+            gsplatOutputVS: string,
+            skyboxPS: string
         },
         wgsl: {
-            gsplatOutputVS: string
+            gsplatOutputVS: string,
+            skyboxPS: string
         }
     };
 
@@ -149,21 +151,23 @@ class Viewer {
         // enable anonymous CORS for image loading in safari
         (app.loader.getHandler('texture') as TextureHandler).imgParser.crossOrigin = 'anonymous';
 
-        this.origChunks = {
-            glsl: {
-                gsplatOutputVS: ShaderChunks.get(graphicsDevice, 'glsl').get('gsplatOutputVS')
-            },
-            wgsl: {
-                gsplatOutputVS: ShaderChunks.get(graphicsDevice, 'wgsl').get('gsplatOutputVS')
-            }
-        };
-
         // render skybox as plain equirect
         const glsl = ShaderChunks.get(graphicsDevice, 'glsl');
         glsl.set('skyboxPS', glsl.get('skyboxPS').replace('mapRoughnessUv(uv, mipLevel)', 'uv'));
 
         const wgsl = ShaderChunks.get(graphicsDevice, 'wgsl');
         wgsl.set('skyboxPS', wgsl.get('skyboxPS').replace('mapRoughnessUv(uv, uniform.mipLevel)', 'uv'));
+
+        this.origChunks = {
+            glsl: {
+                gsplatOutputVS: glsl.get('gsplatOutputVS'),
+                skyboxPS: glsl.get('skyboxPS')
+            },
+            wgsl: {
+                gsplatOutputVS: wgsl.get('gsplatOutputVS'),
+                skyboxPS: wgsl.get('skyboxPS')
+            }
+        };
 
         // disable auto render, we'll render only when camera changes
         app.autoRender = false;
@@ -275,16 +279,30 @@ class Viewer {
 
         });
 
-        // Render voxel debug overlay and update walk indicator
+        // Render voxel debug overlay
         app.on('prerender', () => {
             this.voxelOverlay?.update();
-            this.walkIndicator?.update(camera);
         });
 
         // update state on first frame
         events.on('firstFrame', () => {
             state.loaded = true;
             state.animationPaused = !!config.noanim;
+
+            window.scrubTo = (time: number) => {
+                if (!state.hasAnimation) {
+                    return Promise.reject(new Error('No animation track'));
+                }
+
+                state.animationPaused = true;
+                return new Promise<void>((resolve) => {
+                    events.fire('scrubAnim', time);
+                    app.renderNextFrame = true;
+                    app.once('frameend', () => resolve());
+                });
+            };
+
+            window.animationDuration = state.animationDuration;
         });
 
         // wait for the model to load
@@ -303,6 +321,7 @@ class Viewer {
             }
 
             this.inputController = new InputController(global);
+            this.inputController.collider = collider ?? null;
 
             state.hasCollision = !!collider;
 
@@ -321,11 +340,9 @@ class Viewer {
             this.cameraManager = new CameraManager(global, sceneBound, collider);
             applyCamera(this.cameraManager.camera);
 
-            this.walkIndicator = new WalkIndicator(app);
-
-            events.on('walkIndicator:setTarget', (pos: Vec3 | null) => {
-                this.walkIndicator?.setTarget(pos);
-            });
+            if (collider) {
+                this.walkCursor = new WalkCursor(app, camera, collider, events, state);
+            }
 
             const { instance } = gsplat;
             if (instance) {
@@ -368,8 +385,11 @@ class Viewer {
 
                 const quality = platform.mobile ? ranges.mobile : ranges.desktop;
 
-                // start in low quality mode so we can get user interacting asap
-                results[0].gsplat.splatBudget = quality.low * 1000000;
+                // start by streaming in low lod
+                const lodLevels = results[0].gsplat.resource?.octree?.lodLevels;
+                if (lodLevels) {
+                    gsplat.lodRangeMax = gsplat.lodRangeMin = lodLevels - 1;
+                }
 
                 // these two allow LOD behind camera to drop, saves lots of splats
                 gsplat.lodUpdateAngle = 90;
@@ -380,8 +400,26 @@ class Viewer {
 
                 const eventHandler = app.systems.gsplat;
 
-                // we must force continuous rendering with streaming & lod system
+                // idle timer: force continuous rendering until 4s of inactivity
+                let idleTime = 0;
                 this.forceRenderNextFrame = true;
+
+                app.on('update', (dt: number) => {
+                    idleTime += dt;
+                    this.forceRenderNextFrame = idleTime < 4;
+                });
+
+                events.on('inputEvent', (type: string) => {
+                    if (type !== 'interact') {
+                        idleTime = 0;
+                    }
+                });
+
+                eventHandler.on('frame:ready', (_camera: CameraComponent, _layer: Layer, ready: boolean, loading: number) => {
+                    if (loading > 0 || !ready) {
+                        idleTime = 0;
+                    }
+                });
 
                 let current = 0;
                 let watermark = 1;
@@ -396,13 +434,14 @@ class Viewer {
                         const updateLod = () => {
                             const settings = state.retinaDisplay ? quality.high : quality.low;
                             results[0].gsplat.splatBudget = settings * 1000000;
+                            gsplat.lodRangeMin = 0;
+                            gsplat.lodRangeMax = 1000;
                         };
                         events.on('retinaDisplay:changed', updateLod);
                         updateLod();
 
                         // debug colorize lods
                         gsplat.colorizeLod = config.colorize;
-
                         gsplat.gpuSorting = config.gpusort;
 
                         // wait for the first valid frame to complete rendering
@@ -421,6 +460,7 @@ class Viewer {
                         state.progress = Math.trunc(current / watermark * 100);
                     }
                 };
+
                 eventHandler.on('frame:ready', readyHandler);
             }
         });
@@ -455,6 +495,21 @@ class Viewer {
             ShaderChunks.get(app.graphicsDevice, 'glsl').set('gsplatOutputVS', gammaChunkGlsl);
             ShaderChunks.get(app.graphicsDevice, 'wgsl').set('gsplatOutputVS', gammaChunkWgsl);
 
+            // force skybox shader to write gamma-space colors (inline pow replaces the
+            // gammaCorrectOutput call which is a no-op under CameraFrame's GAMMA_NONE)
+            ShaderChunks.get(app.graphicsDevice, 'glsl').set('skyboxPS',
+                this.origChunks.glsl.skyboxPS.replace(
+                    'gammaCorrectOutput(toneMap(processEnvironment(linear)))',
+                    'pow(toneMap(processEnvironment(linear)) + 0.0000001, vec3(1.0 / 2.2))'
+                )
+            );
+            ShaderChunks.get(app.graphicsDevice, 'wgsl').set('skyboxPS',
+                this.origChunks.wgsl.skyboxPS.replace(
+                    'gammaCorrectOutput(toneMap(processEnvironment(linear)))',
+                    'pow(toneMap(processEnvironment(linear)) + 0.0000001, vec3f(1.0 / 2.2))'
+                )
+            );
+
             // ensure the final compose blit doesn't perform linear->gamma conversion.
             RenderTarget.prototype.isColorBufferSrgb = function (index) {
                 return this === app.graphicsDevice.backBuffer ? true : origIsColorBufferSrgb.call(this, index);
@@ -468,9 +523,11 @@ class Viewer {
                 this.cameraFrame = null;
             }
 
-            // restore gsplat output shader chunks to engine defaults
+            // restore shader chunks to engine defaults
             ShaderChunks.get(app.graphicsDevice, 'glsl').set('gsplatOutputVS', this.origChunks.glsl.gsplatOutputVS);
             ShaderChunks.get(app.graphicsDevice, 'wgsl').set('gsplatOutputVS', this.origChunks.wgsl.gsplatOutputVS);
+            ShaderChunks.get(app.graphicsDevice, 'glsl').set('skyboxPS', this.origChunks.glsl.skyboxPS);
+            ShaderChunks.get(app.graphicsDevice, 'wgsl').set('skyboxPS', this.origChunks.wgsl.skyboxPS);
 
             // restore original isColorBufferSrgb behavior
             RenderTarget.prototype.isColorBufferSrgb = origIsColorBufferSrgb;

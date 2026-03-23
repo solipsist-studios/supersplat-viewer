@@ -3,12 +3,13 @@ import {
     Vec3
 } from 'playcanvas';
 
+import { createFigure8Track } from './animation/create-figure8-track';
 import { createRotateTrack } from './animation/create-rotate-track';
 import { AnimController } from './cameras/anim-controller';
 import { Camera, type CameraFrame, type CameraController } from './cameras/camera';
 import { FlyController } from './cameras/fly-controller';
-import { FpsController } from './cameras/fps-controller';
 import { OrbitController } from './cameras/orbit-controller';
+import { WalkController } from './cameras/walk-controller';
 import { WalkSource } from './cameras/walk-source';
 import { easeOut } from './core/math';
 import { Annotation } from './settings';
@@ -44,9 +45,12 @@ class CameraManager {
     constructor(global: Global, bbox: BoundingBox, collider: VoxelCollider | null = null) {
         const { events, settings, state } = global;
 
-        const camera0 = settings.cameras[0].initial;
-        const frameCamera = createFrameCamera(bbox, camera0.fov);
-        const resetCamera = createCamera(new Vec3(camera0.position), new Vec3(camera0.target), camera0.fov);
+        const camera0 = settings.cameras[0]?.initial;
+        const defaultFov = camera0?.fov ?? 75;
+        const frameCamera = createFrameCamera(bbox, defaultFov);
+        const resetCamera = camera0 ?
+            createCamera(new Vec3(camera0.position), new Vec3(camera0.target), camera0.fov) :
+            frameCamera;
 
         const getAnimTrack = (initial: Camera, isObjectExperience: boolean) => {
             const { animTracks } = settings;
@@ -60,22 +64,27 @@ class CameraManager {
                 initial.calcFocusPoint(tmpv);
                 return createRotateTrack(initial.position, tmpv, initial.fov);
             }
-            return null;
+            // non-object experience: gentle figure-8 motion from inside the scene
+            initial.calcFocusPoint(tmpv);
+            return createFigure8Track(initial.position, tmpv, initial.fov);
+
         };
 
         // object experience starts outside the bounding box
         const isObjectExperience = !bbox.containsPoint(resetCamera.position);
-        const animTrack = getAnimTrack(settings.hasStartPose ? resetCamera : frameCamera, isObjectExperience);
+        const animTrack = getAnimTrack(resetCamera, isObjectExperience);
 
         const controllers = {
             orbit: new OrbitController(),
             fly: new FlyController(),
-            fps: new FpsController(),
+            walk: new WalkController(),
             anim: animTrack ? new AnimController(animTrack) : null
         };
 
+        controllers.orbit.fov = resetCamera.fov;
+        controllers.fly.fov = resetCamera.fov;
         controllers.fly.collider = collider;
-        controllers.fps.collider = collider;
+        controllers.walk.collider = collider;
 
         const walkSource = new WalkSource();
         walkSource.onComplete = () => {
@@ -91,15 +100,16 @@ class CameraManager {
         state.animationDuration = controllers.anim ? controllers.anim.animState.cursor.duration : 0;
 
         // initialize camera mode and initial camera position
-        state.cameraMode = state.hasAnimation ? 'anim' : (isObjectExperience ? 'orbit' : 'fly');
+        state.cameraMode = state.hasAnimation ? 'anim' : (isObjectExperience ? 'orbit' : (collider ? 'walk' : 'fly'));
         this.camera.copy(resetCamera);
 
         const target = new Camera(this.camera);             // the active controller updates this
         const from = new Camera(this.camera);               // stores the previous camera state during transition
-        let fromMode: CameraMode = isObjectExperience ? 'orbit' : 'fly';
+        const defaultMode: CameraMode = isObjectExperience ? 'orbit' : (collider ? 'walk' : 'fly');
+        let fromMode: CameraMode = defaultMode;
 
-        // tracks the mode to restore when exiting FPS
-        let preFpsMode: CameraMode = 'fly';
+        // tracks the mode to restore when exiting walk
+        let preWalkMode: CameraMode = isObjectExperience ? 'orbit' : 'fly';
 
         // enter the initial controller
         getController(state.cameraMode).onEnter(this.camera);
@@ -125,7 +135,7 @@ class CameraManager {
 
             const controller = getController(state.cameraMode);
 
-            if (state.cameraMode === 'fps') {
+            if (state.cameraMode === 'walk') {
                 walkSource.update(dt, this.camera.position, this.camera.angles, frame);
             }
 
@@ -173,19 +183,19 @@ class CameraManager {
                 case 'requestFirstPerson':
                     state.cameraMode = 'fly';
                     break;
-                case 'toggleFps':
+                case 'toggleWalk':
                     if (collider) {
-                        if (state.cameraMode === 'fps') {
-                            state.cameraMode = preFpsMode;
+                        if (state.cameraMode === 'walk') {
+                            state.cameraMode = preWalkMode;
                         } else {
-                            preFpsMode = state.cameraMode;
-                            state.cameraMode = 'fps';
+                            preWalkMode = state.cameraMode;
+                            state.cameraMode = 'walk';
                         }
                     }
                     break;
-                case 'exitFps':
-                    if (state.cameraMode === 'fps') {
-                        state.cameraMode = preFpsMode;
+                case 'exitWalk':
+                    if (state.cameraMode === 'walk') {
+                        state.cameraMode = preWalkMode;
                     }
                     break;
                 case 'cancel':
@@ -203,7 +213,7 @@ class CameraManager {
 
         // handle camera mode switching
         events.on('cameraMode:changed', (value, prev) => {
-            if (prev === 'fps') {
+            if (prev === 'walk') {
                 walkSource.cancelWalk();
             }
 
@@ -262,26 +272,25 @@ class CameraManager {
             );
 
             controllers.orbit.goto(tmpCamera);
-            target.fov = tmpCamera.fov;
             startTransition();
         });
 
         // tap-to-walk: start auto-walking toward a picked 3D position
-        events.on('walkTo', (position: Vec3) => {
-            if (state.cameraMode === 'fps') {
+        events.on('walkTo', (position: Vec3, normal: Vec3) => {
+            if (state.cameraMode === 'walk') {
                 walkSource.walkTo(position);
-                events.fire('walkIndicator:setTarget', position);
+                events.fire('walkTarget:set', position, normal);
             }
         });
 
         // cancel any active auto-walk
         events.on('walkCancel', () => {
             walkSource.cancelWalk();
-            events.fire('walkIndicator:setTarget', null);
+            events.fire('walkTarget:clear');
         });
 
         events.on('walkComplete', () => {
-            events.fire('walkIndicator:setTarget', null);
+            events.fire('walkTarget:clear');
         });
     }
 }

@@ -1,5 +1,6 @@
-import { ExperienceSettings as V1, AnimTrack as AnimTrackV1 } from './schemas/v1';
-import { ExperienceSettings as V2, AnimTrack as AnimTrackV2 } from './schemas/v2';
+import { ExperienceSettings as V1, AnimTrack as AnimTrackV1, validateV1 } from './schemas/v1';
+import { ExperienceSettings as V2, AnimTrack as AnimTrackV2, validateV2 } from './schemas/v2';
+import { assertObject } from './schemas/validate-utils';
 
 const migrateV1 = (settings: V1): V1 => {
     if (settings.animTracks) {
@@ -87,20 +88,19 @@ const migrateV2 = (v1: V1): V2 => {
         animTracks: v1.animTracks.map((animTrackV1: AnimTrackV1) => {
             return migrateAnimTrackV2(animTrackV1, v1.camera.fov || 60);
         }),
-        cameras: [{
+        cameras: (v1.camera.position && v1.camera.target) ? [{
             initial: {
-                position: (v1.camera.position || [0, 0, 5]) as [number, number, number],
-                target: (v1.camera.target || [0, 0, 0]) as [number, number, number],
+                position: v1.camera.position as [number, number, number],
+                target: v1.camera.target as [number, number, number],
                 fov: v1.camera.fov || 75
             }
-        }],
+        }] : [],
         annotations: [],
-        startMode: v1.camera.startAnim === 'animTrack' ? 'animTrack' : 'default',
-        hasStartPose: !!(v1.camera.position && v1.camera.target)
+        startMode: v1.camera.startAnim === 'animTrack' ? 'animTrack' : 'default'
     };
 };
 
-// import a json object to conform to the latest settings schema. settings is assumed to be one of the well-formed schemas
+// migrate a JSON object to the latest settings schema (assumes valid input)
 const importSettings = (settings: any): V2 => {
     let result: V2;
 
@@ -118,7 +118,22 @@ const importSettings = (settings: any): V2 => {
     return result;
 };
 
-// export the latest/current schema types
+// validate unknown data against any supported settings schema version, throwing on invalid input
+const validateSettings = (settings: unknown): void => {
+    const obj = assertObject(settings, 'settings');
+    const version = obj.version;
+
+    if (version === undefined) {
+        validateV1(settings);
+    } else if (version === 2) {
+        validateV2(settings);
+    } else if (typeof version !== 'number') {
+        throw new Error(`settings.version must be a number, got ${typeof version}`);
+    } else {
+        throw new Error(`Unsupported experience settings version: ${version}`);
+    }
+};
+
 export type { AnimTrack, Camera, Annotation, PostEffectSettings, ExperienceSettings } from './schemas/v2';
 
-export { importSettings };
+export { importSettings, validateSettings };
