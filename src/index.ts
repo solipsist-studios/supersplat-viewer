@@ -83,7 +83,8 @@ const loadOmg4Gsplat = async (app: AppBase, config: Config, global: Global, prog
 };
 
 // Load and animate a .queen (QUEEN-encoded 4D Gaussian Splat) file.
-// Playback begins as soon as the base frame is received; residual frames stream in the background.
+// Waits until initialFrames have been buffered before resolving, so playback
+// starts immediately without stutter; remaining frames stream in the background.
 const loadQueenGsplat = async (app: AppBase, config: Config, global: Global, progressCallback: (progress: number) => void) => {
     const data = await streamQueenData(config.contentUrl, progressCallback);
     data.loadFrame(0);
