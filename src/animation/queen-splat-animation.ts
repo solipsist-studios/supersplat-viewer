@@ -1,19 +1,19 @@
 import { GSplatResource } from 'playcanvas';
 
 import { SplatAnimationBase } from './splat-animation-base';
-import type { Omg4Data } from '../parsers/omg4';
+import type { QueenData } from '../parsers/queen';
 
-// Drives per-frame GPU texture updates for an OMG4 animated scene.
+// Drives per-frame GPU texture updates for a QUEEN animated scene.
 // After calling setFrame(), the GSplatResource's transform and colour textures
 // are updated to reflect the requested frame.
-class Omg4SplatAnimation extends SplatAnimationBase {
-    private data: Omg4Data;
+class QueenSplatAnimation extends SplatAnimationBase {
+    private data: QueenData;
 
     private resource: GSplatResource;
 
     private currentFrame: number = -1;
 
-    constructor(data: Omg4Data, resource: GSplatResource) {
+    constructor(data: QueenData, resource: GSplatResource) {
         super();
         this.data     = data;
         this.resource = resource;
@@ -45,4 +45,4 @@ class Omg4SplatAnimation extends SplatAnimationBase {
     }
 }
 
-export { Omg4SplatAnimation };
+export { QueenSplatAnimation };

@@ -16,8 +16,12 @@ import {
 } from 'playcanvas';
 
 import { Omg4SplatAnimation } from './animation/omg4-splat-animation';
+import { QueenSplatAnimation } from './animation/queen-splat-animation';
 import { App } from './app';
+import { fetchSplatAnimBuffer } from './core/fetch-splat-anim-buffer';
+import { setupSplatAnim } from './core/load-splat-anim';
 import { observe } from './core/observe';
+import { streamQueenData } from './core/stream-queen';
 import { parseOmg4 } from './parsers/omg4';
 import { importSettings } from './settings';
 import type { Config, Global } from './types';
@@ -30,7 +34,7 @@ import { version as appVersion } from '../package.json';
 const loadGsplat = async (app: AppBase, config: Config, progressCallback: (progress: number) => void) => {
     const { contents, contentUrl, unified, aa } = config;
     const c = contents as unknown as ArrayBuffer;
-    const filename = new URL(contentUrl, location.href).pathname.split('/').pop();
+    const filename = config.contentFilename ?? new URL(contentUrl, location.href).pathname.split('/').pop();
     const data = filename.toLowerCase() === 'meta.json' ? await (await contents).json() : undefined;
     const asset = new Asset(filename, 'gsplat', { url: contentUrl, filename, contents: c }, data);
 
@@ -70,83 +74,34 @@ const loadGsplat = async (app: AppBase, config: Config, progressCallback: (progr
 
 // Load and animate a .omg4 (OMG4-encoded 4D Gaussian Splat) file.
 const loadOmg4Gsplat = async (app: AppBase, config: Config, global: Global, progressCallback: (progress: number) => void) => {
-    const { contentUrl, aa } = config;
+    const buffer = await fetchSplatAnimBuffer(config.contentUrl, progressCallback);
+    const data = parseOmg4(buffer);
+    data.loadFrame(0);
+    const resource = new GSplatResource(app.graphicsDevice, data.gsplatData);
+    const animation = new Omg4SplatAnimation(data, resource);
+    return setupSplatAnim(app, config, global, resource, animation);
+};
 
-    // Fetch with progress tracking
-    const response = await fetch(contentUrl);
-    if (!response.ok) {
-        throw new Error(`Failed to fetch .omg4 file: ${response.status} ${response.statusText}`);
-    }
+// Load and animate a .queen (QUEEN-encoded 4D Gaussian Splat) file.
+// Waits until initialFrames have been buffered before resolving, so playback
+// starts immediately without stutter; remaining frames stream in the background.
+const loadQueenGsplat = async (app: AppBase, config: Config, global: Global, progressCallback: (progress: number) => void) => {
+    const data = await streamQueenData(config.contentUrl, progressCallback);
+    data.loadFrame(0);
+    const resource = new GSplatResource(app.graphicsDevice, data.gsplatData);
+    const animation = new QueenSplatAnimation(data, resource);
+    return setupSplatAnim(app, config, global, resource, animation);
+};
 
-    const contentLength = parseInt(response.headers.get('content-length') ?? '0', 10);
-    let watermark = 0;
+// Load a static 3DGS scene (PLY / LOD / meta.json etc.)
+const load3dgs = (app: AppBase, config: Config, progressCallback: (progress: number) => void) => loadGsplat(app, config, progressCallback);
 
-    // Collect all chunks while tracking progress, avoiding await-in-loop.
-    const chunks: Uint8Array[] = [];
-    const reader = response.body.getReader();
-    const pump = async (): Promise<void> => {
-        const { done, value } = await reader.read();
-        if (done) return;
-        chunks.push(value);
-        const received = chunks.reduce((s, c) => s + c.length, 0);
-        const progress = contentLength > 0 ? Math.min(100, Math.trunc(received / contentLength * 100)) : 0;
-        if (progress > watermark) {
-            watermark = progress;
-            progressCallback(watermark);
-        }
-        return pump();
-    };
-    await pump();
-
-    // Concatenate chunks into a single ArrayBuffer
-    const totalBytes = chunks.reduce((s, c) => s + c.length, 0);
-    const buffer = new ArrayBuffer(totalBytes);
-    const view = new Uint8Array(buffer);
-    let offset = 0;
-    for (const chunk of chunks) {
-        view.set(chunk, offset);
-        offset += chunk.length;
-    }
-
-    // Parse the .omg4 format and load frame 0 into the working arrays
-    const omg4Data = parseOmg4(buffer);
-    omg4Data.loadFrame(0);
-
-    // Build a GSplatResource from the initial frame data
-    const resource = new GSplatResource(app.graphicsDevice, omg4Data.gsplatData);
-
-    // Create the scene entity
-    const entity = new Entity('gsplat');
-    entity.setLocalEulerAngles(0, 0, 180);
-    entity.addComponent('gsplat', {});
-    entity.gsplat.resource = resource;
-
-    const material = entity.gsplat.material;
-    if (material) {
-        material.setDefine('GSPLAT_AA', aa);
-        material.setParameter('alphaClip', 1 / 255);
-    }
-
-    app.root.addChild(entity);
-
-    // Attach the animation controller; it drives frame updates on app.on('update').
-    const anim = new Omg4SplatAnimation(omg4Data, resource);
-    const detachAnim = anim.attach(global);
-
-    // Set animation state after the CameraManager is created (firstFrame fires after it).
-    const onFirstFrame = () => {
-        global.state.hasAnimation = true;
-        global.state.animationDuration = anim.duration;
-    };
-    global.events.once('firstFrame', onFirstFrame);
-
-    // Clean up animation listeners when the asset is destroyed (page unload etc.).
-    entity.once('destroy', () => {
-        detachAnim();
-        global.events.off('firstFrame', onFirstFrame);
-    });
-
-    return entity;
+// Load and animate a 4DGS file, dispatching to the correct format handler.
+const load4dgs = (app: AppBase, config: Config, global: Global, progressCallback: (progress: number) => void): Promise<Entity> => {
+    const lowerName = (config.contentFilename ?? new URL(config.contentUrl, location.href).pathname.split('/').pop() ?? '').toLowerCase();
+    if (lowerName.endsWith('.omg4'))  return loadOmg4Gsplat(app, config, global, progressCallback);
+    if (lowerName.endsWith('.queen')) return loadQueenGsplat(app, config, global, progressCallback);
+    return Promise.reject(new Error(`Unsupported 4DGS format: ${lowerName}`));
 };
 
 const loadSkybox = (app: AppBase, url: string) => {
@@ -331,14 +286,15 @@ const main = async (canvas: HTMLCanvasElement, settingsJson: any, config: Config
     initUI(global);
 
     // Load model
-    const filename = new URL(config.contentUrl, location.href).pathname.split('/').pop() ?? '';
-    const gsplatLoad = filename.toLowerCase().endsWith('.omg4') ?
-        loadOmg4Gsplat(app, config, global, (progress: number) => {
-            state.progress = progress;
-        }) :
-        loadGsplat(app, config, (progress: number) => {
-            state.progress = progress;
-        });
+    const filename = config.contentFilename ?? new URL(config.contentUrl, location.href).pathname.split('/').pop() ?? '';
+    const lowerFilename = filename.toLowerCase();
+    const progressCallback = (progress: number) => {
+        state.progress = progress;
+    };
+    const is4dgs = lowerFilename.endsWith('.omg4') || lowerFilename.endsWith('.queen');
+    const gsplatLoad = is4dgs ?
+        load4dgs(app, config, global, progressCallback) :
+        load3dgs(app, config, progressCallback);
 
     // Load skybox
     const skyboxLoad = config.skyboxUrl &&

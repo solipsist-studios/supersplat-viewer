@@ -184,7 +184,16 @@
                     <button id="frame">Frame</button>
                     <button id="reset">Reset</button>
                 </div>
+                <div class="divider"></div>
+                <div class="settingsRow">
+                    <button id="load3dgsBtn">Load 3DGS</button>
+                    <button id="load4dgsBtn">Load 4DGS</button>
+                </div>
             </div>
+
+            <!-- Hidden file inputs for 3DGS and 4DGS loading -->
+            <input type="file" id="load3dgsInput" accept=".ply,.splat,.zip,.json" style="display:none">
+            <input type="file" id="load4dgsInput" accept=".omg4,.queen" style="display:none">
 
             <!-- Info Panel -->
             <div id="infoPanel" class="hidden">
@@ -469,10 +478,57 @@
                 document.documentElement.style.setProperty('--canvas-opacity', '0');
             }
 
+            // Load a file chosen by the user, destroying the existing viewer/app and restarting
+            // main() with a blob URL so the content does not need to be re-fetched from a server.
+            const viewerState = { current: null };
+            const loadFile = async (file) => {
+                const blobUrl = URL.createObjectURL(file);
+                try {
+                    if (viewerState.current) {
+                        viewerState.current.global.app.destroy();
+                        viewerState.current = null;
+                    }
+
+                    const newConfig = {
+                        ...config,
+                        contentUrl: blobUrl,
+                        contentFilename: file.name,
+                        contents: fetch(blobUrl),
+                    };
+
+                    const canvas = document.getElementById('application-canvas');
+                    const settingsJson = await settings;
+                    viewerState.current = await main(canvas, settingsJson, newConfig);
+                } catch (err) {
+                    URL.revokeObjectURL(blobUrl);
+                    throw err;
+                }
+            };
+
             document.addEventListener('DOMContentLoaded', async () => {
                 const canvas = document.getElementById('application-canvas');
                 const settingsJson = await settings;
-                const viewer = await main(canvas, settingsJson, config);
+                viewerState.current = await main(canvas, settingsJson, config);
+
+                // Wire up Load 3DGS button → file picker
+                document.getElementById('load3dgsBtn').addEventListener('click', () => {
+                    document.getElementById('load3dgsInput').click();
+                });
+                document.getElementById('load3dgsInput').addEventListener('change', (e) => {
+                    const file = e.target.files[0];
+                    if (file) loadFile(file);
+                    e.target.value = '';
+                });
+
+                // Wire up Load 4DGS button → file picker
+                document.getElementById('load4dgsBtn').addEventListener('click', () => {
+                    document.getElementById('load4dgsInput').click();
+                });
+                document.getElementById('load4dgsInput').addEventListener('change', (e) => {
+                    const file = e.target.files[0];
+                    if (file) loadFile(file);
+                    e.target.value = '';
+                });
             });
         </script>
     </body>
