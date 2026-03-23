@@ -18,7 +18,7 @@ import {
 import { Omg4SplatAnimation } from './animation/omg4-splat-animation';
 import { QueenSplatAnimation } from './animation/queen-splat-animation';
 import { App } from './app';
-import { fetchSplatAnimBuffer } from './core/fetch-binary';
+import { fetchSplatAnimBuffer } from './core/fetch-splat-anim-buffer';
 import { setupSplatAnim } from './core/load-splat-anim';
 import { observe } from './core/observe';
 import { streamQueenData } from './core/stream-queen';
@@ -34,7 +34,7 @@ import { version as appVersion } from '../package.json';
 const loadGsplat = async (app: AppBase, config: Config, progressCallback: (progress: number) => void) => {
     const { contents, contentUrl, unified, aa } = config;
     const c = contents as unknown as ArrayBuffer;
-    const filename = new URL(contentUrl, location.href).pathname.split('/').pop();
+    const filename = config.contentFilename ?? new URL(contentUrl, location.href).pathname.split('/').pop();
     const data = filename.toLowerCase() === 'meta.json' ? await (await contents).json() : undefined;
     const asset = new Asset(filename, 'gsplat', { url: contentUrl, filename, contents: c }, data);
 
@@ -97,10 +97,10 @@ const load3dgs = (app: AppBase, config: Config, progressCallback: (progress: num
 
 // Load and animate a 4DGS file, dispatching to the correct format handler.
 const load4dgs = (app: AppBase, config: Config, global: Global, progressCallback: (progress: number) => void): Promise<Entity> => {
-    const lowerUrl = new URL(config.contentUrl, location.href).pathname.split('/').pop()?.toLowerCase() ?? '';
-    if (lowerUrl.endsWith('.omg4'))  return loadOmg4Gsplat(app, config, global, progressCallback);
-    if (lowerUrl.endsWith('.queen')) return loadQueenGsplat(app, config, global, progressCallback);
-    return Promise.reject(new Error(`Unsupported 4DGS format: ${lowerUrl}`));
+    const lowerName = (config.contentFilename ?? new URL(config.contentUrl, location.href).pathname.split('/').pop() ?? '').toLowerCase();
+    if (lowerName.endsWith('.omg4'))  return loadOmg4Gsplat(app, config, global, progressCallback);
+    if (lowerName.endsWith('.queen')) return loadQueenGsplat(app, config, global, progressCallback);
+    return Promise.reject(new Error(`Unsupported 4DGS format: ${lowerName}`));
 };
 
 const loadSkybox = (app: AppBase, url: string) => {
@@ -285,7 +285,7 @@ const main = async (canvas: HTMLCanvasElement, settingsJson: any, config: Config
     initUI(global);
 
     // Load model
-    const filename = new URL(config.contentUrl, location.href).pathname.split('/').pop() ?? '';
+    const filename = config.contentFilename ?? new URL(config.contentUrl, location.href).pathname.split('/').pop() ?? '';
     const lowerFilename = filename.toLowerCase();
     const progressCallback = (progress: number) => {
         state.progress = progress;

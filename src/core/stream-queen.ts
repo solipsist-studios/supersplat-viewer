@@ -1,10 +1,17 @@
 import { QueenData, computeFrame0MinBytes } from '../parsers/queen';
 
-// Fetch a .queen file at `url` and return a QueenData instance as soon as the base frame (frame 0)
-// is available, allowing playback to start immediately.  The remaining residual frames are pumped
-// into the QueenData in the background via appendChunk(); availableFrames grows over time.
+// Minimum size of the pre-allocated accumulation buffer.  64 KiB covers typical QUEEN
+// headers and provides a reasonable first chunk; the buffer grows as needed.
+// This is not a JavaScript limit — it is simply a practical initial allocation.
+const INITIAL_ACCUM_BUF_SIZE = 65536;
+
+// Fetch a .queen file at `url` and return a QueenData instance as soon as `initialFrames`
+// frames are available, allowing playback to start without waiting for the full download.
+// The remaining frames are pumped into the QueenData in the background via appendChunk();
+// availableFrames grows over time.  Callers on slower networks can raise initialFrames to
+// pre-buffer more frames before playback begins.
 // The onProgress callback receives integer values in [0, 100].
-const streamQueenData = async (url: string, onProgress: (progress: number) => void): Promise<QueenData> => {
+const streamQueenData = async (url: string, onProgress: (progress: number) => void, initialFrames = 1): Promise<QueenData> => {
     const response = await fetch(url);
     if (!response.ok) {
         throw new Error(`Failed to fetch ${url}: ${response.status} ${response.statusText}`);
@@ -28,7 +35,7 @@ const streamQueenData = async (url: string, onProgress: (progress: number) => vo
 
     // ── Phase 1: accumulate chunks until we have enough bytes for base frame 0 ──────────────────
     // Keep a single growing buffer to avoid repeated concatenation.
-    let accumBuf = new Uint8Array(Math.max(65536, contentLength > 0 ? contentLength : 65536));
+    let accumBuf = new Uint8Array(Math.max(INITIAL_ACCUM_BUF_SIZE, contentLength));
     let accumLen = 0;
 
     const pushChunk = (chunk: Uint8Array) => {
@@ -70,6 +77,19 @@ const streamQueenData = async (url: string, onProgress: (progress: number) => vo
     // Build the QueenData from the bytes accumulated so far.
     // slice() gives an exact-size copy so the ArrayBuffer byteLength matches accumLen.
     const queenData = new QueenData(accumBuf.slice(0, accumLen).buffer);
+
+    // ── Phase 1.5: keep pumping until initialFrames are available ────────────────────────────────
+    // This lets callers pre-buffer more than one frame before playback begins.
+    const pumpInitialFrames = async (): Promise<void> => {
+        if (queenData.availableFrames >= initialFrames) return;
+        const { done, value } = await reader.read();
+        if (done) return;
+        updateProgress(value.length);
+        queenData.appendChunk(value);
+        return pumpInitialFrames();
+    };
+
+    await pumpInitialFrames();
 
     // ── Phase 2: pump the remaining residual frames into queenData in the background ─────────────
     // This is intentionally "fire and forget" — the animation loop consumes availableFrames
