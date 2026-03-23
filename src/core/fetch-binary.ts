@@ -1,7 +1,7 @@
-// Fetch a binary resource at the given URL with streaming progress notifications.
+// Fetch a 4DGS animation file at the given URL with streaming progress notifications.
 // The onProgress callback receives integer values in [0, 100].
 // Returns the complete response as an ArrayBuffer.
-const fetchBinary = async (url: string, onProgress: (progress: number) => void): Promise<ArrayBuffer> => {
+const fetchSplatAnimBuffer = async (url: string, onProgress: (progress: number) => void): Promise<ArrayBuffer> => {
     const response = await fetch(url);
     if (!response.ok) {
         throw new Error(`Failed to fetch ${url}: ${response.status} ${response.statusText}`);
@@ -41,4 +41,4 @@ const fetchBinary = async (url: string, onProgress: (progress: number) => void):
     return buffer;
 };
 
-export { fetchBinary };
+export { fetchSplatAnimBuffer };
