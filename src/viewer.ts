@@ -386,7 +386,7 @@ class Viewer {
                 const quality = platform.mobile ? ranges.mobile : ranges.desktop;
 
                 // start by streaming in low lod
-                const lodLevels = results[0].gsplat.resource?.octree?.lodLevels;
+                const lodLevels = (results[0].gsplat.resource as { octree?: { lodLevels?: number } } | null)?.octree?.lodLevels;
                 if (lodLevels) {
                     gsplat.lodRangeMax = gsplat.lodRangeMin = lodLevels - 1;
                 }
