@@ -9,9 +9,9 @@ import {
 } from 'playcanvas';
 import type { CameraComponent } from 'playcanvas';
 
+import type { Collision } from './collision';
 import { Picker } from './picker';
 import type { Global } from './types';
-import type { VoxelCollider } from './voxel-collider';
 
 /* Vec initialisation to avoid recurrent memory allocation */
 const tmpV1 = new Vec3();
@@ -168,7 +168,7 @@ class InputController {
 
     private _picker: Picker | null = null;
 
-    collider: VoxelCollider | null = null;
+    collision: Collision | null = null;
 
     moveSpeed: number = 4;
 
@@ -269,7 +269,7 @@ class InputController {
                 this._mouseClickTracking = false;
                 updateCanvasCursor();
                 if (this._mouseClickDelta < TAP_EPSILON && state.cameraMode === 'walk' && !state.gamingControls) {
-                    const result = this._pickVoxel(this._lastPointerOffsetX, this._lastPointerOffsetY);
+                    const result = this._pickCollision(this._lastPointerOffsetX, this._lastPointerOffsetY);
                     if (result) {
                         events.fire('walkTo', result.position, result.normal);
                     }
@@ -420,8 +420,8 @@ class InputController {
         });
     }
 
-    private _pickVoxel(offsetX: number, offsetY: number): { position: Vec3; normal: Vec3 } | null {
-        if (!this.collider) return null;
+    private _pickCollision(offsetX: number, offsetY: number): { position: Vec3; normal: Vec3 } | null {
+        if (!this.collision) return null;
 
         const { camera } = this.global;
         const cameraPos = camera.getPosition();
@@ -429,22 +429,18 @@ class InputController {
         camera.camera.screenToWorld(offsetX, offsetY, 1.0, tmpV1);
         tmpV1.sub(cameraPos).normalize();
 
-        // PlayCanvas → voxel space: negate X and Y
-        const hit = this.collider.queryRay(
-            -cameraPos.x, -cameraPos.y, cameraPos.z,
-            -tmpV1.x, -tmpV1.y, tmpV1.z,
+        const hit = this.collision.queryRay(
+            cameraPos.x, cameraPos.y, cameraPos.z,
+            tmpV1.x, tmpV1.y, tmpV1.z,
             camera.camera.farClip
         );
 
         if (!hit) return null;
 
-        const rdx = -tmpV1.x;
-        const rdy = -tmpV1.y;
-        const rdz = tmpV1.z;
-        const sn = this.collider.querySurfaceNormal(hit.x, hit.y, hit.z, rdx, rdy, rdz);
+        const sn = this.collision.querySurfaceNormal(hit.x, hit.y, hit.z, tmpV1.x, tmpV1.y, tmpV1.z);
         return {
-            position: new Vec3(-hit.x, -hit.y, hit.z),
-            normal: new Vec3(-sn.nx, -sn.ny, sn.nz)
+            position: new Vec3(hit.x, hit.y, hit.z),
+            normal: new Vec3(sn.nx, sn.ny, sn.nz)
         };
     }
 
@@ -510,7 +506,7 @@ class InputController {
             if (prevTaps > 0 && this._tapTouches === 0) {
                 if (this._tapDelta < TAP_EPSILON) {
                     if (!state.gamingControls) {
-                        const result = this._pickVoxel(this._lastPointerOffsetX, this._lastPointerOffsetY);
+                        const result = this._pickCollision(this._lastPointerOffsetX, this._lastPointerOffsetY);
                         if (result && state.cameraMode === 'walk' && !state.gamingControls) {
                             events.fire('walkTo', result.position, result.normal);
                         }

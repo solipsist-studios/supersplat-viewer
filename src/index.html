@@ -73,7 +73,7 @@
 
             const posterUrl = url.searchParams.get('poster');
             const skyboxUrl = url.searchParams.get('skybox');
-            const voxelUrl = url.searchParams.get('voxel');
+            const collisionUrl = url.searchParams.get('collision') ?? url.searchParams.get('voxel');
             const settingsUrl = url.searchParams.get('settings');
             const contentUrl = url.searchParams.has('content') ? url.searchParams.get('content') : './coffee_martini.omg4';
             const omg4RotationDeg = parseRotationParam(url.searchParams.get('omg4rot'), [270, 0, 0]);
@@ -81,7 +81,7 @@
             const sseConfig = {
                 poster: posterUrl && createImage(posterUrl),
                 skyboxUrl,
-                voxelUrl,
+                collisionUrl,
                 omg4RotationDeg,
                 contentUrl,
                 contents: fetch(contentUrl),

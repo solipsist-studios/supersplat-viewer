@@ -4,7 +4,7 @@ import {
     Vec2
 } from 'playcanvas';
 
-import type { PushOut, VoxelCollider } from '../voxel-collider';
+import type { Collision, PushOut } from '../collision';
 import type { CameraFrame, Camera, CameraController } from './camera';
 
 /** Radius of the camera collision sphere (meters) */
@@ -20,8 +20,8 @@ class FlyController implements CameraController {
 
     fov = 90;
 
-    /** Optional voxel collider for sphere collision with sliding */
-    collider: VoxelCollider | null = null;
+    /** Optional collision for sphere collision with sliding */
+    collision: Collision | null = null;
 
     constructor() {
         this.controller = new FlyControllerPC();
@@ -43,30 +43,22 @@ class FlyController implements CameraController {
         camera.angles.copy(pose.angles);
         camera.distance = pose.distance;
 
-        if (this.collider) {
+        if (this.collision) {
             // Resolve collision on _targetPose first. The engine's update() already
             // applied input to _targetPose and lerped _pose toward it. By correcting
             // _targetPose now, we ensure next frame's lerp interpolates toward a safe
             // position, preventing the camera from overshooting into the wall.
             const target = (this.controller as any)._targetPose;
-            const tvx = -target.position.x;
-            const tvy = -target.position.y;
-            const tvz = target.position.z;
 
-            if (this.collider.querySphere(tvx, tvy, tvz, CAMERA_RADIUS, pushOut)) {
-                target.position.x += -pushOut.x;
-                target.position.y += -pushOut.y;
+            if (this.collision.querySphere(target.position.x, target.position.y, target.position.z, CAMERA_RADIUS, pushOut)) {
+                target.position.x += pushOut.x;
+                target.position.y += pushOut.y;
                 target.position.z += pushOut.z;
             }
 
-            // Now resolve collision on the interpolated pose (_pose).
-            const vx = -pose.position.x;
-            const vy = -pose.position.y;
-            const vz = pose.position.z;
-
-            if (this.collider.querySphere(vx, vy, vz, CAMERA_RADIUS, pushOut)) {
-                pose.position.x += -pushOut.x;
-                pose.position.y += -pushOut.y;
+            if (this.collision.querySphere(pose.position.x, pose.position.y, pose.position.z, CAMERA_RADIUS, pushOut)) {
+                pose.position.x += pushOut.x;
+                pose.position.y += pushOut.y;
                 pose.position.z += pushOut.z;
             }
         }

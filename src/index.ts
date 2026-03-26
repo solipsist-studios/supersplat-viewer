@@ -18,6 +18,8 @@ import {
 import { Omg4SplatAnimation } from './animation/omg4-splat-animation';
 import { QueenSplatAnimation } from './animation/queen-splat-animation';
 import { App } from './app';
+import { MeshCollision, loadVoxelCollision } from './collision';
+import type { Collision } from './collision';
 import { setupSplatAnim } from './core/load-splat-anim';
 import { observe } from './core/observe';
 import { streamOmg4Data } from './core/stream-omg4';
@@ -26,7 +28,6 @@ import { importSettings } from './settings';
 import type { Config, Global } from './types';
 import { initPoster, initUI } from './ui';
 import { Viewer } from './viewer';
-import { VoxelCollider } from './voxel-collider';
 import { initXr } from './xr';
 import { version as appVersion } from '../package.json';
 
@@ -302,12 +303,22 @@ const main = async (canvas: HTMLCanvasElement, settingsJson: any, config: Config
             app.scene.envAtlas = asset.resource as Texture;
         });
 
-    // Load voxel collision data
-    const voxelLoad = config.voxelUrl &&
-        VoxelCollider.load(config.voxelUrl).catch((err: Error): null => {
-            console.warn('Failed to load voxel data:', err);
-            return null;
-        });
+    // Load collision data (type determined by file extension)
+    let collisionLoad: Promise<Collision> | undefined;
+    if (config.collisionUrl) {
+        const ext = new URL(config.collisionUrl, location.href).pathname.split('.').pop()?.toLowerCase();
+        if (ext === 'glb') {
+            collisionLoad = MeshCollision.fromGlb(app, config.collisionUrl).catch((err: Error): null => {
+                console.warn('Failed to load mesh collision:', err);
+                return null;
+            });
+        } else {
+            collisionLoad = loadVoxelCollision(config.collisionUrl).catch((err: Error): null => {
+                console.warn('Failed to load voxel data:', err);
+                return null;
+            });
+        }
+    }
 
     // Load and play sound
     if (global.settings.soundUrl) {
@@ -324,7 +335,7 @@ const main = async (canvas: HTMLCanvasElement, settingsJson: any, config: Config
     }
 
     // Create the viewer
-    return new Viewer(global, gsplatLoad, skyboxLoad, voxelLoad);
+    return new Viewer(global, gsplatLoad, skyboxLoad, collisionLoad);
 };
 
 console.log(`SuperSplat Viewer v${appVersion} | Engine v${engineVersion} (${engineRevision})`);

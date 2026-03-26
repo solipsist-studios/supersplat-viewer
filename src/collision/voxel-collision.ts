@@ -1,3 +1,6 @@
+import { PENETRATION_EPSILON, resolveIterative } from './collision';
+import type { Collision, PushOut, RayHit } from './collision';
+
 /**
  * Metadata for a voxel octree file (matches the .voxel.json format from splat-transform).
  */
@@ -15,32 +18,11 @@ interface VoxelMetadata {
 }
 
 /**
- * Push-out vector returned by querySphere / queryCapsule.
- */
-interface PushOut {
-    x: number;
-    y: number;
-    z: number;
-}
-
-/**
- * Hit result returned by queryRay.
- */
-interface RayHit {
-    x: number;
-    y: number;
-    z: number;
-}
-
-/**
  * Solid leaf node marker: childMask = 0xFF, baseOffset = 0.
  * Unambiguous because BFS layout guarantees children always come after their parent,
  * so baseOffset = 0 is never valid for an interior node.
  */
 const SOLID_LEAF_MARKER = 0xFF000000 >>> 0;
-
-/** Minimum penetration depth to report a collision (avoids floating-point noise at corners) */
-const PENETRATION_EPSILON = 1e-4;
 
 /** Half-extent of the flatness sampling patch (5x5 when R=2). */
 const FLAT_R = 2;
@@ -75,7 +57,7 @@ const SURFACE_CANDIDATES: number[][] = [
  * shifted along the step direction. Returns the best (maximum) layer score. A "surface
  * hit" at each sample is a solid voxel whose neighbour in the step direction is empty.
  *
- * @param collider - The voxel collider instance.
+ * @param collision - The voxel collision instance.
  * @param ix - Voxel X index of the surface point.
  * @param iy - Voxel Y index of the surface point.
  * @param iz - Voxel Z index of the surface point.
@@ -91,7 +73,7 @@ const SURFACE_CANDIDATES: number[][] = [
  * @returns The best score across the three depth layers.
  */
 function scoreSurfaceCandidate(
-    collider: VoxelCollider,
+    collision: VoxelCollision,
     ix: number, iy: number, iz: number,
     sx: number, sy: number, sz: number,
     t1x: number, t1y: number, t1z: number,
@@ -105,8 +87,8 @@ function scoreSurfaceCandidate(
                 const px = ix + da * t1x + db * t2x - sx * depth;
                 const py = iy + da * t1y + db * t2y - sy * depth;
                 const pz = iz + da * t1z + db * t2z - sz * depth;
-                if (collider.isVoxelSolid(px, py, pz) &&
-                    !collider.isVoxelSolid(px + sx, py + sy, pz + sz)) {
+                if (collision.isVoxelSolid(px, py, pz) &&
+                    !collision.isVoxelSolid(px + sx, py + sy, pz + sz)) {
                     s++;
                 }
             }
@@ -135,7 +117,7 @@ function popcount(n: number): number {
  * Loads the two-file format (.voxel.json + .voxel.bin) produced by
  * splat-transform's writeVoxel and provides point and sphere collision queries.
  */
-class VoxelCollider {
+class VoxelCollision implements Collision {
     /** Grid-aligned bounds (min xyz) */
     private _gridMinX: number;
 
@@ -297,59 +279,18 @@ class VoxelCollider {
     }
 
     /**
-     * Load a VoxelCollider from a .voxel.json URL.
-     * The corresponding .voxel.bin is inferred by replacing the extension.
+     * Whether this data requires X/Y negation (legacy v1.0 format).
      *
-     * @param jsonUrl - URL to the .voxel.json metadata file.
-     * @returns A promise resolving to a VoxelCollider instance.
+     * @returns {boolean} True if coordinates need flipping.
      */
-    static async load(jsonUrl: string): Promise<VoxelCollider> {
-        // Fetch metadata
-        const metaResponse = await fetch(jsonUrl);
-        if (!metaResponse.ok) {
-            throw new Error(`Failed to fetch voxel metadata: ${metaResponse.statusText}`);
-        }
-        const metadata: VoxelMetadata = await metaResponse.json();
-
-        // Fetch binary data
-        const binUrl = jsonUrl.replace('.voxel.json', '.voxel.bin');
-        const binResponse = await fetch(binUrl);
-        if (!binResponse.ok) {
-            throw new Error(`Failed to fetch voxel binary: ${binResponse.statusText}`);
-        }
-        const buffer = await binResponse.arrayBuffer();
-        const view = new Uint32Array(buffer);
-
-        const nodes = view.slice(0, metadata.nodeCount);
-        const leafData = view.slice(metadata.nodeCount, metadata.nodeCount + metadata.leafDataCount);
-
-        return new VoxelCollider(metadata, nodes, leafData);
+    get flipXY(): boolean {
+        return false;
     }
 
-    /**
-     * Compute a stable surface normal at a world-space position using flatness-probability
-     * sampling. Tests 9 candidate directions: 3 axis-aligned and 6 diagonal (45-degree in
-     * each pair of axes). For each camera-facing candidate a 5x5 patch of voxels in the
-     * perpendicular plane is sampled: a voxel counts as a "surface hit" if it is solid and
-     * the adjacent voxel toward the camera is empty. The candidate with the highest hit
-     * count is the surface orientation.
-     *
-     * @param x - World X coordinate of the surface point.
-     * @param y - World Y coordinate of the surface point.
-     * @param z - World Z coordinate of the surface point.
-     * @param rdx - Ray direction X (toward the surface, in voxel space).
-     * @param rdy - Ray direction Y.
-     * @param rdz - Ray direction Z.
-     * @returns Object with nx, ny, nz components of the surface normal.
-     */
     querySurfaceNormal(
         x: number, y: number, z: number,
         rdx: number, rdy: number, rdz: number
     ): { nx: number; ny: number; nz: number } {
-        // Nudge the query point slightly along the ray direction so that a hit point
-        // sitting exactly on a voxel face boundary resolves to the solid voxel rather
-        // than the adjacent empty one. Uses Math.sign so the nudge is independent of
-        // ray vector magnitude.
         const nudge = this._voxelResolution * 0.25;
         const ix = Math.floor((x + Math.sign(rdx) * nudge - this._gridMinX) / this._voxelResolution);
         const iy = Math.floor((y + Math.sign(rdy) * nudge - this._gridMinY) / this._voxelResolution);
@@ -399,19 +340,6 @@ class VoxelCollider {
         return result;
     }
 
-    /**
-     * Cast a ray through the voxel grid using 3D-DDA and return the entry point on the first
-     * solid voxel hit. Coordinates are in voxel world space (the same frame used by queryPoint).
-     *
-     * @param ox - Ray origin X.
-     * @param oy - Ray origin Y.
-     * @param oz - Ray origin Z.
-     * @param dx - Ray direction X (must be normalized).
-     * @param dy - Ray direction Y (must be normalized).
-     * @param dz - Ray direction Z (must be normalized).
-     * @param maxDist - Maximum ray distance.
-     * @returns The entry point on the first solid voxel, or null if no hit.
-     */
     queryRay(
         ox: number, oy: number, oz: number,
         dx: number, dy: number, dz: number,
@@ -550,19 +478,6 @@ class VoxelCollider {
         return null;
     }
 
-    /**
-     * Query a sphere against the voxel grid and write a push-out vector to resolve penetration.
-     * Uses iterative single-voxel resolution: each iteration finds the deepest penetrating voxel,
-     * resolves it, then re-checks. This avoids over-push from summing multiple voxels and
-     * naturally handles corners (2 iterations) and flat walls (1 iteration).
-     *
-     * @param cx - Sphere center X in world units.
-     * @param cy - Sphere center Y in world units.
-     * @param cz - Sphere center Z in world units.
-     * @param radius - Sphere radius in world units.
-     * @param out - Object to receive the push-out vector.
-     * @returns True if a collision was detected and out was written.
-     */
     querySphere(
         cx: number, cy: number, cz: number,
         radius: number,
@@ -571,90 +486,13 @@ class VoxelCollider {
         if (this.nodes.length === 0) {
             return false;
         }
-
-        const maxIterations = 4;
-        let resolvedX = cx;
-        let resolvedY = cy;
-        let resolvedZ = cz;
-        let totalPushX = 0;
-        let totalPushY = 0;
-        let totalPushZ = 0;
-        let hadCollision = false;
-
-        const push = this._push;
-
-        // Constraint normals from previous iterations - prevents oscillation at corners
-        // by ensuring subsequent pushes don't undo previous ones
-        const normals = this._constraintNormals;
-        let numNormals = 0;
-
-        for (let iter = 0; iter < maxIterations; iter++) {
-            if (!this.resolveDeepestPenetration(resolvedX, resolvedY, resolvedZ, radius)) {
-                break;
-            }
-            hadCollision = true;
-
-            let px = push.x;
-            let py = push.y;
-            let pz = push.z;
-
-            // Project out components that contradict previous constraint normals
-            for (let i = 0; i < numNormals; i++) {
-                const n = normals[i];
-                const dot = px * n.x + py * n.y + pz * n.z;
-                if (dot < 0) {
-                    px -= dot * n.x;
-                    py -= dot * n.y;
-                    pz -= dot * n.z;
-                }
-            }
-
-            // Record this push direction as a constraint normal
-            const len = Math.sqrt(push.x * push.x + push.y * push.y + push.z * push.z);
-            if (len > PENETRATION_EPSILON && numNormals < 3) {
-                const invLen = 1.0 / len;
-                const n = normals[numNormals];
-                n.x = push.x * invLen;
-                n.y = push.y * invLen;
-                n.z = push.z * invLen;
-                numNormals++;
-            }
-
-            resolvedX += px;
-            resolvedY += py;
-            resolvedZ += pz;
-            totalPushX += px;
-            totalPushY += py;
-            totalPushZ += pz;
-        }
-
-        // Only report collision if the total push is meaningful
-        const totalPushSq = totalPushX * totalPushX + totalPushY * totalPushY + totalPushZ * totalPushZ;
-        const hasSignificantPush = hadCollision && totalPushSq > PENETRATION_EPSILON * PENETRATION_EPSILON;
-
-        if (hasSignificantPush) {
-            out.x = totalPushX;
-            out.y = totalPushY;
-            out.z = totalPushZ;
-        }
-
-        return hasSignificantPush;
+        return resolveIterative(
+            cx, cy, cz,
+            (rx, ry, rz, push) => this.resolveDeepestPenetration(rx, ry, rz, radius, push),
+            this._constraintNormals, this._push, out
+        );
     }
 
-    /**
-     * Query a vertical capsule against the voxel grid and write a push-out vector to resolve
-     * penetration. The capsule is a line segment from (cx, cy - halfHeight, cz) to
-     * (cx, cy + halfHeight, cz) swept by radius. Uses the same iterative deepest-penetration
-     * approach as querySphere.
-     *
-     * @param cx - Capsule center X in world units.
-     * @param cy - Capsule center Y in world units.
-     * @param cz - Capsule center Z in world units.
-     * @param halfHeight - Half-height of the capsule's inner line segment in world units.
-     * @param radius - Capsule radius in world units.
-     * @param out - Object to receive the push-out vector.
-     * @returns True if a collision was detected and out was written.
-     */
     queryCapsule(
         cx: number, cy: number, cz: number,
         halfHeight: number,
@@ -664,89 +502,27 @@ class VoxelCollider {
         if (this.nodes.length === 0) {
             return false;
         }
-
-        const maxIterations = 4;
-        let resolvedX = cx;
-        let resolvedY = cy;
-        let resolvedZ = cz;
-        let totalPushX = 0;
-        let totalPushY = 0;
-        let totalPushZ = 0;
-        let hadCollision = false;
-
-        const push = this._push;
-
-        // Constraint normals from previous iterations - prevents oscillation at corners
-        // by ensuring subsequent pushes don't undo previous ones
-        const normals = this._constraintNormals;
-        let numNormals = 0;
-
-        for (let iter = 0; iter < maxIterations; iter++) {
-            if (!this.resolveDeepestPenetrationCapsule(resolvedX, resolvedY, resolvedZ, halfHeight, radius)) {
-                break;
-            }
-            hadCollision = true;
-
-            let px = push.x;
-            let py = push.y;
-            let pz = push.z;
-
-            // Project out components that contradict previous constraint normals
-            for (let i = 0; i < numNormals; i++) {
-                const n = normals[i];
-                const dot = px * n.x + py * n.y + pz * n.z;
-                if (dot < 0) {
-                    px -= dot * n.x;
-                    py -= dot * n.y;
-                    pz -= dot * n.z;
-                }
-            }
-
-            // Record this push direction as a constraint normal
-            const len = Math.sqrt(push.x * push.x + push.y * push.y + push.z * push.z);
-            if (len > PENETRATION_EPSILON && numNormals < 3) {
-                const invLen = 1.0 / len;
-                const n = normals[numNormals];
-                n.x = push.x * invLen;
-                n.y = push.y * invLen;
-                n.z = push.z * invLen;
-                numNormals++;
-            }
-
-            resolvedX += px;
-            resolvedY += py;
-            resolvedZ += pz;
-            totalPushX += px;
-            totalPushY += py;
-            totalPushZ += pz;
-        }
-
-        // Only report collision if the total push is meaningful
-        const totalPushSq = totalPushX * totalPushX + totalPushY * totalPushY + totalPushZ * totalPushZ;
-        const hasSignificantPush = hadCollision && totalPushSq > PENETRATION_EPSILON * PENETRATION_EPSILON;
-
-        if (hasSignificantPush) {
-            out.x = totalPushX;
-            out.y = totalPushY;
-            out.z = totalPushZ;
-        }
-
-        return hasSignificantPush;
+        return resolveIterative(
+            cx, cy, cz,
+            (rx, ry, rz, push) => this.resolveDeepestPenetrationCapsule(rx, ry, rz, halfHeight, radius, push),
+            this._constraintNormals, this._push, out
+        );
     }
 
     /**
      * Find the single deepest penetrating voxel for the given sphere.
-     * Writes the push-out vector into this._push.
      *
      * @param cx - Sphere center X.
      * @param cy - Sphere center Y.
      * @param cz - Sphere center Z.
      * @param radius - Sphere radius.
+     * @param out - Receives the push-out vector on success.
      * @returns True if a penetrating voxel was found.
      */
     private resolveDeepestPenetration(
         cx: number, cy: number, cz: number,
-        radius: number
+        radius: number,
+        out: PushOut
     ): boolean {
         const { voxelResolution, gridMinX, gridMinY, gridMinZ } = this;
         const radiusSq = radius * radius;
@@ -853,9 +629,9 @@ class VoxelCollider {
         }
 
         if (found) {
-            this._push.x = bestPushX;
-            this._push.y = bestPushY;
-            this._push.z = bestPushZ;
+            out.x = bestPushX;
+            out.y = bestPushY;
+            out.z = bestPushZ;
         }
 
         return found;
@@ -866,19 +642,20 @@ class VoxelCollider {
      * The capsule is a line segment from (cx, cy - halfHeight, cz) to (cx, cy + halfHeight, cz)
      * swept by radius. For each voxel, the closest point on the segment to the AABB is found,
      * then a sphere-AABB penetration test is performed from that point.
-     * Writes the push-out vector into this._push.
      *
      * @param cx - Capsule center X.
      * @param cy - Capsule center Y.
      * @param cz - Capsule center Z.
      * @param halfHeight - Half-height of the capsule's inner line segment.
      * @param radius - Capsule radius.
+     * @param out - Receives the push-out vector on success.
      * @returns True if a penetrating voxel was found.
      */
     private resolveDeepestPenetrationCapsule(
         cx: number, cy: number, cz: number,
         halfHeight: number,
-        radius: number
+        radius: number,
+        out: PushOut
     ): boolean {
         const { voxelResolution, gridMinX, gridMinY, gridMinZ } = this;
         const radiusSq = radius * radius;
@@ -1003,9 +780,9 @@ class VoxelCollider {
         }
 
         if (found) {
-            this._push.x = bestPushX;
-            this._push.y = bestPushY;
-            this._push.z = bestPushZ;
+            out.x = bestPushX;
+            out.y = bestPushY;
+            out.z = bestPushZ;
         }
 
         return found;
@@ -1108,5 +885,97 @@ class VoxelCollider {
     }
 }
 
-export { VoxelCollider };
-export type { PushOut, RayHit };
+/**
+ * Legacy v1.0 adapter that negates X/Y on inputs and outputs to convert
+ * between PlayCanvas world space and the raw voxel data coordinate system.
+ */
+class FlippedVoxelCollision extends VoxelCollision {
+    get flipXY(): boolean {
+        return true;
+    }
+
+    querySurfaceNormal(
+        x: number, y: number, z: number,
+        rdx: number, rdy: number, rdz: number
+    ): { nx: number; ny: number; nz: number } {
+        const result = super.querySurfaceNormal(-x, -y, z, -rdx, -rdy, rdz);
+        result.nx = -result.nx;
+        result.ny = -result.ny;
+        return result;
+    }
+
+    queryRay(
+        ox: number, oy: number, oz: number,
+        dx: number, dy: number, dz: number,
+        maxDist: number
+    ): RayHit | null {
+        const hit = super.queryRay(-ox, -oy, oz, -dx, -dy, dz, maxDist);
+        if (hit) {
+            hit.x = -hit.x;
+            hit.y = -hit.y;
+        }
+        return hit;
+    }
+
+    querySphere(
+        cx: number, cy: number, cz: number,
+        radius: number,
+        out: PushOut
+    ): boolean {
+        const result = super.querySphere(-cx, -cy, cz, radius, out);
+        if (result) {
+            out.x = -out.x;
+            out.y = -out.y;
+        }
+        return result;
+    }
+
+    queryCapsule(
+        cx: number, cy: number, cz: number,
+        halfHeight: number,
+        radius: number,
+        out: PushOut
+    ): boolean {
+        const result = super.queryCapsule(-cx, -cy, cz, halfHeight, radius, out);
+        if (result) {
+            out.x = -out.x;
+            out.y = -out.y;
+        }
+        return result;
+    }
+}
+
+/**
+ * Load a VoxelCollision from a .voxel.json URL.
+ * The corresponding .voxel.bin is inferred by replacing the extension.
+ * Returns a FlippedVoxelCollision for legacy v1.0 data.
+ *
+ * @param jsonUrl - URL to the .voxel.json metadata file.
+ * @returns A promise resolving to a VoxelCollision instance.
+ */
+const loadVoxelCollision = async (jsonUrl: string): Promise<VoxelCollision> => {
+    const metaResponse = await fetch(jsonUrl);
+    if (!metaResponse.ok) {
+        throw new Error(`Failed to fetch voxel metadata: ${metaResponse.statusText}`);
+    }
+    const metadata: VoxelMetadata = await metaResponse.json();
+
+    const binUrl = jsonUrl.replace('.voxel.json', '.voxel.bin');
+    const binResponse = await fetch(binUrl);
+    if (!binResponse.ok) {
+        throw new Error(`Failed to fetch voxel binary: ${binResponse.statusText}`);
+    }
+    const buffer = await binResponse.arrayBuffer();
+    const view = new Uint32Array(buffer);
+
+    const nodes = view.slice(0, metadata.nodeCount);
+    const leafData = view.slice(metadata.nodeCount, metadata.nodeCount + metadata.leafDataCount);
+
+    const isLegacy = !metadata.version || parseFloat(metadata.version) < 1.1;
+    if (isLegacy) {
+        return new FlippedVoxelCollision(metadata, nodes, leafData);
+    }
+    return new VoxelCollision(metadata, nodes, leafData);
+};
+
+export { VoxelCollision, loadVoxelCollision };
