@@ -14,13 +14,16 @@ abstract class SplatAnimationBase {
     abstract getFrameIndex(time: number): number;
 
     // Switch to the given frame. Returns true if the frame changed (GPU upload needed).
-    abstract setFrame(frameIndex: number): boolean;
+    abstract setFrame(frameIndex: number): boolean | Promise<boolean>;
 
     // Attach the frame-advance loop to the application update event.
     // Returns a cleanup function that removes the listeners.
     attach(global: Global): () => void {
         const { app, state, events, camera } = global;
         let animTime = 0;
+        let destroyed = false;
+        let applyingFrame = false;
+        let queuedFrame: number | null = null;
 
         const sortAndRender = () => {
             const instance = (app.root.findComponents('gsplat') as any[])[0]?.instance;
@@ -28,6 +31,32 @@ abstract class SplatAnimationBase {
                 instance.sort(camera);
             }
             app.renderNextFrame = true;
+        };
+
+        const applyQueuedFrame = async () => {
+            if (applyingFrame || destroyed) {
+                return;
+            }
+
+            applyingFrame = true;
+            try {
+                while (queuedFrame !== null && !destroyed) {
+                    const frameIdx = queuedFrame;
+                    queuedFrame = null;
+                    if (await this.setFrame(frameIdx)) {
+                        sortAndRender();
+                    }
+                }
+            } catch (err) {
+                console.error('Failed to update animation frame', err);
+            } finally {
+                applyingFrame = false;
+            }
+        };
+
+        const requestFrame = (frameIdx: number) => {
+            queuedFrame = frameIdx;
+            void applyQueuedFrame();
         };
 
         const onUpdate = (dt: number) => {
@@ -43,9 +72,7 @@ abstract class SplatAnimationBase {
             }
 
             const frameIdx = this.getFrameIndex(animTime);
-            if (this.setFrame(frameIdx)) {
-                sortAndRender();
-            }
+            requestFrame(frameIdx);
         };
 
         // Handle timeline scrubbing from the UI.
@@ -54,15 +81,14 @@ abstract class SplatAnimationBase {
             state.animationTime = animTime;
 
             const frameIdx = this.getFrameIndex(animTime);
-            if (this.setFrame(frameIdx)) {
-                sortAndRender();
-            }
+            requestFrame(frameIdx);
         };
 
         app.on('update', onUpdate);
         events.on('scrubAnim', onScrub);
 
         return () => {
+            destroyed = true;
             app.off('update', onUpdate);
             events.off('scrubAnim', onScrub);
         };

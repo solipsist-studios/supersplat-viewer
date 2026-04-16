@@ -18,11 +18,10 @@ import {
 import { Omg4SplatAnimation } from './animation/omg4-splat-animation';
 import { QueenSplatAnimation } from './animation/queen-splat-animation';
 import { App } from './app';
-import { fetchSplatAnimBuffer } from './core/fetch-splat-anim-buffer';
 import { setupSplatAnim } from './core/load-splat-anim';
 import { observe } from './core/observe';
+import { streamOmg4Data } from './core/stream-omg4';
 import { streamQueenData } from './core/stream-queen';
-import { parseOmg4 } from './parsers/omg4';
 import { importSettings } from './settings';
 import type { Config, Global } from './types';
 import { initPoster, initUI } from './ui';
@@ -74,12 +73,13 @@ const loadGsplat = async (app: AppBase, config: Config, progressCallback: (progr
 
 // Load and animate a .omg4 (OMG4-encoded 4D Gaussian Splat) file.
 const loadOmg4Gsplat = async (app: AppBase, config: Config, global: Global, progressCallback: (progress: number) => void) => {
-    const buffer = await fetchSplatAnimBuffer(config.contentUrl, progressCallback);
-    const data = parseOmg4(buffer);
-    data.loadFrame(0);
+    const data = await streamOmg4Data(config.contentUrl, progressCallback);
     const resource = new GSplatResource(app.graphicsDevice, data.gsplatData);
     const animation = new Omg4SplatAnimation(data, resource);
-    return setupSplatAnim(app, config, global, resource, animation);
+    return setupSplatAnim(app, config, global, resource, animation, {
+        rotationEulerDeg: config.omg4RotationDeg ?? [270, 0, 0],
+        alphaClip: 1 / 1024
+    });
 };
 
 // Load and animate a .queen (QUEEN-encoded 4D Gaussian Splat) file.

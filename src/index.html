@@ -5,6 +5,7 @@
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
         <base href="">
+        <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Ccircle cx='32' cy='32' r='30' fill='%23111111'/%3E%3Ccircle cx='32' cy='32' r='12' fill='%23ffffff'/%3E%3C/svg%3E">
         <link rel="stylesheet" href="./index.css">
         <script type="module">
             const createImage = (url) => {
@@ -13,18 +14,75 @@
                 return img;
             };
 
+            const parseRotationParam = (value, fallback) => {
+                if (!value) {
+                    return fallback;
+                }
+
+                const parts = value.split(',').map(Number);
+                if (parts.length !== 3 || parts.some((part) => Number.isNaN(part))) {
+                    return fallback;
+                }
+
+                return [parts[0], parts[1], parts[2]];
+            };
+
+            const defaultSettings = {
+                version: 2,
+                tonemapping: 'none',
+                highPrecisionRendering: false,
+                background: {
+                    color: [0, 0, 0]
+                },
+                postEffectSettings: {
+                    sharpness: {
+                        enabled: false,
+                        amount: 0
+                    },
+                    bloom: {
+                        enabled: false,
+                        intensity: 1,
+                        blurLevel: 2
+                    },
+                    grading: {
+                        enabled: false,
+                        brightness: 0,
+                        contrast: 1,
+                        saturation: 1,
+                        tint: [1, 1, 1]
+                    },
+                    vignette: {
+                        enabled: false,
+                        intensity: 0.5,
+                        inner: 0.3,
+                        outer: 0.75,
+                        curvature: 1
+                    },
+                    fringing: {
+                        enabled: false,
+                        intensity: 0.5
+                    }
+                },
+                animTracks: [],
+                cameras: [],
+                annotations: [],
+                startMode: 'default'
+            };
+
             const url = new URL(location.href);
 
             const posterUrl = url.searchParams.get('poster');
             const skyboxUrl = url.searchParams.get('skybox');
             const voxelUrl = url.searchParams.get('voxel');
-            const settingsUrl = url.searchParams.has('settings') ? url.searchParams.get('settings') : './settings.json';
-            const contentUrl = url.searchParams.has('content') ? url.searchParams.get('content') : './scene.compressed.ply';
+            const settingsUrl = url.searchParams.get('settings');
+            const contentUrl = url.searchParams.has('content') ? url.searchParams.get('content') : './coffee_martini.omg4';
+            const omg4RotationDeg = parseRotationParam(url.searchParams.get('omg4rot'), [270, 0, 0]);
 
             const sseConfig = {
                 poster: posterUrl && createImage(posterUrl),
                 skyboxUrl,
                 voxelUrl,
+                omg4RotationDeg,
                 contentUrl,
                 contents: fetch(contentUrl),
                 noui: url.searchParams.has('noui'),
@@ -42,7 +100,14 @@
 
             window.sse = {
                 config: sseConfig,
-                settings: fetch(settingsUrl).then(response => response.json())
+                settings: settingsUrl
+                    ? fetch(settingsUrl).then((response) => {
+                        if (!response.ok) {
+                            throw new Error(`Failed to load settings: ${response.status} ${response.statusText}`);
+                        }
+                        return response.json();
+                    })
+                    : Promise.resolve(defaultSettings)
             };
         </script>
     </head>
@@ -180,6 +245,30 @@
                     <div id="gamingControlsCheck" class="toggleSwitch"><div class="toggleTrack"><div class="toggleThumb"></div></div></div>
                 </div>
                 <div class="divider"></div>
+                <div id="omg4RotationBlock" class="hidden">
+                    <div class="settingsRow">
+                        <div id="omg4RotationValue">OMG4 Rotation: 270, 0, 0</div>
+                    </div>
+                    <div class="settingsRow">
+                        <button id="omg4RotateXNeg">X -90</button>
+                        <button id="omg4RotateXPos">X +90</button>
+                    </div>
+                    <div class="settingsRow">
+                        <button id="omg4RotateYNeg">Y -90</button>
+                        <button id="omg4RotateYPos">Y +90</button>
+                    </div>
+                    <div class="settingsRow">
+                        <button id="omg4RotateZNeg">Z -90</button>
+                        <button id="omg4RotateZPos">Z +90</button>
+                    </div>
+                    <div class="settingsRow">
+                        <button id="omg4RotateReset">Reset OMG4 Rot</button>
+                    </div>
+                    <div class="settingsRow">
+                        <button id="omg4ClearCache">Clear OMG4 Cache</button>
+                    </div>
+                    <div class="divider"></div>
+                </div>
                 <div class="settingsRow">
                     <button id="frame">Frame</button>
                     <button id="reset">Reset</button>

@@ -152,7 +152,9 @@ https://example.com/viewer/?content=scene.omg4
 
 The viewer will display a play/pause button and a timeline scrubber, just like
 camera animation.  The user can orbit/fly around the scene while the OMG4
-animation plays.
+animation plays. Playback timing follows the per-frame timestamps baked into
+the `.omg4` file, so custom `--omg4-time-min` / `--omg4-time-max` exports from
+`splat-transform` are respected.
 
 ### File-size guidance
 

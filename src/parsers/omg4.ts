@@ -34,6 +34,15 @@ interface Omg4Header {
     timeDurationMax: number;
 }
 
+interface Omg4FrameData {
+    readonly gsplatData: GSplatData;
+    readonly numFrames: number;
+    readonly duration: number;
+    getFrameIndex(time: number): number;
+    loadFrame(frameIndex: number): void | Promise<void>;
+    prefetchFrame?(frameIndex: number): void;
+}
+
 // Mutable per-splat typed arrays that back a single reusable GSplatData.
 interface WorkArrays {
     x: Float32Array;
@@ -58,6 +67,8 @@ class Omg4Data {
     readonly header: Omg4Header;
 
     private frameByteSize: number;
+
+    private frameTimestamps: Float32Array;
 
     private work: WorkArrays;
 
@@ -86,6 +97,15 @@ class Omg4Data {
 
         const N = this.header.numSplats;
         this.frameByteSize = 4 + N * FLOATS_PER_SPLAT * 4;
+        const expectedSize = HEADER_SIZE + this.header.numFrames * this.frameByteSize;
+        if (buffer.byteLength < expectedSize) {
+            throw new Error(`Invalid .omg4 file: expected at least ${expectedSize} bytes, got ${buffer.byteLength}`);
+        }
+
+        this.frameTimestamps = new Float32Array(this.header.numFrames);
+        for (let i = 0; i < this.header.numFrames; i++) {
+            this.frameTimestamps[i] = view.getFloat32(HEADER_SIZE + i * this.frameByteSize, true);
+        }
 
         // Allocate working arrays once; they are reused across all frames.
         this.work = {
@@ -143,13 +163,39 @@ class Omg4Data {
     // Total playback duration in seconds.
     get duration(): number {
         const { numFrames, fps } = this.header;
-        return numFrames > 1 ? (numFrames - 1) / fps : 0;
+        if (numFrames <= 1) return 0;
+
+        const timestampDuration = this.frameTimestamps[numFrames - 1] - this.frameTimestamps[0];
+        return timestampDuration > 0 ? timestampDuration : (fps > 0 ? (numFrames - 1) / fps : 0);
     }
 
-    // Map a playback time [0..duration] to a frame index [0..numFrames-1].
+    // Map a playback time [0..duration] to the nearest baked frame timestamp.
     getFrameIndex(time: number): number {
         const { numFrames, fps } = this.header;
-        return Math.max(0, Math.min(numFrames - 1, Math.round(time * fps)));
+        if (numFrames <= 1) return 0;
+
+        const duration = this.duration;
+        if (duration <= 0) {
+            return fps > 0 ? Math.max(0, Math.min(numFrames - 1, Math.round(time * fps))) : 0;
+        }
+
+        const clampedTime = Math.max(0, Math.min(duration, time));
+        const targetTimestamp = this.frameTimestamps[0] + clampedTime;
+
+        let lo = 0;
+        let hi = numFrames - 1;
+        while (lo < hi) {
+            const mid = (lo + hi) >> 1;
+            if (this.frameTimestamps[mid] < targetTimestamp) {
+                lo = mid + 1;
+            } else {
+                hi = mid;
+            }
+        }
+
+        const upper = lo;
+        const lower = Math.max(0, upper - 1);
+        return Math.abs(this.frameTimestamps[upper] - targetTimestamp) < Math.abs(targetTimestamp - this.frameTimestamps[lower]) ? upper : lower;
     }
 
     // Unpack the given frame's data into the mutable working arrays.
@@ -185,3 +231,4 @@ class Omg4Data {
 const parseOmg4 = (buffer: ArrayBuffer): Omg4Data => new Omg4Data(buffer);
 
 export { Omg4Data, parseOmg4 };
+export type { Omg4FrameData };

@@ -14,6 +14,7 @@ type Config = {
     contentFilename?: string;           // original filename when content is a blob URL (no extension in URL)
     contents?: Promise<Response>;
     voxelUrl?: string;
+    omg4RotationDeg?: [number, number, number];
 
     noui: boolean;
     noanim: boolean;

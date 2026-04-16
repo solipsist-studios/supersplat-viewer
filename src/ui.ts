@@ -220,6 +220,7 @@ const initPoster = (events: EventHandler) => {
 
 const initUI = (global: Global) => {
     const { config, events, state } = global;
+    const defaultOmg4Rotation: [number, number, number] = config.omg4RotationDeg ?? [270, 0, 0];
 
     // Acquire Elements
     const docRoot = document.documentElement;
@@ -233,6 +234,11 @@ const initUI = (global: Global) => {
         'buttonContainer',
         'play', 'pause',
         'settings', 'settingsPanel',
+        'omg4RotationBlock', 'omg4RotationValue',
+        'omg4RotateXNeg', 'omg4RotateXPos',
+        'omg4RotateYNeg', 'omg4RotateYPos',
+        'omg4RotateZNeg', 'omg4RotateZPos',
+        'omg4RotateReset', 'omg4ClearCache',
         'orbitCamera', 'flyCamera', 'fpsCamera',
         'retinaDisplayRow', 'retinaDisplayCheck', 'retinaDisplayOption',
         'gamingControlsDivider', 'gamingControlsRow', 'gamingControlsCheck', 'gamingControlsOption',
@@ -251,6 +257,79 @@ const initUI = (global: Global) => {
         acc[id] = document.getElementById(id);
         return acc;
     }, {});
+
+    const isOmg4Content = () => {
+        const filename = config.contentFilename ?? config.contentUrl ?? '';
+        return filename.toLowerCase().endsWith('.omg4');
+    };
+
+    const normalizeDegrees = (value: number) => {
+        const normalized = value % 360;
+        return normalized < 0 ? normalized + 360 : normalized;
+    };
+
+    const currentOmg4Rotation: [number, number, number] = [...defaultOmg4Rotation];
+
+    const getGsplatEntity = () => global.app.root.findByName('gsplat');
+
+    const syncOmg4RotationUrl = () => {
+        const url = new URL(window.location.href);
+        url.searchParams.set('omg4rot', currentOmg4Rotation.join(','));
+        window.history.replaceState({}, '', url);
+    };
+
+    const applyOmg4Rotation = () => {
+        const entity = getGsplatEntity();
+        if (!entity) {
+            return;
+        }
+
+        entity.setLocalEulerAngles(currentOmg4Rotation[0], currentOmg4Rotation[1], currentOmg4Rotation[2]);
+        dom.omg4RotationValue.textContent = `OMG4 Rotation: ${currentOmg4Rotation.join(', ')}`;
+        syncOmg4RotationUrl();
+        global.app.renderNextFrame = true;
+    };
+
+    const updateOmg4RotationVisibility = () => {
+        dom.omg4RotationBlock.classList.toggle('hidden', !isOmg4Content());
+    };
+
+    const rotateOmg4 = (axis: 0 | 1 | 2, delta: number) => {
+        currentOmg4Rotation[axis] = normalizeDegrees(currentOmg4Rotation[axis] + delta);
+        applyOmg4Rotation();
+    };
+
+    dom.omg4RotateXNeg.addEventListener('click', () => rotateOmg4(0, -90));
+    dom.omg4RotateXPos.addEventListener('click', () => rotateOmg4(0, 90));
+    dom.omg4RotateYNeg.addEventListener('click', () => rotateOmg4(1, -90));
+    dom.omg4RotateYPos.addEventListener('click', () => rotateOmg4(1, 90));
+    dom.omg4RotateZNeg.addEventListener('click', () => rotateOmg4(2, -90));
+    dom.omg4RotateZPos.addEventListener('click', () => rotateOmg4(2, 90));
+    dom.omg4RotateReset.addEventListener('click', () => {
+        currentOmg4Rotation[0] = defaultOmg4Rotation[0];
+        currentOmg4Rotation[1] = defaultOmg4Rotation[1];
+        currentOmg4Rotation[2] = defaultOmg4Rotation[2];
+        applyOmg4Rotation();
+    });
+
+    dom.omg4ClearCache.addEventListener('click', async () => {
+        if (typeof caches === 'undefined') {
+            // continue to IndexedDB clear below
+        } else {
+            await caches.delete('supersplat-omg4-v1');
+        }
+
+        if (typeof indexedDB !== 'undefined') {
+            await new Promise<void>((resolve) => {
+                const request = indexedDB.deleteDatabase('supersplat-omg4-chunks');
+                request.onsuccess = () => resolve();
+                request.onerror = () => resolve();
+                request.onblocked = () => resolve();
+            });
+        }
+    });
+
+    updateOmg4RotationVisibility();
 
     // Remove focus from buttons after click so keyboard input isn't captured by the UI
     dom.ui.addEventListener('click', () => {
@@ -459,6 +538,9 @@ const initUI = (global: Global) => {
     // Show controls once loaded
     events.on('loaded:changed', () => {
         dom.controlsWrap.classList.remove('hidden');
+        if (isOmg4Content()) {
+            applyOmg4Rotation();
+        }
         showUI();
     });
 
