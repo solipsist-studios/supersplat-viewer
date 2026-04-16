@@ -44,6 +44,7 @@ const fetchSplatAnimBuffer = async (url: string, onProgress: (progress: number) 
             watermark = progress;
             onProgress(watermark);
         }
+
         return pump();
     };
     await pump();
