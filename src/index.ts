@@ -32,7 +32,7 @@ import { initXr } from './xr';
 import { version as appVersion } from '../package.json';
 
 const loadGsplat = async (app: AppBase, config: Config, progressCallback: (progress: number) => void) => {
-    const { contents, contentUrl, unified, aa } = config;
+    const { contents, contentUrl, aa } = config;
     const c = contents as unknown as ArrayBuffer;
     const filename = config.contentFilename ?? new URL(contentUrl, location.href).pathname.split('/').pop();
     const data = filename.toLowerCase() === 'meta.json' ? await (await contents).json() : undefined;
@@ -43,10 +43,10 @@ const loadGsplat = async (app: AppBase, config: Config, progressCallback: (progr
             const entity = new Entity('gsplat');
             entity.setLocalEulerAngles(0, 0, 180);
             entity.addComponent('gsplat', {
-                unified: unified || filename.toLowerCase().endsWith('lod-meta.json'),
+                unified: true,
                 asset
             });
-            const material = entity.gsplat.unified ? app.scene.gsplat.material : entity.gsplat.material;
+            const material = app.scene.gsplat.material;
             material.setDefine('GSPLAT_AA', aa);
             material.setParameter('alphaClip', 1 / 255);
             app.root.addChild(entity);
@@ -131,13 +131,15 @@ const loadSkybox = (app: AppBase, url: string) => {
 };
 
 const createApp = async (canvas: HTMLCanvasElement, config: Config) => {
+    const useWebGPU = config.renderer !== 'webgl';
+
     // Create the graphics device
     const device = await createGraphicsDevice(canvas, {
-        deviceTypes: config.webgpu ? ['webgpu'] : [],
+        deviceTypes: useWebGPU ? ['webgpu'] : [],
         antialias: false,
         depth: true,
         stencil: false,
-        xrCompatible: !config.webgpu,
+        xrCompatible: !useWebGPU,
         powerPreference: 'high-performance'
     });
 
@@ -198,7 +200,7 @@ const initCanvas = (global: Global) => {
         // and resetting canvas dimensions can invalidate the XRWebGLLayer
         if (app.xr?.active) return;
 
-        const s = state.retinaDisplay ? 1.0 : 0.5;
+        const s = state.performanceMode ? 0.5 : 1.0;
         const w = Math.ceil(deviceSize.width * s);
         const h = Math.ceil(deviceSize.height * s);
         if (w !== canvas.width || h !== canvas.height) {
@@ -216,7 +218,7 @@ const initCanvas = (global: Global) => {
     });
     resizeObserver.observe(canvas);
 
-    events.on('retinaDisplay:changed', () => {
+    events.on('performanceMode:changed', () => {
         app.renderNextFrame = true;
     });
 
@@ -236,10 +238,18 @@ const main = async (canvas: HTMLCanvasElement, settingsJson: any, config: Config
     // create events
     const events = new EventHandler();
 
+    // migrate legacy `retinaDisplay` preference (inverted) to `performanceMode`
+    const legacyRetina = localStorage.getItem('retinaDisplay');
+    if (legacyRetina !== null && localStorage.getItem('performanceMode') === null) {
+        localStorage.setItem('performanceMode', String(legacyRetina === 'false'));
+        localStorage.removeItem('retinaDisplay');
+    }
+    const storedPerformanceMode = localStorage.getItem('performanceMode');
+
     const state = observe(events, {
         loaded: false,
         readyToRender: false,
-        retinaDisplay: platform.mobile ? localStorage.getItem('retinaDisplay') === 'true' : localStorage.getItem('retinaDisplay') !== 'false',
+        performanceMode: storedPerformanceMode !== null ? storedPerformanceMode === 'true' : platform.mobile,
         progress: 0,
         inputMode: platform.mobile ? 'touch' : 'desktop',
         cameraMode: 'orbit',
@@ -279,7 +289,7 @@ const main = async (canvas: HTMLCanvasElement, settingsJson: any, config: Config
     camera.addComponent('camera');
 
     // Initialize XR support
-    if (!config.webgpu) {
+    if (config.renderer === 'webgl') {
         initXr(global);
     }
 

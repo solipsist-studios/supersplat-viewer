@@ -240,7 +240,7 @@ const initUI = (global: Global) => {
         'omg4RotateZNeg', 'omg4RotateZPos',
         'omg4RotateReset', 'omg4ClearCache',
         'orbitCamera', 'flyCamera', 'fpsCamera',
-        'retinaDisplayRow', 'retinaDisplayCheck', 'retinaDisplayOption',
+        'performanceModeRow', 'performanceModeCheck', 'performanceModeOption',
         'gamingControlsDivider', 'gamingControlsRow', 'gamingControlsCheck', 'gamingControlsOption',
         'desktopClickToWalk', 'desktopGamingControls',
         'touchFlyClickToWalk', 'touchFlyGamingControls',
@@ -407,17 +407,17 @@ const initUI = (global: Global) => {
         dom.exitFullscreen.classList[value ? 'remove' : 'add']('hidden');
     });
 
-    // Retina display toggle
-    dom.retinaDisplayRow.addEventListener('click', () => {
-        state.retinaDisplay = !state.retinaDisplay;
+    // Performance mode toggle
+    dom.performanceModeRow.addEventListener('click', () => {
+        state.performanceMode = !state.performanceMode;
     });
 
-    const updateRetinaDisplay = () => {
-        dom.retinaDisplayCheck.classList.toggle('active', state.retinaDisplay);
-        localStorage.setItem('retinaDisplay', String(state.retinaDisplay));
+    const updatePerformanceMode = () => {
+        dom.performanceModeCheck.classList.toggle('active', state.performanceMode);
+        localStorage.setItem('performanceMode', String(state.performanceMode));
     };
-    events.on('retinaDisplay:changed', updateRetinaDisplay);
-    updateRetinaDisplay();
+    events.on('performanceMode:changed', updatePerformanceMode);
+    updatePerformanceMode();
 
     // Gaming mode toggle (settings row visible on mobile only)
     dom.gamingControlsRow.addEventListener('click', () => {

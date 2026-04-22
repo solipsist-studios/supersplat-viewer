@@ -22,11 +22,10 @@ type Config = {
     hpr?: boolean;                              // override highPrecisionRendering (undefined = use settings)
     ministats: boolean;
     colorize: boolean;                          // render with LOD colorization
-    unified: boolean;                           // force unified rendering mode
     fullload: boolean;                          // load all streaming LOD data before first frame
     aa: boolean;                                // render with antialiasing
-    webgpu: boolean;                            // use WebGPU device
-    gpusort: boolean;                           // use GPU sorting for splats
+    budget?: number;                            // override splat budget in millions (overrides platform + performanceMode table)
+    renderer: 'webgl' | 'cpu' | 'gpu' | 'compute';
     heatmap: boolean;                           // render heatmap debug overlay (WebGPU only)
 };
 
@@ -34,7 +33,7 @@ type Config = {
 type State = {
     loaded: boolean;                            // true once first frame is rendered
     readyToRender: boolean;                     // don't render till this is set
-    retinaDisplay: boolean;
+    performanceMode: boolean;
     progress: number;                           // content loading progress 0-100
     inputMode: InputMode;
     cameraMode: CameraMode;

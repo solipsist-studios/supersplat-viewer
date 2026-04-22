@@ -20,6 +20,11 @@ import {
     TONEMAP_ACES2,
     TONEMAP_NEUTRAL,
     Vec3,
+    GSPLAT_DEBUG_LOD,
+    GSPLAT_DEBUG_NONE,
+    GSPLAT_RENDERER_RASTER_CPU_SORT,
+    GSPLAT_RENDERER_RASTER_GPU_SORT,
+    GSPLAT_RENDERER_COMPUTE,
     GSplatComponent,
     platform
 } from 'playcanvas';
@@ -32,21 +37,48 @@ import { VoxelCollision } from './collision';
 import { nearlyEquals } from './core/math';
 import { InputController } from './input-controller';
 import type { ExperienceSettings, PostEffectSettings } from './settings';
-import type { Global } from './types';
+import type { Config, Global } from './types';
 import { VoxelDebugOverlay } from './voxel-debug-overlay';
 import { WalkCursor } from './walk-cursor';
 
+// String.replace wrapper that warns when the source substring is missing, so
+// shader chunk patches against the engine fail loudly instead of silently
+// producing the original chunk.
+const patchChunk = (source: string, search: string, replacement: string, name: string): string => {
+    if (!source.includes(search)) {
+        console.warn(`patchChunk: substring not found in '${name}', shader chunk patch may be out of sync with the engine.`);
+    }
+    return source.replace(search, replacement);
+};
+
+// post-effect settings used when post effects are forcibly disabled (e.g. ?nofx
+// while the compute renderer still requires CameraFrame for tile composite).
+const noPostEffects: PostEffectSettings = {
+    sharpness: { enabled: false, amount: 0 },
+    bloom: { enabled: false, intensity: 0, blurLevel: 0 },
+    grading: { enabled: false, brightness: 0, contrast: 1, saturation: 1, tint: [1, 1, 1] },
+    vignette: { enabled: false, intensity: 0, inner: 0, outer: 0, curvature: 0 },
+    fringing: { enabled: false, intensity: 0 }
+};
+
 const gammaChunkGlsl = `
-vec3 prepareOutputFromGamma(vec3 gammaColor) {
+vec3 prepareOutputFromGamma(vec3 gammaColor, float depth) {
     return gammaColor;
 }
 `;
 
 const gammaChunkWgsl = `
-fn prepareOutputFromGamma(gammaColor: vec3f) -> vec3f {
+fn prepareOutputFromGamma(gammaColor: vec3f, depth: f32) -> vec3f {
     return gammaColor;
 }
 `;
+
+const rendererTable: Record<Config['renderer'], number> = {
+    'webgl': GSPLAT_RENDERER_RASTER_CPU_SORT,
+    'cpu': GSPLAT_RENDERER_RASTER_CPU_SORT,
+    'gpu': GSPLAT_RENDERER_RASTER_GPU_SORT,
+    'compute': GSPLAT_RENDERER_COMPUTE
+};
 
 const tonemapTable: Record<string, number> = {
     none: TONEMAP_NONE,
@@ -139,7 +171,8 @@ class Viewer {
         },
         wgsl: {
             gsplatOutputVS: string,
-            skyboxPS: string
+            skyboxPS: string,
+            gsplatTileCompositePS: string
         }
     };
 
@@ -154,10 +187,10 @@ class Viewer {
 
         // render skybox as plain equirect
         const glsl = ShaderChunks.get(graphicsDevice, 'glsl');
-        glsl.set('skyboxPS', glsl.get('skyboxPS').replace('mapRoughnessUv(uv, mipLevel)', 'uv'));
+        glsl.set('skyboxPS', patchChunk(glsl.get('skyboxPS'), 'mapRoughnessUv(uv, mipLevel)', 'uv', 'glsl skyboxPS'));
 
         const wgsl = ShaderChunks.get(graphicsDevice, 'wgsl');
-        wgsl.set('skyboxPS', wgsl.get('skyboxPS').replace('mapRoughnessUv(uv, uniform.mipLevel)', 'uv'));
+        wgsl.set('skyboxPS', patchChunk(wgsl.get('skyboxPS'), 'mapRoughnessUv(uv, uniform.mipLevel)', 'uv', 'wgsl skyboxPS'));
 
         this.origChunks = {
             glsl: {
@@ -166,7 +199,8 @@ class Viewer {
             },
             wgsl: {
                 gsplatOutputVS: wgsl.get('gsplatOutputVS'),
-                skyboxPS: wgsl.get('skyboxPS')
+                skyboxPS: wgsl.get('skyboxPS'),
+                gsplatTileCompositePS: wgsl.get('gsplatTileCompositePS')
             }
         };
 
@@ -327,7 +361,7 @@ class Viewer {
             state.hasCollision = !!collision;
 
             // Create voxel debug overlay in WebGPU only (requires voxel-specific properties)
-            if (collision instanceof VoxelCollision && config.webgpu) {
+            if (collision instanceof VoxelCollision && config.renderer !== 'webgl') {
                 this.voxelOverlay = new VoxelDebugOverlay(app, collision, camera);
                 this.voxelOverlay.mode = config.heatmap ? 'heatmap' : 'overlay';
                 state.hasVoxelOverlay = true;
@@ -385,8 +419,11 @@ class Viewer {
                 };
 
                 const getBudget = () => {
+                    if (config.budget !== undefined && Number.isFinite(config.budget) && config.budget > 0) {
+                        return config.budget;
+                    }
                     const quality = platform.mobile ? budgets.mobile : budgets.desktop;
-                    return state.retinaDisplay ? quality.high : quality.low;
+                    return state.performanceMode ? quality.low : quality.high;
                 };
 
                 if (config.fullload) {
@@ -447,12 +484,12 @@ class Viewer {
                             gsplat.lodRangeMin = 0;
                             gsplat.lodRangeMax = 1000;
                         };
-                        events.on('retinaDisplay:changed', updateLod);
+                        events.on('performanceMode:changed', updateLod);
                         updateLod();
 
                         // debug colorize lods
-                        gsplat.colorizeLod = config.colorize;
-                        gsplat.gpuSorting = config.gpusort;
+                        gsplat.debug = config.colorize ? GSPLAT_DEBUG_LOD : GSPLAT_DEBUG_NONE;
+                        gsplat.renderer = rendererTable[config.renderer];
 
                         // wait for the first valid frame to complete rendering
                         app.once('frameend', () => {
@@ -486,7 +523,13 @@ class Viewer {
         // hpr override takes precedence over settings.highPrecisionRendering
         const highPrecisionRendering = config.hpr ?? settings.highPrecisionRendering;
 
-        const enableCameraFrame = !app.xr.active && !config.nofx && (anyPostEffectEnabled(postEffectSettings) || highPrecisionRendering);
+        // compute renderer requires CameraFrame to perform tile composite output,
+        // so it must be enabled even when post effects are suppressed via ?nofx.
+        const computeRequiresCameraFrame = config.renderer === 'compute';
+        const postFxRequested = !config.nofx &&
+            (anyPostEffectEnabled(postEffectSettings) || highPrecisionRendering);
+
+        const enableCameraFrame = !app.xr.active && (computeRequiresCameraFrame || postFxRequested);
 
         if (enableCameraFrame) {
             // create instance
@@ -498,7 +541,8 @@ class Viewer {
             cameraFrame.enabled = true;
             cameraFrame.rendering.toneMapping = tonemapTable[settings.tonemapping];
             cameraFrame.rendering.renderFormats = highPrecisionRendering ? [PIXELFORMAT_RGBA16F, PIXELFORMAT_RGBA32F] : [];
-            applyPostEffectSettings(cameraFrame, postEffectSettings);
+            cameraFrame.rendering.sceneDepthMap = config.renderer === 'compute'; // needed for annotations
+            applyPostEffectSettings(cameraFrame, postFxRequested ? postEffectSettings : noPostEffects);
             cameraFrame.update();
 
             // force gsplat shader to write gamma-space colors
@@ -508,15 +552,30 @@ class Viewer {
             // force skybox shader to write gamma-space colors (inline pow replaces the
             // gammaCorrectOutput call which is a no-op under CameraFrame's GAMMA_NONE)
             ShaderChunks.get(app.graphicsDevice, 'glsl').set('skyboxPS',
-                this.origChunks.glsl.skyboxPS.replace(
+                patchChunk(
+                    this.origChunks.glsl.skyboxPS,
                     'gammaCorrectOutput(toneMap(processEnvironment(linear)))',
-                    'pow(toneMap(processEnvironment(linear)) + 0.0000001, vec3(1.0 / 2.2))'
+                    'pow(toneMap(processEnvironment(linear)) + 0.0000001, vec3(1.0 / 2.2))',
+                    'glsl skyboxPS gamma override'
                 )
             );
             ShaderChunks.get(app.graphicsDevice, 'wgsl').set('skyboxPS',
-                this.origChunks.wgsl.skyboxPS.replace(
+                patchChunk(
+                    this.origChunks.wgsl.skyboxPS,
                     'gammaCorrectOutput(toneMap(processEnvironment(linear)))',
-                    'pow(toneMap(processEnvironment(linear)) + 0.0000001, vec3f(1.0 / 2.2))'
+                    'pow(toneMap(processEnvironment(linear)) + 0.0000001, vec3f(1.0 / 2.2))',
+                    'wgsl skyboxPS gamma override'
+                )
+            );
+
+            // force tile composite shader to write gamma-space colors (inline pow replaces the
+            // gammaCorrectOutput call which is a no-op under CameraFrame's GAMMA_NONE)
+            ShaderChunks.get(app.graphicsDevice, 'wgsl').set('gsplatTileCompositePS',
+                patchChunk(
+                    this.origChunks.wgsl.gsplatTileCompositePS,
+                    'gammaCorrectOutput(toneMap(linear.rgb))',
+                    'pow(toneMap(linear.rgb) + 0.0000001, vec3f(1.0 / 2.2))',
+                    'wgsl gsplatTileCompositePS gamma override'
                 )
             );
 
@@ -538,6 +597,7 @@ class Viewer {
             ShaderChunks.get(app.graphicsDevice, 'wgsl').set('gsplatOutputVS', this.origChunks.wgsl.gsplatOutputVS);
             ShaderChunks.get(app.graphicsDevice, 'glsl').set('skyboxPS', this.origChunks.glsl.skyboxPS);
             ShaderChunks.get(app.graphicsDevice, 'wgsl').set('skyboxPS', this.origChunks.wgsl.skyboxPS);
+            ShaderChunks.get(app.graphicsDevice, 'wgsl').set('gsplatTileCompositePS', this.origChunks.wgsl.gsplatTileCompositePS);
 
             // restore original isColorBufferSrgb behavior
             RenderTarget.prototype.isColorBufferSrgb = origIsColorBufferSrgb;
