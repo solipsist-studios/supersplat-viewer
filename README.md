@@ -15,19 +15,46 @@ This is the official viewer for [SuperSplat](https://superspl.at).
 
 The web app compiles to a simple, self-contained static website.
 
-The app supports a few useful URL parameters (though please note these are subject to change):
+## URL Parameters
+
+The app supports a number of URL parameters (these are subject to change):
+
+### Content
 
 | Parameter | Description | Default |
 | --------- | ----------- | ------- |
 | `settings` | URL of the `settings.json` file | `./settings.json` |
-| `content` | URL of the scene file (`.ply`, `.sog`, `.meta.json`, `.lod-meta.json`) | `./scene.compressed.ply` |
+| `content` | URL of the scene file (`.ply`, `.sog`, `.compressed.ply`, `.meta.json`, `.lod-meta.json`) | `./scene.compressed.ply` |
 | `skybox` | URL of an equirectangular skybox image | |
 | `poster` | URL of an image to show while loading | |
-| `noui` | Hide UI | |
-| `noanim` | Start with animation paused | |
-| `ministats` | Show runtime CPU/GPU performance graphs | |
-| `unified` | Force unified rendering mode | |
-| `aa` | Enable antialiasing (not supported in unified mode) | |
+| `collision` | URL of a collision asset (`.glb` mesh, or voxel data). `voxel` is accepted as an alias. | |
+
+### UI
+
+| Parameter | Description |
+| --------- | ----------- |
+| `noui` | Hide the UI overlay |
+| `noanim` | Start with animation paused |
+| `ministats` | Show runtime CPU/GPU performance graphs |
+
+### Renderer
+
+By default the viewer uses WebGL. The flags below opt into WebGPU rendering paths:
+
+| Parameter | Description |
+| --------- | ----------- |
+| `compute` | Use the WebGPU compute renderer |
+| `gpu` | Use the WebGPU GPU sort renderer |
+| `cpu` | Use the WebGPU CPU sort renderer |
+| `aa` | Enable antialiasing (WebGL only) |
+| `nofx` | Disable post effects |
+| `hpr` | Override `highPrecisionRendering` from settings (`?hpr`, `?hpr=1`, `?hpr=true`, `?hpr=enable` to enable) |
+| `budget` | Override the splat budget, in millions of splats |
+| `colorize` | Render with LOD colorization |
+| `fullload` | Load all streaming LOD data before the first frame |
+| `heatmap` | Render the heatmap debug overlay (WebGPU only) |
+
+## NPM Package
 
 The web app source files are available as strings for templating when you import the package from npm:
 
@@ -42,6 +69,22 @@ console.log(css);
 
 // logs the source of index.js
 console.log(js);
+```
+
+The package also exports the settings schema types and helpers via the `/settings` subpath, which is useful for generating, validating or migrating a `settings.json` file:
+
+```ts
+import {
+    importSettings,
+    validateSettings,
+    type ExperienceSettings
+} from '@playcanvas/supersplat-viewer/settings';
+
+// throws on invalid input
+validateSettings(json);
+
+// migrates a v1 settings object to the latest schema
+const settings: ExperienceSettings = importSettings(json);
 ```
 
 ## Local Development
@@ -71,15 +114,13 @@ To initialize a local development environment for SuperSplat Viewer, ensure you 
 
 ## Settings Schema
 
-The `settings.json` file has the following schema (defined in TypeScript and taken from the SuperSplat editor):
-
+The `settings.json` file uses the schema below (defined in TypeScript and exported from `@playcanvas/supersplat-viewer/settings`). Legacy v1 settings produced by older SuperSplat releases are automatically migrated to v2 on load.
 
 ```typescript
 type AnimTrack = {
     name: string,
     duration: number,
     frameRate: number,
-    target: 'camera',
     loopMode: 'none' | 'repeat' | 'pingpong',
     interpolation: 'step' | 'spline',
     smoothness: number,
@@ -88,22 +129,51 @@ type AnimTrack = {
         values: {
             position: number[],
             target: number[],
+            fov: number[],
         }
     }
 };
 
+type CameraPose = {
+    position: [number, number, number],
+    target: [number, number, number],
+    fov: number
+};
+
+type Camera = {
+    initial: CameraPose
+};
+
+type Annotation = {
+    position: [number, number, number],
+    title: string,
+    text: string,
+    extras?: any,
+    camera: Camera
+};
+
+type PostEffectSettings = {
+    sharpness: { enabled: boolean, amount: number },
+    bloom:     { enabled: boolean, intensity: number, blurLevel: number },
+    grading:   { enabled: boolean, brightness: number, contrast: number, saturation: number, tint: [number, number, number] },
+    vignette:  { enabled: boolean, intensity: number, inner: number, outer: number, curvature: number },
+    fringing:  { enabled: boolean, intensity: number }
+};
+
 type ExperienceSettings = {
-    camera: {
-        fov?: number,
-        position?: number[],
-        target?: number[],
-        startAnim: 'none' | 'orbit' | 'animTrack',
-        animTrack: string
-    },
+    version: 2,
+    tonemapping: 'none' | 'linear' | 'filmic' | 'hejl' | 'aces' | 'aces2' | 'neutral',
+    highPrecisionRendering: boolean,
+    soundUrl?: string,
     background: {
-        color?: number[]
+        color: [number, number, number],
+        skyboxUrl?: string
     },
-    animTracks: AnimTrack[]
+    postEffectSettings: PostEffectSettings,
+    animTracks: AnimTrack[],
+    cameras: Camera[],
+    annotations: Annotation[],
+    startMode: 'default' | 'animTrack' | 'annotation'
 };
 ```
 
@@ -111,14 +181,31 @@ type ExperienceSettings = {
 
 ```json
 {
-  "background": {"color": [0,0,0,0]},
-  "camera": {
-    "fov": 1.0,
-    "position": [0,1,-1],
-    "target": [0,0,0],
-    "startAnim": "orbit"
-  },
-  "animTracks": []
+    "version": 2,
+    "tonemapping": "none",
+    "highPrecisionRendering": false,
+    "background": {
+        "color": [0, 0, 0]
+    },
+    "postEffectSettings": {
+        "sharpness": { "enabled": false, "amount": 0 },
+        "bloom":     { "enabled": false, "intensity": 1, "blurLevel": 2 },
+        "grading":   { "enabled": false, "brightness": 0, "contrast": 1, "saturation": 1, "tint": [1, 1, 1] },
+        "vignette":  { "enabled": false, "intensity": 0.5, "inner": 0.3, "outer": 0.75, "curvature": 1 },
+        "fringing":  { "enabled": false, "intensity": 0.5 }
+    },
+    "animTracks": [],
+    "cameras": [
+        {
+            "initial": {
+                "position": [0, 1, -1],
+                "target": [0, 0, 0],
+                "fov": 60
+            }
+        }
+    ],
+    "annotations": [],
+    "startMode": "default"
 }
 ```
 
