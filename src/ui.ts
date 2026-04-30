@@ -249,7 +249,7 @@ const initUI = (global: Global) => {
         'reset', 'frame',
         'loadingText', 'loadingBar',
         'joystickBase', 'joystick',
-        'showVoxels',
+        'showCollision',
         'tooltip',
         'annotationNav', 'annotationPrev', 'annotationNext', 'annotationInfo', 'annotationNavTitle',
         'supersplatBranding'
@@ -695,17 +695,17 @@ const initUI = (global: Global) => {
         dom.flyCamera.classList.toggle('right', !value);
     });
 
-    // Voxel overlay toggle (only visible when overlay is available)
-    events.on('hasVoxelOverlay:changed', (value: boolean) => {
-        dom.showVoxels.classList.toggle('hidden', !value);
+    // Collision overlay toggle (only visible when overlay is available)
+    events.on('hasCollisionOverlay:changed', (value: boolean) => {
+        dom.showCollision.classList.toggle('hidden', !value);
     });
 
-    dom.showVoxels.addEventListener('click', () => {
-        state.voxelOverlayEnabled = !state.voxelOverlayEnabled;
+    dom.showCollision.addEventListener('click', () => {
+        state.collisionOverlayEnabled = !state.collisionOverlayEnabled;
     });
 
-    events.on('voxelOverlayEnabled:changed', (value: boolean) => {
-        dom.showVoxels.classList.toggle('active', value);
+    events.on('collisionOverlayEnabled:changed', (value: boolean) => {
+        dom.showCollision.classList.toggle('active', value);
     });
 
     dom.settings.addEventListener('click', () => {
@@ -753,7 +753,7 @@ const initUI = (global: Global) => {
     tooltip.register(dom.fpsCamera, 'Walk Mode', 'top');
     tooltip.register(dom.reset, 'Reset Camera', 'bottom');
     tooltip.register(dom.frame, 'Frame Scene', 'bottom');
-    tooltip.register(dom.showVoxels, 'Show Voxels', 'top');
+    tooltip.register(dom.showCollision, 'Show Collision', 'top');
     tooltip.register(dom.settings, 'Settings', 'top');
     tooltip.register(dom.info, 'Help', 'top');
     tooltip.register(dom.arMode, 'Enter AR', 'top');

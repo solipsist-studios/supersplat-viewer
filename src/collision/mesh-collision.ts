@@ -33,6 +33,19 @@ interface TriangleData {
     count: number;
 }
 
+// Public view of the triangle SoA exposed by MeshCollision for debug
+// overlays. The `readonly` qualifiers only prevent reassigning the *fields*;
+// callers can technically still mutate the underlying typed arrays. By
+// convention the buffers are owned by the collision and must not be written
+// to — they back live BVH / collision queries.
+interface TriangleSoA {
+    readonly v0x: Float32Array; readonly v0y: Float32Array; readonly v0z: Float32Array;
+    readonly v1x: Float32Array; readonly v1y: Float32Array; readonly v1z: Float32Array;
+    readonly v2x: Float32Array; readonly v2y: Float32Array; readonly v2z: Float32Array;
+    readonly nx: Float32Array; readonly ny: Float32Array; readonly nz: Float32Array;
+    readonly count: number;
+}
+
 // ---- BVH construction ----
 
 const MAX_LEAF_TRIS = 4;
@@ -398,6 +411,18 @@ class MeshCollision implements Collision {
 
         this._tris = tris;
         this._root = buildBVH(tris, 0, numTris);
+    }
+
+    // ---- Public accessors ----
+
+    /**
+     * Read-only view of the de-indexed triangle data, used by debug overlays.
+     * The underlying typed arrays are reused and must not be mutated.
+     *
+     * @returns the triangle SoA backing this collision.
+     */
+    get triangles(): TriangleSoA {
+        return this._tris;
     }
 
     // ---- Collision interface ----
@@ -865,3 +890,4 @@ class MeshCollision implements Collision {
 }
 
 export { MeshCollision };
+export type { TriangleSoA };
