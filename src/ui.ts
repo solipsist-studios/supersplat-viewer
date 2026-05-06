@@ -242,7 +242,7 @@ const initUI = (global: Global) => {
         'orbitCamera', 'flyCamera', 'fpsCamera',
         'performanceModeRow', 'performanceModeCheck', 'performanceModeOption',
         'gamingControlsDivider', 'gamingControlsRow', 'gamingControlsCheck', 'gamingControlsOption',
-        'desktopClickToWalk', 'desktopGamingControls',
+        'desktopFlyClickToFly', 'desktopClickToWalk', 'desktopGamingControls',
         'touchFlyClickToWalk', 'touchFlyGamingControls',
         'touchClickToWalk', 'touchGamingControls',
         'walkHint',
@@ -447,10 +447,9 @@ const initUI = (global: Global) => {
 
     const updateGamingControls = () => {
         dom.gamingControlsCheck.classList.toggle('active', state.gamingControls);
-        if (state.inputMode !== 'desktop') {
-            dom.desktopClickToWalk.classList.toggle('hidden', state.gamingControls);
-            dom.desktopGamingControls.classList.toggle('hidden', !state.gamingControls);
-        }
+        dom.desktopFlyClickToFly.classList.toggle('hidden', state.gamingControls);
+        dom.desktopClickToWalk.classList.toggle('hidden', state.gamingControls);
+        dom.desktopGamingControls.classList.toggle('hidden', !state.gamingControls);
         dom.touchFlyClickToWalk.classList.toggle('hidden', state.gamingControls);
         dom.touchFlyGamingControls.classList.toggle('hidden', !state.gamingControls);
         dom.touchClickToWalk.classList.toggle('hidden', state.gamingControls);
@@ -459,6 +458,7 @@ const initUI = (global: Global) => {
     };
 
     events.on('gamingControls:changed', updateGamingControls);
+    events.on('inputMode:changed', updateGamingControls);
     updateGamingControls();
 
     // AR/VR
@@ -535,7 +535,28 @@ const initUI = (global: Global) => {
     let uiTimeout: ReturnType<typeof setTimeout> | null = null;
     let annotationVisible = false;
 
+    const isPointerCapturedMode = () => (
+        state.inputMode === 'desktop' &&
+        state.gamingControls &&
+        (state.cameraMode === 'walk' || state.cameraMode === 'fly')
+    );
+
+    const hideUI = () => {
+        if (uiTimeout) {
+            clearTimeout(uiTimeout);
+            uiTimeout = null;
+        }
+        dom.infoPanel.classList.add('hidden');
+        dom.settingsPanel.classList.add('hidden');
+        dom.walkHint.classList.add('hidden');
+        state.controlsHidden = true;
+    };
+
     const showUI = () => {
+        if (isPointerCapturedMode()) {
+            hideUI();
+            return;
+        }
         if (uiTimeout) {
             clearTimeout(uiTimeout);
         }
@@ -558,6 +579,18 @@ const initUI = (global: Global) => {
     });
 
     events.on('inputEvent', showUI);
+
+    const updateCapturedUI = () => {
+        if (isPointerCapturedMode()) {
+            hideUI();
+        } else {
+            showUI();
+        }
+    };
+
+    events.on('cameraMode:changed', updateCapturedUI);
+    events.on('inputMode:changed', updateCapturedUI);
+    events.on('gamingControls:changed', updateCapturedUI);
 
     // keep UI visible while an annotation tooltip is shown
     events.on('annotation.activate', () => {
@@ -671,7 +704,7 @@ const initUI = (global: Global) => {
     };
 
     events.on('cameraMode:changed', (value: string) => {
-        if (value === 'walk' && !walkHintShown) {
+        if (value === 'walk' && !walkHintShown && !isPointerCapturedMode()) {
             walkHintShown = true;
             dom.walkHint.textContent = getWalkHintText();
             dom.walkHint.classList.remove('hidden');

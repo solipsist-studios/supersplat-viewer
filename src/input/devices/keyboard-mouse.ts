@@ -1,5 +1,6 @@
 import { KeyboardMouseSource, Vec3 } from 'playcanvas';
 
+import { damp } from '../../core/math';
 import type { Global } from '../../types';
 import {
     DISPLACEMENT_SCALE,
@@ -9,7 +10,9 @@ import {
 import type { CameraInputFrame, InputDevice, UpdateContext } from '../shared';
 
 const tmpV1 = new Vec3();
+const tmpV2 = new Vec3();
 const keyMove = new Vec3();
+const flyKeyVelocity = new Vec3();
 const panMove = new Vec3();
 const mouseRotate = new Vec3();
 const wheelMove = new Vec3();
@@ -45,6 +48,10 @@ class KeyboardMouseDevice implements InputDevice {
 
     mouseRotateSensitivity: number = 0.5;
 
+    flyMoveAccelerationDamping: number = 0.992;
+
+    flyMoveDecelerationDamping: number = 0.993;
+
     private _source: KeyboardMouseSource = new KeyboardMouseSource();
 
     private _global: Global | null = null;
@@ -60,6 +67,8 @@ class KeyboardMouseDevice implements InputDevice {
     private _ctrl = 0;
 
     private _jump = 0;
+
+    private _flyKeyVelocity = new Vec3();
 
     /**
      * Get the underlying source so other code (PointerLockManager) can
@@ -102,18 +111,26 @@ class KeyboardMouseDevice implements InputDevice {
             this._buttons[i] += button[i];
         }
 
-        const { isWalk, isFirstPerson, dt, distance, cameraComponent, mode, touchCount } = ctx;
+        const { isFly, isWalk, isFirstPerson, gamingControls, dt, distance, cameraComponent, mode, touchCount } = ctx;
+        const pan = this._buttons[2] || +(button[2] === -1) || +(touchCount > 1);
 
-        // walk-cancel and requestFirstPerson events (driven by WASD axis)
+        // auto-move cancellation and requestFirstPerson events (driven by keyboard axes)
         if (isWalk && (this._axis.x !== 0 || this._axis.z !== 0)) {
             events.fire('walkCancel');
+        }
+        if (isFly && (this._axis.x !== 0 || this._axis.y !== 0 || this._axis.z !== 0)) {
+            events.fire('flyCancel');
+        }
+        if (isFly && wheel[0] !== 0) {
+            events.fire('flyCancel');
+        }
+        if (isFly && (gamingControls || pan) && (mouse[0] !== 0 || mouse[1] !== 0)) {
+            events.fire('flyCancel');
         }
         if (!isFirstPerson && this._axis.length() > 0) {
             events.fire('inputEvent', 'requestFirstPerson');
         }
 
-        // pan flag: RMB held, RMB just released this frame, or 2+ touches active
-        const pan = this._buttons[2] || +(button[2] === -1) || +(touchCount > 1);
         const orbitFactor = isFirstPerson ? cameraComponent.fov / 120 : 1;
 
         const { deltas } = frame;
@@ -130,7 +147,21 @@ class KeyboardMouseDevice implements InputDevice {
         const shiftMul = isWalk ? 2 : 4;
         const ctrlMul = isWalk ? 0.5 : 0.25;
         const speed = this.moveSpeed * (this._shift ? shiftMul : this._ctrl ? ctrlMul : 1);
-        v.add(keyMove.mulScalar((isFirstPerson ? 1 : 0) * speed * dt));
+        keyMove.mulScalar(speed);
+        if (isFly) {
+            flyKeyVelocity.copy(keyMove);
+            const damping = flyKeyVelocity.lengthSq() > this._flyKeyVelocity.lengthSq() ?
+                this.flyMoveAccelerationDamping :
+                this.flyMoveDecelerationDamping;
+            this._flyKeyVelocity.lerp(this._flyKeyVelocity, flyKeyVelocity, damp(damping, dt));
+            if (flyKeyVelocity.lengthSq() === 0 && this._flyKeyVelocity.lengthSq() < 1e-4) {
+                this._flyKeyVelocity.set(0, 0, 0);
+            }
+            keyMove.copy(this._flyKeyVelocity);
+        } else {
+            this._flyKeyVelocity.set(0, 0, 0);
+        }
+        v.add(tmpV2.copy(keyMove).mulScalar((isFirstPerson ? 1 : 0) * dt));
         if (isWalk) {
             // Pass jump signal as raw Y; WalkController uses move[1] > 0 as
             // a boolean trigger.

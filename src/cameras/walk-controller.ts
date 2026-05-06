@@ -1,11 +1,15 @@
-import { math, Vec3, Quat } from 'playcanvas';
+import { math, Vec3 } from 'playcanvas';
 
 import type { Collision, PushOut } from '../collision';
 import type { CameraFrame, Camera, CameraController } from './camera';
+import { applyFrameRotation, setBasisOffset, setYawBasis } from './camera-utils';
 import { damp } from '../core/math';
 
 const FIXED_DT = 1 / 60;
 const MAX_SUBSTEPS = 10;
+const SPAWN_HIT_EPSILON = 1e-3;
+const SPAWN_SEARCH_MIN_STEP = 0.05;
+const SPAWN_SEARCH_MAX_STEPS = 128;
 
 /** Pre-allocated push-out vector for capsule collision */
 const out: PushOut = { x: 0, y: 0, z: 0 };
@@ -18,14 +22,14 @@ const right = new Vec3();
 const moveStep = [0, 0, 0];
 
 const offset = new Vec3();
-const rotation = new Quat();
+const spawnProbe = new Vec3();
 
 /**
- * First-person camera controller with spring-damper suspension over voxel terrain.
+ * First-person camera controller with spring-damper suspension over collision terrain.
  *
  * Movement is constrained to the horizontal plane (XZ) relative to the camera yaw.
  * Vertical positioning uses a spring-damper system that hovers the capsule above the
- * voxel surface, filtering out terrain noise for smooth camera motion. Capsule
+ * collision surface, filtering out terrain noise for smooth camera motion. Capsule
  * collision handles walls and obstacles. When airborne, normal gravity applies.
  */
 class WalkController implements CameraController {
@@ -96,7 +100,7 @@ class WalkController implements CameraController {
 
     /**
      * Target clearance from capsule bottom to ground surface in meters.
-     * The capsule hovers this far above terrain to avoid bouncing on noisy voxels.
+     * The capsule hovers this far above terrain to avoid bouncing on noisy surfaces.
      */
     hoverHeight = 0.2;
 
@@ -116,11 +120,24 @@ class WalkController implements CameraController {
      */
     groundProbeRange = 1.0;
 
+    /**
+     * Maximum vertical raycast distance to search for walk spawn ground.
+     */
+    spawnSearchRange = 1000;
+
     private _position = new Vec3();
 
     private _prevPosition = new Vec3();
 
     private _angles = new Vec3();
+
+    private _distance = 1;
+
+    private _spawnPosition = new Vec3();
+
+    private _spawnAngles = new Vec3();
+
+    private _spawnDistance = 1;
 
     private _velocity = new Vec3();
 
@@ -134,19 +151,23 @@ class WalkController implements CameraController {
 
     private _jumpHeld = false;
 
+    private _spawnGrounded = false;
+
+    private _hasSpawn = false;
+
     onEnter(camera: Camera): void {
         this.goto(camera);
         if (this.collision) {
-            this._resolveSpawnCollision();
-            this._prevPosition.copy(this._position);
-
-            const groundY = this._probeGround(this._position);
-            if (groundY !== null) {
+            this._hasSpawn = false;
+            if (this._findSpawnPosition(camera.position, spawnProbe)) {
+                this._position.copy(spawnProbe);
                 this._grounded = true;
                 this._velocity.y = 0;
-                this._position.y = groundY + this.hoverHeight + this.eyeHeight;
-                this._prevPosition.copy(this._position);
+                this._resolveSpawnCollision();
+                this._storeSpawn();
             }
+
+            this._prevPosition.copy(this._position);
         }
     }
 
@@ -154,8 +175,7 @@ class WalkController implements CameraController {
         const { move, rotate } = inputFrame.read();
 
         // apply rotation at display rate for responsive mouse look
-        this._angles.add(v.set(-rotate[1], -rotate[0], 0));
-        this._angles.x = math.clamp(this._angles.x, -90, 90);
+        applyFrameRotation(this._angles, rotate);
 
         // accumulate movement input so frames without a physics step don't lose input
         this._pendingMove[0] += move[0];
@@ -186,6 +206,7 @@ class WalkController implements CameraController {
         const alpha = this._accumulator / FIXED_DT;
         camera.position.lerp(this._prevPosition, this._position, alpha);
         camera.angles.set(this._angles.x, this._angles.y, 0);
+        camera.distance = this._distance;
         camera.fov = this.fov;
     }
 
@@ -231,12 +252,8 @@ class WalkController implements CameraController {
         }
 
         // move
-        rotation.setFromEulerAngles(0, this._angles.y, 0);
-        rotation.transformVector(Vec3.FORWARD, forward);
-        rotation.transformVector(Vec3.RIGHT, right);
-        offset.set(0, 0, 0);
-        offset.add(forward.mulScalar(move[2]));
-        offset.add(right.mulScalar(move[0]));
+        setYawBasis(this._angles.y, forward, right);
+        setBasisOffset(offset, move[0], 0, move[2], forward, right, Vec3.UP);
         this._velocity.add(offset.mulScalar(this._grounded ? this.moveGroundSpeed : this.moveAirSpeed));
 
         const dampFactor = this._grounded ? this.velocityDampingGround : this.velocityDampingAir;
@@ -266,11 +283,51 @@ class WalkController implements CameraController {
 
         // angles (clamp pitch to avoid gimbal lock)
         this._angles.set(camera.angles.x, camera.angles.y, 0);
+        this._distance = camera.distance;
 
         // reset velocity and state
+        this._resetMotion();
+    }
+
+    /**
+     * Reset the controller to the spawn pose captured on the last walk-mode entry.
+     *
+     * @param camera - Camera state to update with the spawn pose.
+     * @returns True if a spawn pose was available.
+     */
+    resetToSpawn(camera: Camera): boolean {
+        if (!this._hasSpawn) {
+            return false;
+        }
+
+        this._position.copy(this._spawnPosition);
+        this._prevPosition.copy(this._position);
+        this._angles.copy(this._spawnAngles);
+        this._distance = this._spawnDistance;
+        this._resetMotion();
+        this._grounded = this._spawnGrounded;
+
+        camera.position.copy(this._position);
+        camera.angles.copy(this._angles);
+        camera.distance = this._distance;
+        camera.fov = this.fov;
+
+        return true;
+    }
+
+    private _storeSpawn() {
+        this._spawnPosition.copy(this._position);
+        this._spawnAngles.copy(this._angles);
+        this._spawnDistance = this._distance;
+        this._spawnGrounded = this._grounded;
+        this._hasSpawn = true;
+    }
+
+    private _resetMotion() {
         this._velocity.set(0, 0, 0);
         this._grounded = false;
         this._jumping = false;
+        this._jumpHeld = false;
         this._pendingMove[0] = 0;
         this._pendingMove[1] = 0;
         this._pendingMove[2] = 0;
@@ -278,28 +335,177 @@ class WalkController implements CameraController {
     }
 
     /**
-     * Push the capsule upward until it clears solid geometry, up to a maximum of
-     * 100 iterations. Only used at spawn time to handle the case where walk mode
-     * activates inside a solid region. Per-frame collision resolution is unaffected,
-     * avoiding the ceiling launch bug.
+     * Resolve the capsule out of solid geometry at spawn time. This is only used
+     * when walk mode activates inside collision.
      */
     private _resolveSpawnCollision() {
-        const half = this.capsuleHeight * 0.5 - this.capsuleRadius;
-        const minStep = this.capsuleRadius;
-
         for (let i = 0; i < 100; i++) {
-            const center = this._position.y - this.eyeHeight + this.capsuleHeight * 0.5;
-            if (!this.collision!.queryCapsule(this._position.x, center, this._position.z, half, this.capsuleRadius, out)) {
+            if (!this._queryCapsule(this._position)) {
                 break;
             }
-            this._position.y += Math.max(out.y, minStep);
+            this._position.add(v.set(out.x, out.y, out.z));
         }
+    }
+
+    /**
+     * Find an eye position for spawning into walk mode. Prefer ground directly
+     * below the camera; if that is not usable, search down and then up for the
+     * first clear walk placement with ground below it.
+     *
+     * @param pos - Incoming camera position.
+     * @param outPos - Receives the resolved eye position.
+     * @returns True if a spawn position was found.
+     */
+    private _findSpawnPosition(pos: Vec3, outPos: Vec3): boolean {
+        const insideSolid = this._isInsideSolid(pos);
+
+        if (this._findClearSpawnGroundBelow(pos, this.spawnSearchRange, !insideSolid, outPos)) {
+            return true;
+        }
+
+        return this._searchSpawnGround(pos, -1, outPos) || this._searchSpawnGround(pos, 1, outPos);
+    }
+
+    /**
+     * Search vertically for a clear walk spawn placement with ground below it.
+     *
+     * @param pos - Starting position.
+     * @param direction - Vertical search direction: -1 down, 1 up.
+     * @param outPos - Receives the resolved eye position.
+     * @returns True if a spawn position was found.
+     */
+    private _searchSpawnGround(pos: Vec3, direction: -1 | 1, outPos: Vec3): boolean {
+        const step = Math.max(
+            this.capsuleRadius,
+            this.hoverHeight,
+            SPAWN_SEARCH_MIN_STEP,
+            this.spawnSearchRange / SPAWN_SEARCH_MAX_STEPS
+        );
+        const endY = pos.y + direction * this.spawnSearchRange;
+
+        for (let y = pos.y + direction * step; direction < 0 ? y >= endY : y <= endY; y += direction * step) {
+            spawnProbe.set(pos.x, y, pos.z);
+
+            if (this._findClearSpawnGroundBelow(spawnProbe, this.spawnSearchRange, false, outPos)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Find the first collision surface below a point that can hold a clear walk
+     * capsule.
+     *
+     * @param pos - Ray origin.
+     * @param range - Maximum ray distance.
+     * @param allowInitialHit - Whether a hit at the ray origin is valid.
+     * @param outPos - Receives the resolved eye position.
+     * @returns True if a usable ground position was found.
+     */
+    private _findClearSpawnGroundBelow(pos: Vec3, range: number, allowInitialHit: boolean, outPos: Vec3): boolean {
+        const hit = this.collision!.queryRay(pos.x, pos.y, pos.z, 0, -1, 0, range);
+        if (!hit) {
+            return false;
+        }
+
+        if (!allowInitialHit && Math.abs(pos.y - hit.y) <= SPAWN_HIT_EPSILON) {
+            return false;
+        }
+
+        outPos.set(pos.x, this._getEyeYFromGround(hit.y), pos.z);
+        const clear = !this._queryCapsule(outPos);
+        const accepted = clear || this._resolveSpawnCandidate(outPos);
+
+        return accepted;
+    }
+
+    /**
+     * Convert a ground height to the walk controller's eye position.
+     *
+     * @param groundY - Ground surface height.
+     * @returns Eye position Y.
+     */
+    private _getEyeYFromGround(groundY: number): number {
+        return groundY + this.hoverHeight + this.eyeHeight;
+    }
+
+    /**
+     * Test whether the incoming camera point starts inside solid collision.
+     *
+     * @param pos - Point to test.
+     * @returns True if the point overlaps solid collision.
+     */
+    private _isInsideSolid(pos: Vec3): boolean {
+        return this.collision!.querySphere(pos.x, pos.y, pos.z, SPAWN_HIT_EPSILON, out);
+    }
+
+    /**
+     * Try to resolve a spawn candidate and verify it remains supported by ground.
+     *
+     * @param pos - Candidate eye position to resolve in place.
+     * @returns True if the candidate can be made clear and still stand on ground.
+     */
+    private _resolveSpawnCandidate(pos: Vec3): boolean {
+        const startX = pos.x;
+        const startY = pos.y;
+        const startZ = pos.z;
+        const maxResolveDistance = this.capsuleRadius + this.hoverHeight;
+        const maxResolveDistanceSq = maxResolveDistance * maxResolveDistance;
+
+        for (let i = 0; i < 100; i++) {
+            if (!this._queryCapsule(pos)) {
+                return this._hasSpawnGroundSupport(pos);
+            }
+
+            pos.add(v.set(out.x, out.y, out.z));
+
+            const dx = pos.x - startX;
+            const dy = pos.y - startY;
+            const dz = pos.z - startZ;
+            if (dx * dx + dy * dy + dz * dz > maxResolveDistanceSq) {
+                return false;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Verify the resolved spawn candidate is still standing close to ground.
+     *
+     * @param pos - Resolved candidate eye position.
+     * @returns True if ground support is still valid.
+     */
+    private _hasSpawnGroundSupport(pos: Vec3): boolean {
+        const groundY = this._probeGround(pos);
+        if (groundY === null) {
+            return false;
+        }
+
+        const clearance = pos.y - this.eyeHeight - groundY;
+        return clearance >= -SPAWN_HIT_EPSILON &&
+            clearance <= this.hoverHeight + this.capsuleRadius + SPAWN_HIT_EPSILON;
+    }
+
+    /**
+     * Query the current walk capsule at the supplied eye position.
+     *
+     * @param pos - Eye position in PlayCanvas world space.
+     * @returns True if the capsule overlaps collision.
+     */
+    private _queryCapsule(pos: Vec3): boolean {
+        const half = this.capsuleHeight * 0.5 - this.capsuleRadius;
+        const center = pos.y - this.eyeHeight + this.capsuleHeight * 0.5;
+
+        return this.collision!.queryCapsule(pos.x, center, pos.z, half, this.capsuleRadius, out);
     }
 
     /**
      * Cast multiple rays downward to find the average ground surface height.
      * Uses 5 rays (center + 4 cardinal at capsule radius) to spatially filter
-     * noisy voxel heights, giving the spring a smoother target.
+     * noisy collision heights, giving the spring a smoother target.
      *
      * @param pos - Eye position in PlayCanvas world space.
      * @returns Average ground surface Y in PlayCanvas space, or null if no ground found.

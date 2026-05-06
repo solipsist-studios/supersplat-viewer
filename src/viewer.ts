@@ -37,6 +37,7 @@ import { MeshCollision, VoxelCollision } from './collision';
 import { nearlyEquals } from './core/math';
 import { InputController } from './input-controller';
 import { MeshDebugOverlay } from './mesh-debug-overlay';
+import { Picker } from './picker';
 import type { ExperienceSettings, PostEffectSettings } from './settings';
 import type { Config, Global } from './types';
 import { VoxelDebugOverlay } from './voxel-debug-overlay';
@@ -79,6 +80,12 @@ const rendererTable: Record<Config['renderer'], number> = {
     'cpu-sort': GSPLAT_RENDERER_RASTER_CPU_SORT,
     'gpu-sort': GSPLAT_RENDERER_RASTER_GPU_SORT,
     'compute': GSPLAT_RENDERER_COMPUTE
+};
+
+type GSplatOctreeResourceLike = {
+    octree?: {
+        lodLevels: number;
+    } | null;
 };
 
 const tonemapTable: Record<string, number> = {
@@ -156,6 +163,8 @@ class Viewer {
     inputController: InputController;
 
     cameraManager: CameraManager;
+
+    picker: Picker;
 
     annotations: Annotations;
 
@@ -358,7 +367,8 @@ class Viewer {
                 this.annotations = new Annotations(global, this.cameraFrame != null);
             }
 
-            this.inputController = new InputController(global);
+            this.picker = new Picker(app, camera);
+            this.inputController = new InputController(global, this.picker);
             this.inputController.collision = collision ?? null;
 
             state.hasCollision = !!collision;
@@ -387,8 +397,8 @@ class Viewer {
             this.cameraManager = new CameraManager(global, sceneBound, collision);
             applyCamera(this.cameraManager.camera);
 
-            if (collision) {
-                this.walkCursor = new WalkCursor(app, camera, collision, events, state);
+            if (!config.noui) {
+                this.walkCursor = new WalkCursor(app, camera, collision ?? null, events, state, this.picker);
             }
 
             const { instance } = gsplat;
@@ -445,7 +455,8 @@ class Viewer {
                     gsplat.lodRangeMax = 1000;
                 } else {
                     // reveal once low lod has loaded for fastest possible reveal
-                    const lodLevels = results[0].gsplat.resource?.octree?.lodLevels;
+                    const resource = results[0].gsplat.resource as GSplatOctreeResourceLike | null;
+                    const lodLevels = resource?.octree?.lodLevels;
                     if (lodLevels) {
                         gsplat.lodRangeMax = gsplat.lodRangeMin = lodLevels - 1;
                     }

@@ -1,26 +1,35 @@
 import { Vec3 } from 'playcanvas';
 
 import type { Collision } from '../../collision';
-import { Picker } from '../../picker';
+import type { Picker } from '../../picker';
 import type { Global } from '../../types';
 import { TAP_EPSILON } from '../shared';
 
 const tmpV = new Vec3();
 
+const canTargetFly = (global: Global) => (
+    global.state.cameraMode === 'fly' &&
+    !(global.state.inputMode === 'desktop' && global.state.gamingControls)
+);
+
+type PickTarget = {
+    position: Vec3;
+    normal: Vec3;
+};
+
 /**
- * Click-to-walk (desktop), tap-to-walk (mobile), and double-click-to-pick
- * (orbit / fly) interaction. Uses a Picker against the collision mesh to
- * resolve the world-space target and fires `walkTo` / `pick` for the
- * camera manager to consume.
+ * Click-to-walk / click-to-fly / click-to-focus (desktop), tap equivalents
+ * on mobile, and double-click-to-pick fallback. Uses collision first and
+ * rendered-scene picking when collision is unavailable.
  */
 class WalkInteraction {
     collision: Collision | null = null;
 
+    private _picker: Picker;
+
     private _global: Global | null = null;
 
     private _canvas: HTMLCanvasElement | null = null;
-
-    private _picker: Picker | null = null;
 
     private _lastPointerOffsetX = 0;
 
@@ -30,21 +39,39 @@ class WalkInteraction {
 
     private _mouseClickDelta = 0;
 
+    private _suppressClick = false;
+
+    private _targetPickRequest = 0;
+
     private _lastTap = { time: 0, x: 0, y: 0 };
+
+    constructor(picker: Picker) {
+        this._picker = picker;
+    }
 
     private _updateCursor = () => {
         const global = this._global;
         const canvas = this._canvas;
         if (!global || !canvas) return;
         const { state } = global;
-        if (state.cameraMode === 'walk' && !state.gamingControls && state.inputMode === 'desktop') {
+        const canClickTarget = state.inputMode === 'desktop' && (
+            (state.cameraMode === 'walk' && !state.gamingControls) ||
+            canTargetFly(global) ||
+            state.cameraMode === 'orbit'
+        );
+        if (canClickTarget) {
             canvas.style.cursor = this._mouseClickTracking ? 'default' : 'pointer';
         } else {
             canvas.style.cursor = '';
         }
     };
 
-    private _pickCollision(offsetX: number, offsetY: number): { position: Vec3; normal: Vec3 } | null {
+    private _onCameraModeChanged = () => {
+        this._targetPickRequest++;
+        this._updateCursor();
+    };
+
+    private _pickCollision(offsetX: number, offsetY: number): PickTarget | null {
         if (!this.collision || !this._global) return null;
 
         const camera = this._global.camera;
@@ -68,28 +95,75 @@ class WalkInteraction {
         };
     }
 
+    private async _pickSceneTarget(offsetX: number, offsetY: number): Promise<PickTarget | null> {
+        const global = this._global;
+        const canvas = this._canvas;
+        if (!global || !canvas) return null;
+
+        const collisionTarget = this._pickCollision(offsetX, offsetY);
+        if (collisionTarget) {
+            return collisionTarget;
+        }
+
+        const result = await this._picker.pickSurface(
+            offsetX / canvas.clientWidth,
+            offsetY / canvas.clientHeight
+        );
+        if (result) {
+            return result;
+        }
+
+        return null;
+    }
+
+    private async _flyToPickedPosition(offsetX: number, offsetY: number) {
+        const global = this._global;
+        if (!global || !canTargetFly(global)) return;
+
+        const request = ++this._targetPickRequest;
+        const target = await this._pickSceneTarget(offsetX, offsetY);
+        if (target && request === this._targetPickRequest && this._global && canTargetFly(this._global)) {
+            this._global.events.fire('flyTo', target.position, target.normal);
+        }
+    }
+
+    private async _focusPickedPosition(offsetX: number, offsetY: number) {
+        const global = this._global;
+        if (!global || global.state.cameraMode !== 'orbit') return;
+
+        const request = ++this._targetPickRequest;
+        const target = await this._pickSceneTarget(offsetX, offsetY);
+        if (target && request === this._targetPickRequest && this._global?.state.cameraMode === 'orbit') {
+            const { events } = this._global;
+            events.fire('orbitTarget:set', target.position, target.normal);
+            events.fire('pick', target.position);
+        }
+    }
+
     private _onPointerDown = (event: PointerEvent) => {
         const global = this._global;
         if (!global) return;
         const { events } = global;
 
-        // record offsets for click/tap-to-walk picking
+        // record offsets for click/tap target picking
         this._lastPointerOffsetX = event.offsetX;
         this._lastPointerOffsetY = event.offsetY;
 
-        // start desktop click-to-walk tracking
+        // start desktop click target tracking
         if (event.pointerType !== 'touch' && event.button === 0) {
             this._mouseClickTracking = true;
             this._mouseClickDelta = 0;
             this._updateCursor();
         }
 
-        // manual double-tap detection (iOS doesn't send dblclick)
+        // Manual double-click/tap detection for platforms that do not emit
+        // reliable native dblclick events on the canvas.
         const now = Date.now();
         const delay = Math.max(0, now - this._lastTap.time);
         if (delay < 300 &&
             Math.abs(event.clientX - this._lastTap.x) < 8 &&
             Math.abs(event.clientY - this._lastTap.y) < 8) {
+            this._suppressClick = true;
             events.fire('inputEvent', 'dblclick', event);
             this._lastTap.time = 0;
         } else {
@@ -110,6 +184,8 @@ class WalkInteraction {
             if (prev < TAP_EPSILON && this._mouseClickDelta >= TAP_EPSILON) {
                 if (state.cameraMode === 'walk' && !state.gamingControls) {
                     events.fire('walkCancel');
+                } else if (canTargetFly(global)) {
+                    events.fire('flyCancel');
                 }
             }
         }
@@ -123,10 +199,20 @@ class WalkInteraction {
         if (this._mouseClickTracking && event.pointerType !== 'touch' && event.button === 0) {
             this._mouseClickTracking = false;
             this._updateCursor();
-            if (this._mouseClickDelta < TAP_EPSILON && state.cameraMode === 'walk' && !state.gamingControls) {
-                const result = this._pickCollision(this._lastPointerOffsetX, this._lastPointerOffsetY);
-                if (result) {
-                    events.fire('walkTo', result.position, result.normal);
+            if (this._suppressClick) {
+                this._suppressClick = false;
+                return;
+            }
+            if (this._mouseClickDelta < TAP_EPSILON) {
+                if (state.cameraMode === 'walk' && !state.gamingControls) {
+                    const result = this._pickCollision(this._lastPointerOffsetX, this._lastPointerOffsetY);
+                    if (result) {
+                        events.fire('walkTo', result.position, result.normal);
+                    }
+                } else if (state.cameraMode === 'fly') {
+                    this._flyToPickedPosition(this._lastPointerOffsetX, this._lastPointerOffsetY);
+                } else if (state.cameraMode === 'orbit') {
+                    this._focusPickedPosition(this._lastPointerOffsetX, this._lastPointerOffsetY);
                 }
             }
         }
@@ -138,17 +224,19 @@ class WalkInteraction {
         if (!global || !canvas) return;
         if (eventName !== 'dblclick') return;
         if (!(event instanceof MouseEvent)) return;
-        const { app, camera, events, state } = global;
-        if (state.cameraMode === 'walk') return;
-        if (!this._picker) {
-            this._picker = new Picker(app, camera);
-        }
-        const result = await this._picker.pick(
-            event.offsetX / canvas.clientWidth,
-            event.offsetY / canvas.clientHeight
-        );
-        if (result) {
-            events.fire('pick', result);
+        const { events, state } = global;
+        const cameraMode = state.cameraMode;
+        if (cameraMode === 'walk') return;
+
+        if (cameraMode === 'fly') {
+            this._flyToPickedPosition(event.offsetX, event.offsetY);
+        } else if (cameraMode === 'orbit') {
+            const request = ++this._targetPickRequest;
+            const target = await this._pickSceneTarget(event.offsetX, event.offsetY);
+            if (target && request === this._targetPickRequest && this._global?.state.cameraMode === cameraMode) {
+                events.fire('orbitTarget:set', target.position, target.normal);
+                events.fire('pick', target.position);
+            }
         }
     };
 
@@ -156,10 +244,20 @@ class WalkInteraction {
         const global = this._global;
         if (!global) return;
         const { state, events } = global;
-        if (state.cameraMode !== 'walk' || state.gamingControls) return;
-        const result = this._pickCollision(this._lastPointerOffsetX, this._lastPointerOffsetY);
-        if (result) {
-            events.fire('walkTo', result.position, result.normal);
+        if (this._suppressClick) {
+            this._suppressClick = false;
+            return;
+        }
+
+        if (state.cameraMode === 'walk' && !state.gamingControls) {
+            const result = this._pickCollision(this._lastPointerOffsetX, this._lastPointerOffsetY);
+            if (result) {
+                events.fire('walkTo', result.position, result.normal);
+            }
+        } else if (state.cameraMode === 'fly') {
+            this._flyToPickedPosition(this._lastPointerOffsetX, this._lastPointerOffsetY);
+        } else if (state.cameraMode === 'orbit') {
+            this._focusPickedPosition(this._lastPointerOffsetX, this._lastPointerOffsetY);
         }
     };
 
@@ -172,14 +270,15 @@ class WalkInteraction {
         canvas.addEventListener('pointermove', this._onPointerMove);
         canvas.addEventListener('pointerup', this._onPointerUp);
 
-        // double-click → pick → fire 'pick' event (skipped in walk mode)
+        // double-click/tap fallback -> fly target or orbit focus (skipped in walk mode)
         events.on('inputEvent', this._onInputEvent);
 
-        // mobile tap (no movement) → walkTo
+        // mobile tap (no movement) → walk/fly target or orbit focus
         events.on('mobileTap', this._onMobileTap);
 
         // refresh cursor on mode / gaming-controls change
-        events.on('cameraMode:changed', this._updateCursor);
+        events.on('cameraMode:changed', this._onCameraModeChanged);
+        events.on('inputMode:changed', this._updateCursor);
         events.on('gamingControls:changed', this._updateCursor);
     }
 
@@ -193,12 +292,12 @@ class WalkInteraction {
             const { events } = this._global;
             events.off('inputEvent', this._onInputEvent);
             events.off('mobileTap', this._onMobileTap);
-            events.off('cameraMode:changed', this._updateCursor);
+            events.off('cameraMode:changed', this._onCameraModeChanged);
+            events.off('inputMode:changed', this._updateCursor);
             events.off('gamingControls:changed', this._updateCursor);
         }
         this._canvas = null;
         this._global = null;
-        this._picker = null;
     }
 }
 

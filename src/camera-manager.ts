@@ -8,6 +8,7 @@ import { createRotateTrack } from './animation/create-rotate-track';
 import { AnimController } from './cameras/anim-controller';
 import { Camera, type CameraFrame, type CameraController } from './cameras/camera';
 import { FlyController } from './cameras/fly-controller';
+import { FlySource } from './cameras/fly-source';
 import { OrbitController } from './cameras/orbit-controller';
 import { WalkController } from './cameras/walk-controller';
 import { WalkSource } from './cameras/walk-source';
@@ -91,6 +92,11 @@ class CameraManager {
             events.fire('walkComplete');
         };
 
+        const flySource = new FlySource();
+        flySource.onComplete = () => {
+            events.fire('flyComplete');
+        };
+
         const getController = (cameraMode: CameraMode): CameraController => {
             return controllers[cameraMode] as CameraController;
         };
@@ -117,6 +123,7 @@ class CameraManager {
         // transition state
         const transitionSpeed = 1.0;
         let transitionTimer = 1;
+        let clearOrbitTargetOnTransitionEnd = false;
 
         // start a new camera transition from the current pose
         const startTransition = () => {
@@ -131,12 +138,15 @@ class CameraManager {
             const dt = state.cameraMode === 'anim' && state.animationPaused ? 0 : deltaTime;
 
             // update transition timer
+            const prevTransitionTimer = transitionTimer;
             transitionTimer = Math.min(1, transitionTimer + deltaTime * transitionSpeed);
 
             const controller = getController(state.cameraMode);
 
             if (state.cameraMode === 'walk') {
                 walkSource.update(dt, this.camera.position, this.camera.angles, frame);
+            } else if (state.cameraMode === 'fly') {
+                flySource.update(dt, this.camera.position, this.camera.angles, this.camera.fov, frame);
             }
 
             controller.update(dt, frame, target);
@@ -152,20 +162,38 @@ class CameraManager {
             if (state.cameraMode === 'anim') {
                 state.animationTime = controllers.anim.animState.cursor.value;
             }
+
+            if (clearOrbitTargetOnTransitionEnd && prevTransitionTimer < 1 && transitionTimer === 1) {
+                clearOrbitTargetOnTransitionEnd = false;
+                events.fire('orbitTarget:clear');
+            }
         };
 
         // handle input events
-        events.on('inputEvent', (eventName, event) => {
+        events.on('inputEvent', (eventName) => {
             switch (eventName) {
                 case 'frame':
+                    events.fire('orbitTarget:clear');
                     state.cameraMode = 'orbit';
                     controllers.orbit.goto(frameCamera);
                     startTransition();
                     break;
                 case 'reset':
-                    state.cameraMode = 'orbit';
-                    controllers.orbit.goto(resetCamera);
-                    startTransition();
+                    if (state.cameraMode === 'walk') {
+                        walkSource.cancelWalk();
+                        events.fire('walkTarget:clear');
+                        startTransition();
+                        controllers.walk.resetToSpawn(target);
+                    } else if (state.cameraMode === 'fly') {
+                        flySource.cancelFly();
+                        startTransition();
+                        controllers.fly.resetToSpawn(target);
+                    } else {
+                        events.fire('orbitTarget:clear');
+                        state.cameraMode = 'orbit';
+                        controllers.orbit.goto(resetCamera);
+                        startTransition();
+                    }
                     break;
                 case 'playPause':
                     if (state.hasAnimation) {
@@ -215,6 +243,8 @@ class CameraManager {
         events.on('cameraMode:changed', (value, prev) => {
             if (prev === 'walk') {
                 walkSource.cancelWalk();
+            } else if (prev === 'fly') {
+                flySource.cancelFly();
             }
 
             // snapshot the current pose before any controller mutation
@@ -256,9 +286,12 @@ class CameraManager {
 
             controllers.orbit.goto(tmpCamera);
             startTransition();
+            clearOrbitTargetOnTransitionEnd = true;
         });
 
         events.on('annotation.activate', (annotation: Annotation) => {
+            events.fire('orbitTarget:clear');
+
             // switch to orbit camera on pick
             state.cameraMode = 'orbit';
 
@@ -291,6 +324,24 @@ class CameraManager {
 
         events.on('walkComplete', () => {
             events.fire('walkTarget:clear');
+        });
+
+        // click/tap-to-fly: start auto-flying toward a picked 3D position
+        events.on('flyTo', (position: Vec3, normal: Vec3) => {
+            if (state.cameraMode === 'fly') {
+                flySource.flyTo(position);
+                events.fire('flyTarget:set', position, normal);
+            }
+        });
+
+        // cancel any active auto-flight
+        events.on('flyCancel', () => {
+            flySource.cancelFly();
+            events.fire('flyTarget:clear');
+        });
+
+        events.on('flyComplete', () => {
+            events.fire('flyTarget:clear');
         });
     }
 }

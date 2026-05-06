@@ -1,5 +1,5 @@
 /**
- * Double-click world picking for splat scenes.
+ * World picking for splat scenes.
  *
  * - **Compute renderer (WebGPU tiled-compute)**: uses engine `Picker` with depth enabled — expected
  *   depth is already provided by the tile-composite path.
@@ -199,6 +199,43 @@ const pickerShaderPatchState = new WeakMap<object, PickerShaderPatchState>();
 const vec4 = new Vec4();
 const viewProjMat = new Mat4();
 const clearColor = new Color(0, 0, 0, 1);
+const NORMAL_EPSILON = 1e-12;
+const NORMAL_OUTLIER_MIN_DOT = 0.35;
+const NORMAL_SAMPLE_RADII = [1, 2, 4, 8];
+const NORMAL_SAMPLE_DIRECTIONS = [
+    [1, 0],
+    [1, 1],
+    [0, 1],
+    [-1, 1],
+    [-1, 0],
+    [-1, -1],
+    [0, -1],
+    [1, -1]
+] as const;
+
+type PickSurface = {
+    position: Vec3;
+    normal: Vec3;
+};
+
+type PickCameraSnapshot = {
+    position: Vec3;
+    viewMatrix: Mat4;
+    projectionMatrix: Mat4;
+    nearClip: number;
+    farClip: number;
+    projection: number;
+};
+
+type PickPosition = {
+    position: Vec3;
+    camera: PickCameraSnapshot;
+    screenX: number;
+    screenY: number;
+    width: number;
+    height: number;
+    isComputeRenderer: boolean;
+};
 
 // Shared buffer for half-to-float conversion
 const float32 = new Float32Array(1);
@@ -286,19 +323,17 @@ const unregisterPickerShaderPatches = (app: AppBase) => {
     pickerShaderPatchState.delete(device);
 };
 
-const getWorldPoint = (camera: Entity, x: number, y: number, width: number, height: number, normalizedDepth: number) => {
+const getWorldPoint = (camera: PickCameraSnapshot, x: number, y: number, width: number, height: number, normalizedDepth: number) => {
     if (!Number.isFinite(normalizedDepth) || normalizedDepth < 0 || normalizedDepth > 1) {
         return null;
     }
 
-    const cam = camera.camera;
-    const far = cam.farClip;
-    const near = cam.nearClip;
-    const ndcDepth = cam.projection === PROJECTION_ORTHOGRAPHIC ?
+    const { farClip: far, nearClip: near } = camera;
+    const ndcDepth = camera.projection === PROJECTION_ORTHOGRAPHIC ?
         normalizedDepth :
         far * normalizedDepth / (normalizedDepth * (far - near) + near);
 
-    viewProjMat.mul2(cam.projectionMatrix, cam.viewMatrix).invert();
+    viewProjMat.mul2(camera.projectionMatrix, camera.viewMatrix).invert();
     vec4.set(x / width * 2 - 1, (1 - y / height) * 2 - 1, ndcDepth * 2 - 1, 1);
     viewProjMat.transformVec4(vec4, vec4);
     if (!Number.isFinite(vec4.w) || Math.abs(vec4.w) < 1e-8) {
@@ -313,8 +348,22 @@ const getWorldPoint = (camera: Entity, x: number, y: number, width: number, heig
     return new Vec3(vec4.x, vec4.y, vec4.z);
 };
 
+const setCameraFacingNormal = (cameraPosition: Vec3, position: Vec3, normal: Vec3) => {
+    normal.sub2(cameraPosition, position);
+    const len = normal.length();
+    if (len > 1e-6) {
+        normal.mulScalar(1 / len);
+    } else {
+        normal.set(0, 1, 0);
+    }
+
+    return normal;
+};
+
 class Picker {
     pick: (x: number, y: number) => Promise<Vec3 | null>;
+
+    pickSurface: (x: number, y: number) => Promise<PickSurface | null>;
 
     release: () => void;
 
@@ -326,6 +375,15 @@ class Picker {
         let accumTarget: RenderTarget;
         let accumPass: RenderPassPicker;
         let chunksPatched = false;
+        let pickQueue = Promise.resolve();
+        const cacheCamera: PickCameraSnapshot = {
+            position: new Vec3(),
+            viewMatrix: new Mat4(),
+            projectionMatrix: new Mat4(),
+            nearClip: 0,
+            farClip: 0,
+            projection: 0
+        };
 
         const initRasterAccum = (width: number, height: number) => {
             accumBuffer = new Texture(graphicsDevice, {
@@ -368,7 +426,66 @@ class Picker {
             }) as Promise<T>;
         };
 
-        this.pick = async (x: number, y: number) => {
+        const updateCache = () => {
+            const cam = camera.camera;
+            cacheCamera.position.copy(camera.getPosition());
+            cacheCamera.viewMatrix.copy(cam.viewMatrix);
+            cacheCamera.projectionMatrix.copy(cam.projectionMatrix);
+            cacheCamera.nearClip = cam.nearClip;
+            cacheCamera.farClip = cam.farClip;
+            cacheCamera.projection = cam.projection;
+        };
+
+        const getCacheCameraSnapshot = (): PickCameraSnapshot => {
+            return {
+                position: cacheCamera.position.clone(),
+                viewMatrix: cacheCamera.viewMatrix.clone(),
+                projectionMatrix: cacheCamera.projectionMatrix.clone(),
+                nearClip: cacheCamera.nearClip,
+                farClip: cacheCamera.farClip,
+                projection: cacheCamera.projection
+            };
+        };
+
+        const readRasterBlock = async (
+            blockX: number,
+            blockY: number,
+            blockWidth: number,
+            blockHeight: number,
+            viewportWidth: number,
+            viewportHeight: number,
+            pickCamera: PickCameraSnapshot
+        ) => {
+            const texY = graphicsDevice.isWebGL2 ? accumTarget.height - blockY - blockHeight : blockY;
+
+            const pixels = await accumBuffer.read(blockX, texY, blockWidth, blockHeight, {
+                renderTarget: accumTarget,
+                immediate: true
+            }) as Uint16Array;
+
+            return (x: number, y: number) => {
+                const localX = x - blockX;
+                const localY = y - blockY;
+                if (localX < 0 || localX >= blockWidth || localY < 0 || localY >= blockHeight) {
+                    return null;
+                }
+
+                const row = graphicsDevice.isWebGL2 ? blockHeight - localY - 1 : localY;
+                const index = (row * blockWidth + localX) * 4;
+                const r = half2Float(pixels[index]);
+                const transmittance = half2Float(pixels[index + 3]);
+                const alpha = 1 - transmittance;
+
+                if (!Number.isFinite(r) || !Number.isFinite(alpha) || alpha < 1e-6) {
+                    return null;
+                }
+
+                const normalizedDepth = r / alpha;
+                return getWorldPoint(pickCamera, x, y, viewportWidth, viewportHeight, normalizedDepth);
+            };
+        };
+
+        const pickPosition = async (x: number, y: number): Promise<PickPosition | null> => {
             const width = Math.floor(graphicsDevice.width);
             const height = Math.floor(graphicsDevice.height);
 
@@ -383,61 +500,195 @@ class Picker {
             if (!worldLayer) {
                 return null;
             }
+            const isComputeRenderer = app.scene.gsplat.currentRenderer === GSPLAT_RENDERER_COMPUTE;
 
-            // enable gsplat IDs only for the duration of the pick so we don't pay the
-            // memory/perf cost between picks (picker instances are typically long-lived).
+            // Enable gsplat IDs only while rendering the pick target so we
+            // don't pay the memory/perf cost between pick passes.
             const prevEnableIds = app.scene.gsplat.enableIds;
             app.scene.gsplat.enableIds = true;
-
             try {
-                if (app.scene.gsplat.currentRenderer === GSPLAT_RENDERER_COMPUTE) {
+                if (isComputeRenderer) {
                     enginePicker ??= new EnginePicker(app, 1, 1, true);
                     enginePicker.resize(width, height);
                     enginePicker.prepare(camera.camera, app.scene, [worldLayer]);
-                    return await enginePicker.getWorldPointAsync(screenX, screenY);
-                }
-
-                if (!chunksPatched) {
-                    registerPickerShaderPatches(app);
-                    chunksPatched = true;
-                }
-
-                if (!accumPass) {
-                    initRasterAccum(width, height);
                 } else {
-                    accumTarget.resize(width, height);
+                    if (!chunksPatched) {
+                        registerPickerShaderPatches(app);
+                        chunksPatched = true;
+                    }
+
+                    if (!accumPass) {
+                        initRasterAccum(width, height);
+                    } else {
+                        accumTarget.resize(width, height);
+                    }
+
+                    accumPass.init(accumTarget);
+                    accumPass.setClearColor(clearColor);
+                    accumPass.update(
+                        camera.camera,
+                        app.scene,
+                        [worldLayer],
+                        new Map<number, MeshInstance | GSplatComponent>(),
+                        false
+                    );
+                    accumPass.render();
                 }
 
-                accumPass.init(accumTarget);
-                accumPass.setClearColor(clearColor);
-                accumPass.update(
-                    camera.camera,
-                    app.scene,
-                    [worldLayer],
-                    new Map<number, MeshInstance | GSplatComponent>(),
-                    false
-                );
-                accumPass.render();
-
-                const pixels = await readTexture<Uint16Array>(accumBuffer, screenX, screenY, accumTarget);
-
-                const r = half2Float(pixels[0]);
-                const transmittance = half2Float(pixels[3]);
-                const alpha = 1 - transmittance;
-
-                if (!Number.isFinite(r) || !Number.isFinite(alpha) || alpha < 1e-6) {
-                    return null;
-                }
-
-                const normalizedDepth = r / alpha;
-                return getWorldPoint(camera, screenX, screenY, width, height, normalizedDepth);
+                updateCache();
             } finally {
-                // Pick is only invoked from user dblclick events, so concurrent invocations
-                // (which would race on enableIds) aren't a concern in practice.
-                // eslint-disable-next-line require-atomic-updates
                 app.scene.gsplat.enableIds = prevEnableIds;
             }
+
+            const pickCamera = getCacheCameraSnapshot();
+
+            if (isComputeRenderer) {
+                const normalizedDepth = await enginePicker!.getPointDepthAsync(screenX, screenY);
+                const position = normalizedDepth !== null ?
+                    getWorldPoint(pickCamera, screenX, screenY, width, height, normalizedDepth) :
+                    null;
+                return position ? { position, camera: pickCamera, screenX, screenY, width, height, isComputeRenderer } : null;
+            }
+
+            const pixels = await readTexture<Uint16Array>(accumBuffer, screenX, screenY, accumTarget);
+
+            const r = half2Float(pixels[0]);
+            const transmittance = half2Float(pixels[3]);
+            const alpha = 1 - transmittance;
+
+            if (!Number.isFinite(r) || !Number.isFinite(alpha) || alpha < 1e-6) {
+                return null;
+            }
+
+            const normalizedDepth = r / alpha;
+            const position = getWorldPoint(pickCamera, screenX, screenY, width, height, normalizedDepth);
+            return position ? { position, camera: pickCamera, screenX, screenY, width, height, isComputeRenderer } : null;
         };
+
+        const serializePick = <T>(operation: () => Promise<T>): Promise<T> => {
+            // The render targets are shared by all picks on this instance.
+            const result = pickQueue.then(operation, operation);
+            pickQueue = result.then((): void => undefined, (): void => undefined);
+            return result;
+        };
+
+        const pick = async (x: number, y: number) => {
+            const result = await pickPosition(x, y);
+            return result?.position ?? null;
+        };
+
+        const pickSurface = async (x: number, y: number) => {
+            const picked = await pickPosition(x, y);
+            if (!picked) {
+                return null;
+            }
+            const { position, screenX, screenY, width, height } = picked;
+
+            if (picked.isComputeRenderer) {
+                return {
+                    position,
+                    normal: setCameraFacingNormal(picked.camera.position, position, new Vec3())
+                };
+            }
+
+            const maxRadius = NORMAL_SAMPLE_RADII[NORMAL_SAMPLE_RADII.length - 1];
+            const blockX = Math.max(0, screenX - maxRadius);
+            const blockY = Math.max(0, screenY - maxRadius);
+            const blockWidth = Math.min(width - 1, screenX + maxRadius) - blockX + 1;
+            const blockHeight = Math.min(height - 1, screenY + maxRadius) - blockY + 1;
+            const rasterBlock = await readRasterBlock(
+                blockX,
+                blockY,
+                blockWidth,
+                blockHeight,
+                width,
+                height,
+                picked.camera
+            );
+
+            const samplePixel = (px: number, py: number) => {
+                if (px < 0 || px >= width || py < 0 || py >= height) {
+                    return Promise.resolve(null);
+                }
+
+                return Promise.resolve(rasterBlock(px, py));
+            };
+
+            const sampleRings = await Promise.all(NORMAL_SAMPLE_RADII.map((radius) => {
+                return Promise.all(NORMAL_SAMPLE_DIRECTIONS.map(([dx, dy]) => {
+                    const px = screenX + dx * radius;
+                    const py = screenY + dy * radius;
+
+                    return samplePixel(px, py);
+                }));
+            }));
+
+            const toCamera = setCameraFacingNormal(picked.camera.position, position, new Vec3());
+            const candidates: Vec3[] = [];
+            const va = new Vec3();
+            const vb = new Vec3();
+            const sampleNormal = new Vec3();
+
+            sampleRings.forEach((points) => {
+                for (let i = 0; i < NORMAL_SAMPLE_DIRECTIONS.length; i++) {
+                    const pointA = points[i];
+                    const pointB = points[(i + 1) % NORMAL_SAMPLE_DIRECTIONS.length];
+                    if (!pointA || !pointB) {
+                        continue;
+                    }
+
+                    va.sub2(pointA, position);
+                    vb.sub2(pointB, position);
+                    if (va.lengthSq() <= NORMAL_EPSILON || vb.lengthSq() <= NORMAL_EPSILON) {
+                        continue;
+                    }
+
+                    // Direction order is clockwise in screen space. Screen Y points
+                    // down, so crossing next by current gives a camera-facing normal.
+                    sampleNormal.cross(vb, va);
+                    if (sampleNormal.lengthSq() <= NORMAL_EPSILON) {
+                        continue;
+                    }
+
+                    const candidate = sampleNormal.clone().normalize();
+                    if (candidate.dot(toCamera) < 0) {
+                        candidate.mulScalar(-1);
+                    }
+                    candidates.push(candidate);
+                }
+            });
+
+            const normal = new Vec3();
+            candidates.forEach((candidate) => {
+                normal.add(candidate);
+            });
+
+            if (normal.lengthSq() > NORMAL_EPSILON) {
+                normal.normalize();
+
+                const refined = new Vec3();
+                candidates.forEach((candidate) => {
+                    if (candidate.dot(normal) >= NORMAL_OUTLIER_MIN_DOT) {
+                        refined.add(candidate);
+                    }
+                });
+
+                if (refined.lengthSq() > NORMAL_EPSILON) {
+                    normal.copy(refined).normalize();
+                }
+            } else {
+                normal.copy(toCamera);
+            }
+
+            return {
+                position,
+                normal
+            };
+        };
+
+        this.pick = (x: number, y: number) => serializePick(() => pick(x, y));
+
+        this.pickSurface = (x: number, y: number) => serializePick(() => pickSurface(x, y));
 
         this.release = () => {
             if (chunksPatched) {
@@ -452,4 +703,5 @@ class Picker {
     }
 }
 
+export type { PickSurface };
 export { Picker };
