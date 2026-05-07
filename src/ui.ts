@@ -1,5 +1,6 @@
 import { EventHandler } from 'playcanvas';
 
+import { version as appVersion } from '../package.json';
 import type { Annotation } from './settings';
 import { Tooltip } from './tooltip';
 import { Global } from './types';
@@ -242,7 +243,7 @@ const initUI = (global: Global) => {
         'orbitCamera', 'flyCamera', 'fpsCamera',
         'performanceModeRow', 'performanceModeCheck', 'performanceModeOption',
         'gamingControlsDivider', 'gamingControlsRow', 'gamingControlsCheck', 'gamingControlsOption',
-        'desktopFlyClickToFly', 'desktopClickToWalk', 'desktopGamingControls',
+        'desktopFlyClickToFly', 'desktopFlyGamingControls', 'desktopClickToWalk', 'desktopGamingControls',
         'touchFlyClickToWalk', 'touchFlyGamingControls',
         'touchClickToWalk', 'touchGamingControls',
         'walkHint',
@@ -252,11 +253,14 @@ const initUI = (global: Global) => {
         'showCollision',
         'tooltip',
         'annotationNav', 'annotationPrev', 'annotationNext', 'annotationInfo', 'annotationNavTitle',
-        'supersplatBranding'
+        'viewerBranding', 'viewerTitle', 'appVersionLabel'
     ].reduce((acc: Record<string, HTMLElement>, id) => {
         acc[id] = document.getElementById(id);
         return acc;
     }, {});
+
+    // populate the info-panel title with the app version
+    dom.appVersionLabel.textContent = appVersion;
 
     const isOmg4Content = () => {
         const filename = config.contentFilename ?? config.contentUrl ?? '';
@@ -448,6 +452,7 @@ const initUI = (global: Global) => {
     const updateGamingControls = () => {
         dom.gamingControlsCheck.classList.toggle('active', state.gamingControls);
         dom.desktopFlyClickToFly.classList.toggle('hidden', state.gamingControls);
+        dom.desktopFlyGamingControls.classList.toggle('hidden', !state.gamingControls);
         dom.desktopClickToWalk.classList.toggle('hidden', state.gamingControls);
         dom.desktopGamingControls.classList.toggle('hidden', !state.gamingControls);
         dom.touchFlyClickToWalk.classList.toggle('hidden', state.gamingControls);
@@ -809,8 +814,9 @@ const initUI = (global: Global) => {
             viewUrl.pathname = '/view';
         }
 
-        (dom.supersplatBranding as HTMLAnchorElement).href = viewUrl.toString();
-        dom.supersplatBranding.classList.remove('hidden');
+        (dom.viewerBranding as HTMLAnchorElement).href = viewUrl.toString();
+        dom.viewerBranding.classList.remove('hidden');
+        (dom.viewerTitle as HTMLAnchorElement).href = viewUrl.toString();
     }
 };
 
