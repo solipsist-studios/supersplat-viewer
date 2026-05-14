@@ -263,6 +263,7 @@ const main = async (canvas: HTMLCanvasElement, settingsJson: any, config: Config
         hasVR: false,
         hasCollision: false,
         hasCollisionOverlay: false,
+        walkAllowed: false,
         collisionOverlayEnabled: false,
         isFullscreen: false,
         controlsHidden: false,

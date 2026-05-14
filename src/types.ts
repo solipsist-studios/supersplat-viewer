@@ -45,6 +45,7 @@ type State = {
     hasVR: boolean;
     hasCollision: boolean;
     hasCollisionOverlay: boolean;
+    walkAllowed: boolean;
     collisionOverlayEnabled: boolean;
     isFullscreen: boolean;
     controlsHidden: boolean;
