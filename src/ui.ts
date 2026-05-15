@@ -250,7 +250,7 @@ const initUI = (global: Global) => {
         'reset', 'frame',
         'loadingText', 'loadingBar',
         'joystickBase', 'joystick',
-        'showCollision',
+        'showCollision', 'desktopShowCollisionHelp',
         'tooltip',
         'annotationNav', 'annotationPrev', 'annotationNext', 'annotationInfo', 'annotationNavTitle',
         'viewerBranding', 'viewerTitle', 'appVersionLabel'
@@ -734,9 +734,10 @@ const initUI = (global: Global) => {
         dom.flyCamera.classList.toggle('right', !value);
     });
 
-    // Collision overlay toggle (only visible when overlay is available)
+    // Collision overlay toggle + matching help-panel row (only visible when overlay is available)
     events.on('hasCollisionOverlay:changed', (value: boolean) => {
         dom.showCollision.classList.toggle('hidden', !value);
+        dom.desktopShowCollisionHelp.classList.toggle('hidden', !value);
     });
 
     dom.showCollision.addEventListener('click', () => {
