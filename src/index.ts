@@ -23,6 +23,7 @@ import { MeshCollision, loadVoxelCollision } from './collision';
 import type { Collision } from './collision';
 import { setupSplatAnim } from './core/load-splat-anim';
 import { observe } from './core/observe';
+import { initLocalization } from './localization';
 import { streamOmg4Data } from './core/stream-omg4';
 import { streamQueenData } from './core/stream-queen';
 import { importSettings } from './settings';
@@ -309,6 +310,7 @@ const main = async (canvas: HTMLCanvasElement, settingsJson: any, config: Config
     initXr(global);
 
     // Initialize user interface
+    initLocalization();
     initUI(global);
 
     // Load model
