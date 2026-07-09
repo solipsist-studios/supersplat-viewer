@@ -261,10 +261,10 @@ const attachOmg4V2Motion = (resource: GSplatResource, data: Omg4V2Data) => {
 const buildModifyChunk = (src: string, cov2dScale: [number, number] | null) => {
     if (cov2dScale) {
         return src
-            .replace('#ifdef OMG4_COV_COMP\n', '')
-            .replace('#endif\n', '')
-            .replace(/OMG4_KX/g, cov2dScale[0].toFixed(6))
-            .replace(/OMG4_KY/g, cov2dScale[1].toFixed(6));
+        .replace('#ifdef OMG4_COV_COMP\n', '')
+        .replace('#endif\n', '')
+        .replace(/OMG4_KX/g, cov2dScale[0].toFixed(6))
+        .replace(/OMG4_KY/g, cov2dScale[1].toFixed(6));
     }
     return src.replace(/#ifdef OMG4_COV_COMP[\s\S]*?#endif\n/, '');
 };
