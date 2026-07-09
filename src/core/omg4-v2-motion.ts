@@ -31,6 +31,7 @@ uniform highp sampler2D splatTemporal;
 uniform float omg4Time;
 uniform vec4 omg4ModelRotation;   // entity world rotation (x, y, z, w)
 uniform vec4 omg4CamRot;          // camera world rotation (x, y, z, w)
+uniform vec3 omg4CamPos;          // camera world position
 
 vec3 omg4QuatRotate(vec4 q, vec3 v) {
     return v + 2.0 * cross(q.xyz, cross(q.xyz, v) + q.w * v);
@@ -66,11 +67,18 @@ void modifySplatCenter(inout vec3 center) {
 }
 void modifySplatRotationScale(vec3 originalCenter, vec3 modifiedCenter, inout vec4 rotation, inout vec3 scale) {
 #ifdef OMG4_COV_COMP
-    // Inflate each splat's covariance by (KX, KY) along the current camera's
-    // right/up axes, matching the screen-space footprint the OMG4 reference
-    // rasterizer produced during training (FoV-sentinel bug).
+    // Reproduce the screen-space footprint the OMG4 reference rasterizer
+    // produced during training (FoV-sentinel bug): inflate by (KX, KY) along
+    // the camera's right/up axes and replace the view-dependent perspective
+    // tilt with the trained constant 0.7096 shear, per splat.
     mat3 Rc = omg4QuatToMat(omg4CamRot);
-    mat3 M = Rc * mat3(OMG4_KX, 0.0, 0.0, 0.0, OMG4_KY, 0.0, 0.0, 0.0, 1.0) * transpose(Rc);
+    vec3 vcam = transpose(Rc) * (modifiedCenter - omg4CamPos);
+    float invz = 1.0 / min(vcam.z, -1e-4);
+    mat3 X = mat3(
+        OMG4_KX, 0.0, 0.0,
+        0.0, OMG4_KY, 0.0,
+        0.7096 * OMG4_KX + vcam.x * invz, 0.7096 * OMG4_KY + vcam.y * invz, 1.0);
+    mat3 M = Rc * X * transpose(Rc);
     mat3 Rs = omg4QuatToMat(rotation);
     mat3 A = M * mat3(Rs[0] * scale.x, Rs[1] * scale.y, Rs[2] * scale.z);
     mat3 S = A * transpose(A);
@@ -125,6 +133,7 @@ var splatTemporal: texture_2d<f32>;
 uniform omg4Time: f32;
 uniform omg4ModelRotation: vec4f;
 uniform omg4CamRot: vec4f;
+uniform omg4CamPos: vec3f;
 
 fn omg4QuatRotate(q: vec4f, v: vec3f) -> vec3f {
     return v + 2.0 * cross(q.xyz, cross(q.xyz, v) + q.w * v);
@@ -161,7 +170,13 @@ fn modifySplatCenter(center: ptr<function, vec3f>) {
 fn modifySplatRotationScale(originalCenter: vec3f, modifiedCenter: vec3f, rotation: ptr<function, vec4f>, scale: ptr<function, vec3f>) {
 #ifdef OMG4_COV_COMP
     let Rc = omg4QuatToMat(uniform.omg4CamRot);
-    let M = Rc * mat3x3f(vec3f(OMG4_KX, 0.0, 0.0), vec3f(0.0, OMG4_KY, 0.0), vec3f(0.0, 0.0, 1.0)) * transpose(Rc);
+    let vcam = transpose(Rc) * (modifiedCenter - uniform.omg4CamPos);
+    let invz = 1.0 / min(vcam.z, -1e-4);
+    let X = mat3x3f(
+        vec3f(OMG4_KX, 0.0, 0.0),
+        vec3f(0.0, OMG4_KY, 0.0),
+        vec3f(0.7096 * OMG4_KX + vcam.x * invz, 0.7096 * OMG4_KY + vcam.y * invz, 1.0));
+    let M = Rc * X * transpose(Rc);
     let Rs = omg4QuatToMat(*rotation);
     let A = M * mat3x3f(Rs[0] * (*scale).x, Rs[1] * (*scale).y, Rs[2] * (*scale).z);
     var S = A * transpose(A);
@@ -278,6 +293,8 @@ const setOmg4V2Params = (entity: Entity, time: number, camera?: Entity) => {
     component.setParameter('omg4ModelRotation', [q.x, q.y, q.z, q.w]);
     const c = camera?.getRotation();
     component.setParameter('omg4CamRot', c ? [c.x, c.y, c.z, c.w] : [0, 0, 0, 1]);
+    const p = camera?.getPosition();
+    component.setParameter('omg4CamPos', p ? [p.x, p.y, p.z] : [0, 0, 0]);
 };
 
 export { attachOmg4V2Motion, bindOmg4V2Modifier, setOmg4V2Params };
