@@ -189,6 +189,41 @@ class Viewer {
         const wgsl = ShaderChunks.get(graphicsDevice, 'wgsl');
         wgsl.set('skyboxPS', patchChunk(wgsl.get('skyboxPS'), 'mapRoughnessUv(uv, uniform.mipLevel)', 'uv', 'wgsl skyboxPS'));
 
+        // Optional screen-space 2D-covariance scale for gsplat rendering,
+        // used by .omg4 v2 files that carry a cov2dScale header field (it
+        // compensates models trained under OMG4's FoV-sentinel footprint
+        // inflation). Identity for all other content.
+        // omg4CovScale = (kx, ky, jPin): kx/ky scale the projected 2D
+        // covariance; jPin > 0 additionally pins the projection Jacobian's
+        // perspective-tilt terms to jPin * J1 (the OMG4 reference rasterizer's
+        // degenerate clamp). Together these reproduce the footprints the
+        // model was trained under.
+        glsl.set('gsplatCornerVS', patchChunk(patchChunk(
+            'uniform vec3 omg4CovScale;\n' + glsl.get('gsplatCornerVS'),
+            'vec2 J2 = -J1 / vp.z * vp.xy;',
+            'vec2 J2 = (omg4CovScale.z > 0.0) ? vec2(omg4CovScale.z * J1) : (-J1 / vp.z * vp.xy);',
+            'glsl gsplatCornerVS J2'),
+            'mat3 cov = transpose(T) * Vrk * T;',
+            'mat3 cov = transpose(T) * Vrk * T;\n' +
+            '\tcov[0][0] *= omg4CovScale.x * omg4CovScale.x;\n' +
+            '\tcov[1][1] *= omg4CovScale.y * omg4CovScale.y;\n' +
+            '\tcov[0][1] *= omg4CovScale.x * omg4CovScale.y;\n' +
+            '\tcov[1][0] = cov[0][1];',
+            'glsl gsplatCornerVS cov'));
+        wgsl.set('gsplatCornerVS', patchChunk(patchChunk(
+            'uniform omg4CovScale: vec3f;\n' + wgsl.get('gsplatCornerVS'),
+            'let J2 = -J1 / vp.z * vp.xy;',
+            'let J2 = select(-J1 / vp.z * vp.xy, vec2f(uniform.omg4CovScale.z * J1), uniform.omg4CovScale.z > 0.0);',
+            'wgsl gsplatCornerVS J2'),
+            'let cov = transpose(T) * Vrk * T;',
+            'var cov = transpose(T) * Vrk * T;\n' +
+            '\tcov[0][0] = cov[0][0] * uniform.omg4CovScale.x * uniform.omg4CovScale.x;\n' +
+            '\tcov[1][1] = cov[1][1] * uniform.omg4CovScale.y * uniform.omg4CovScale.y;\n' +
+            '\tcov[0][1] = cov[0][1] * uniform.omg4CovScale.x * uniform.omg4CovScale.y;\n' +
+            '\tcov[1][0] = cov[0][1];',
+            'wgsl gsplatCornerVS cov'));
+        graphicsDevice.scope.resolve('omg4CovScale').setValue([1, 1, 0]);
+
         this.origChunks = {
             glsl: {
                 gsplatOutputVS: glsl.get('gsplatOutputVS'),
