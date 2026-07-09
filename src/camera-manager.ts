@@ -122,12 +122,23 @@ class CameraManager {
             return controllers[cameraMode] as CameraController;
         };
 
-        // set the global animation flag
-        state.hasAnimation = !!controllers.anim;
-        state.animationDuration = controllers.anim ? controllers.anim.animState.cursor.duration : 0;
+        // state.hasAnimation is true only for 4DGS content (set by setupSplatAnim
+        // before this constructor runs) — its timeline belongs to the splat
+        // animation, so leave animationDuration/cameraMode defaults alone here.
+        // 3D content always has a camera track (authored, or the generated
+        // rotate/figure-8 fallback below) and keeps the existing auto-orbit
+        // "turntable" behaviour.
+        const isSplatAnimation = state.hasAnimation;
+        const hasCameraAnim = !!controllers.anim && !isSplatAnimation;
 
-        // initialize camera mode and initial camera position
-        state.cameraMode = state.hasAnimation ? 'anim' : (isObjectExperience ? 'orbit' : (walkAllowed ? 'walk' : 'fly'));
+        if (!isSplatAnimation) {
+            state.animationDuration = controllers.anim ? controllers.anim.animState.cursor.duration : 0;
+        }
+
+        // initialize camera mode and initial camera position. 4DGS content
+        // starts in an interactive mode — playback is driven by the timeline,
+        // not a camera track.
+        state.cameraMode = hasCameraAnim ? 'anim' : (isObjectExperience ? 'orbit' : (walkAllowed ? 'walk' : 'fly'));
         this.camera.copy(resetCamera);
 
         const target = new Camera(this.camera);             // the active controller updates this
@@ -182,8 +193,8 @@ class CameraManager {
                 this.camera.copy(target);
             }
 
-            // update animation timeline
-            if (state.cameraMode === 'anim') {
+            // update animation timeline (4DGS content owns the timeline instead)
+            if (state.cameraMode === 'anim' && !isSplatAnimation) {
                 state.animationTime = controllers.anim.animState.cursor.value;
             }
 
@@ -220,16 +231,16 @@ class CameraManager {
                     }
                     break;
                 case 'playPause':
-                    if (state.hasAnimation) {
-                        if (controllers.anim && state.cameraMode === 'anim') {
-                            state.animationPaused = !state.animationPaused;
-                        } else if (controllers.anim) {
-                            state.cameraMode = 'anim';
-                            state.animationPaused = false;
-                        } else {
-                            // OMG4 mode — no camera animation; just toggle pause
-                            state.animationPaused = !state.animationPaused;
-                        }
+                    if (isSplatAnimation) {
+                        // 4DGS content — toggle file playback, leave the camera alone
+                        state.animationPaused = !state.animationPaused;
+                    } else if (state.cameraMode === 'anim') {
+                        // 3D content always has a camera track (authored or the
+                        // generated turntable fallback)
+                        state.animationPaused = !state.animationPaused;
+                    } else {
+                        state.cameraMode = 'anim';
+                        state.animationPaused = false;
                     }
                     break;
                 case 'requestFirstPerson':
@@ -284,8 +295,8 @@ class CameraManager {
 
         // handle user scrubbing the animation timeline
         events.on('scrubAnim', (time) => {
-            if (!controllers.anim) {
-                // OMG4 mode — scrubbing is handled by Omg4SplatAnimation.attach()
+            if (!controllers.anim || isSplatAnimation) {
+                // 4DGS content — scrubbing is handled by SplatAnimationBase.attach()
                 return;
             }
             // switch to animation camera if we're not already there
