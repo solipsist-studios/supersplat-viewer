@@ -15,9 +15,15 @@ class Omg4V2SplatAnimation {
 
     private entity: Entity | null = null;
 
+    private camera: Entity | null = null;
+
+    private cov2dScale: [number, number] | null = null;
+
     private lastTime = NaN;
 
     private lastRotation = new Quat(NaN, NaN, NaN, NaN);
+
+    private lastCamRotation = new Quat(NaN, NaN, NaN, NaN);
 
     constructor(data: Omg4V2Data) {
         this.data = data;
@@ -33,29 +39,37 @@ class Omg4V2SplatAnimation {
 
     // Install the GPU modifier on the entity's gsplat component. Called once
     // the entity exists (after setupSplatAnim).
-    bind(entity: Entity) {
+    bind(entity: Entity, cov2dScale: [number, number] | null = null) {
         this.entity = entity;
-        bindOmg4V2Modifier(entity);
+        this.cov2dScale = cov2dScale;
+        bindOmg4V2Modifier(entity, cov2dScale);
     }
 
-    // Push uniforms if the time or entity rotation changed (each push marks
-    // the work buffer render-dirty, so avoid redundant updates).
+    // Push uniforms if the time, entity rotation or (when covariance
+    // compensation is active) camera rotation changed - each push marks the
+    // work buffer render-dirty, so avoid redundant updates.
     private apply(animTime: number): boolean {
         if (!this.entity) {
             return false;
         }
         const rotation = this.entity.getRotation();
-        if (animTime === this.lastTime && rotation.equals(this.lastRotation)) {
+        const camRotation = this.camera?.getRotation();
+        const camChanged = !!(this.cov2dScale && camRotation && !camRotation.equals(this.lastCamRotation));
+        if (animTime === this.lastTime && rotation.equals(this.lastRotation) && !camChanged) {
             return false;
         }
         this.lastTime = animTime;
         this.lastRotation.copy(rotation);
-        setOmg4V2Params(this.entity, this.data.timeMin + animTime);
+        if (camRotation) {
+            this.lastCamRotation.copy(camRotation);
+        }
+        setOmg4V2Params(this.entity, this.data.timeMin + animTime, this.camera ?? undefined);
         return true;
     }
 
     attach(global: Global): () => void {
         const { app, state, events } = global;
+        this.camera = global.camera;
         let animTime = 0;
 
         const onUpdate = (dt: number) => {
