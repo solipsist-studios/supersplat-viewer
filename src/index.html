@@ -83,8 +83,6 @@
             const budgetParam = url.searchParams.get('budget');
             const budget = budgetParam !== null ? Number(budgetParam) : undefined;
 
-            const omg4RotationDeg = parseRotationParam(url.searchParams.get('omg4rot'), [270, 0, 0]);
-
             const sseConfig = {
                 poster: posterUrl && createImage(posterUrl),
                 skyboxUrl,

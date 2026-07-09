@@ -15,7 +15,6 @@ type Config = {
     contents?: Promise<Response>;
     omg4RotationDeg?: [number, number, number];
     collisionUrl?: string;
-    omg4RotationDeg?: [number, number, number];
 
     noui: boolean;
     noanim: boolean;
