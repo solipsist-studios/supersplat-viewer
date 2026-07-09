@@ -1,4 +1,4 @@
-import { Quat, type Entity } from 'playcanvas';
+import { Quat, Vec3, type Entity } from 'playcanvas';
 
 import { bindOmg4V2Modifier, setOmg4V2Params } from '../core/omg4-v2-motion';
 import type { Omg4V2Data } from '../parsers/omg4';
@@ -24,6 +24,8 @@ class Omg4V2SplatAnimation {
     private lastRotation = new Quat(NaN, NaN, NaN, NaN);
 
     private lastCamRotation = new Quat(NaN, NaN, NaN, NaN);
+
+    private lastCamPosition = new Vec3(NaN, NaN, NaN);
 
     constructor(data: Omg4V2Data) {
         this.data = data;
@@ -54,7 +56,9 @@ class Omg4V2SplatAnimation {
         }
         const rotation = this.entity.getRotation();
         const camRotation = this.camera?.getRotation();
-        const camChanged = !!(this.cov2dScale && camRotation && !camRotation.equals(this.lastCamRotation));
+        const camPosition = this.camera?.getPosition();
+        const camChanged = !!(this.cov2dScale && camRotation && camPosition &&
+            (!camRotation.equals(this.lastCamRotation) || !camPosition.equals(this.lastCamPosition)));
         if (animTime === this.lastTime && rotation.equals(this.lastRotation) && !camChanged) {
             return false;
         }
@@ -62,6 +66,9 @@ class Omg4V2SplatAnimation {
         this.lastRotation.copy(rotation);
         if (camRotation) {
             this.lastCamRotation.copy(camRotation);
+        }
+        if (camPosition) {
+            this.lastCamPosition.copy(camPosition);
         }
         setOmg4V2Params(this.entity, this.data.timeMin + animTime, this.camera ?? undefined);
         return true;
