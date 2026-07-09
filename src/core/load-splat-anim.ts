@@ -1,12 +1,18 @@
 import { Entity, GSplatResource, type AppBase } from 'playcanvas';
 
-import { SplatAnimationBase } from '../animation/splat-animation-base';
 import type { Config, Global } from '../types';
 
 type SetupSplatAnimOptions = {
     rotationEulerDeg?: [number, number, number];
     alphaClip?: number;
 };
+
+// Structural interface satisfied by SplatAnimationBase subclasses and by
+// Omg4V2SplatAnimation (which drives a GPU time uniform instead of frames).
+interface SplatAnimation {
+    readonly duration: number;
+    attach(global: Global): () => void;
+}
 
 // Shared entity-creation and state-wiring used by every animated-splat loader.
 //
@@ -23,7 +29,7 @@ const setupSplatAnim = (
     config: Config,
     global: Global,
     resource: GSplatResource,
-    animation: SplatAnimationBase,
+    animation: SplatAnimation,
     options: SetupSplatAnimOptions = {}
 ): Entity => {
     const rotationEulerDeg = options.rotationEulerDeg ?? [0, 0, 180];
@@ -34,13 +40,18 @@ const setupSplatAnim = (
     entity.addComponent('gsplat', {});
     entity.gsplat.resource = resource;
 
+    // The gsplat instance (and its material) is only created once the entity
+    // joins the hierarchy, so add it before touching the material.
+    app.root.addChild(entity);
+
     const material = entity.gsplat.material;
     if (material) {
         material.setDefine('GSPLAT_AA', config.aa);
+        // The forward pass reads alphaClipForward; alphaClip covers the
+        // shadow/pick/prepass variants.
         material.setParameter('alphaClip', alphaClip);
+        material.setParameter('alphaClipForward', alphaClip);
     }
-
-    app.root.addChild(entity);
 
     const detachAnim = animation.attach(global);
 

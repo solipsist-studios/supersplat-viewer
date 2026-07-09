@@ -17,21 +17,25 @@ import {
 } from 'playcanvas';
 
 import { Omg4SplatAnimation } from './animation/omg4-splat-animation';
+import { Omg4V2SplatAnimation } from './animation/omg4-v2-splat-animation';
 import { QueenSplatAnimation } from './animation/queen-splat-animation';
 import { App } from './app';
 import { MeshCollision, loadVoxelCollision } from './collision';
 import type { Collision } from './collision';
+import { version as appVersion } from '../package.json';
+import { fetchSplatAnimBuffer } from './core/fetch-splat-anim-buffer';
 import { setupSplatAnim } from './core/load-splat-anim';
 import { observe } from './core/observe';
+import { attachOmg4V2Motion } from './core/omg4-v2-motion';
 import { streamOmg4Data } from './core/stream-omg4';
 import { streamQueenData } from './core/stream-queen';
 import { initLocalization } from './localization';
+import { parseOmg4V2, readOmg4Version } from './parsers/omg4';
 import { importSettings } from './settings';
 import type { Config, Global } from './types';
 import { initPoster, initUI } from './ui';
 import { Viewer } from './viewer';
 import { initXr } from './xr';
-import { version as appVersion } from '../package.json';
 
 const loadGsplat = async (app: AppBase, config: Config, progressCallback: (progress: number) => void) => {
     const { contents, contentUrl } = config;
@@ -71,8 +75,39 @@ const loadGsplat = async (app: AppBase, config: Config, progressCallback: (progr
     });
 };
 
+// Read the format version of a .omg4 file with a small byte-range request
+// (falls back gracefully when the server ignores Range headers).
+const fetchOmg4Version = async (url: string): Promise<number> => {
+    const response = await fetch(url, { headers: { range: 'bytes=0-31' } });
+    if (!response.ok) {
+        throw new Error(`Failed to fetch ${url}: ${response.status} ${response.statusText}`);
+    }
+    const buffer = await response.arrayBuffer();
+    return readOmg4Version(buffer);
+};
+
 // Load and animate a .omg4 (OMG4-encoded 4D Gaussian Splat) file.
 const loadOmg4Gsplat = async (app: AppBase, config: Config, global: Global, progressCallback: (progress: number) => void) => {
+    const version = await fetchOmg4Version(config.contentUrl);
+
+    if (version >= 2) {
+        // v2: compact temporal format. Small enough to load fully; motion and
+        // temporal fade are evaluated on the GPU from a single time uniform.
+        const buffer = await fetchSplatAnimBuffer(config.contentUrl, progressCallback);
+        const data = parseOmg4V2(buffer);
+        const resource = new GSplatResource(app.graphicsDevice, data.gsplatData);
+        attachOmg4V2Motion(resource, data);
+
+        const animation = new Omg4V2SplatAnimation(data);
+        const entity = setupSplatAnim(app, config, global, resource, animation, {
+            rotationEulerDeg: config.omg4RotationDeg ?? [270, 0, 0],
+            alphaClip: 1 / 1024
+        });
+        animation.bind(entity);
+        return entity;
+    }
+
+    // v1: legacy baked per-frame format, streamed in chunks.
     const data = await streamOmg4Data(config.contentUrl, progressCallback);
     const resource = new GSplatResource(app.graphicsDevice, data.gsplatData);
     const animation = new Omg4SplatAnimation(data, resource);
