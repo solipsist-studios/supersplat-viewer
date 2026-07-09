@@ -263,7 +263,7 @@ const initUI = (global: Global) => {
 
     // populate the info-panel title with the app version
     dom.appVersionLabel.textContent = appVersion;
-    
+
     const isOmg4Content = () => {
         const filename = config.contentFilename ?? config.contentUrl ?? '';
         return filename.toLowerCase().endsWith('.omg4');
