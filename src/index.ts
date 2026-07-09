@@ -103,12 +103,7 @@ const loadOmg4Gsplat = async (app: AppBase, config: Config, global: Global, prog
             rotationEulerDeg: config.omg4RotationDeg ?? [270, 0, 0],
             alphaClip: 1 / 1024
         });
-        animation.bind(entity);
-        if (data.cov2dScale) {
-            // 0.7096 = |1.3 * tan(-0.5)|: the reference rasterizer's pinned
-            // Jacobian tilt under the FoV-sentinel bug.
-            app.graphicsDevice.scope.resolve('omg4CovScale').setValue([...data.cov2dScale, 0.7096]);
-        }
+        animation.bind(entity, data.cov2dScale);
         return entity;
     }
 
