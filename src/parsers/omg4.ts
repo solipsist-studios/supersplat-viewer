@@ -276,6 +276,9 @@ class Omg4V2Data {
 
     readonly fps: number;
 
+    // Optional screen-space 2D covariance scale (kx, ky) from the header.
+    cov2dScale: [number, number] | null = null;
+
     readonly gsplatData: GSplatData;
 
     // Per-splat temporal parameters
@@ -308,6 +311,21 @@ class Omg4V2Data {
         this.timeMin = view.getFloat32(16, true);
         this.timeMax = view.getFloat32(20, true);
         this.fps = view.getFloat32(24, true);
+
+        // flags bit 1: reserved word carries a screen-space 2D-covariance
+        // scale (kx, ky as 2 x float16) that the renderer must apply.
+        if ((flags & 2) !== 0) {
+            const halfToFloat = (h: number) => {
+                const s = (h & 0x8000) ? -1 : 1;
+                const e = (h >> 10) & 0x1f;
+                const m = h & 0x3ff;
+                if (e === 0) return s * m * 2 ** -24;
+                if (e === 31) return m ? NaN : s * Infinity;
+                return s * (1 + m / 1024) * 2 ** (e - 15);
+            };
+            const reserved = view.getUint32(28, true);
+            this.cov2dScale = [halfToFloat(reserved & 0xffff), halfToFloat(reserved >>> 16)];
+        }
 
         const numFields = V2_NUM_FIELDS + (hasSH ? 45 : 0);
         const expectedSize = V2_HEADER_SIZE + numFields * N * 4;
