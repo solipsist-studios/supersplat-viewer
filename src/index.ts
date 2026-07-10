@@ -23,9 +23,9 @@ import { MeshCollision, loadVoxelCollision } from './collision';
 import type { Collision } from './collision';
 import { setupSplatAnim } from './core/load-splat-anim';
 import { observe } from './core/observe';
-import { initLocalization } from './localization';
 import { streamOmg4Data } from './core/stream-omg4';
 import { streamQueenData } from './core/stream-queen';
+import { initLocalization } from './localization';
 import { importSettings } from './settings';
 import type { Config, Global } from './types';
 import { initPoster, initUI } from './ui';
@@ -133,8 +133,8 @@ const createApp = async (canvas: HTMLCanvasElement, config: Config) => {
     const useWebGPU = config.renderer === 'webgpu';
 
     // Create the graphics device. The engine auto-appends WebGL2/null fallbacks
-    // when WebGPU isn't supported, so request xrCompatible so the WebGL fallback
-    // is also usable for AR/VR.
+    // when WebGPU isn't supported. Request xrCompatible so the device — WebGPU
+    // (via XRGPUBinding) or the WebGL fallback — is usable for AR/VR.
     const device = await createGraphicsDevice(canvas, {
         deviceTypes: useWebGPU ? ['webgpu'] : [],
         antialias: false,
