@@ -38,7 +38,7 @@ type State = {
     progress: number;                           // content loading progress 0-100
     inputMode: InputMode;
     cameraMode: CameraMode;
-    hasAnimation: boolean;
+    hasAnimation: boolean;                      // true only for 4DGS content — the timeline drives file playback, not the camera
     animationDuration: number;
     animationTime: number;
     animationPaused: boolean;

@@ -472,10 +472,11 @@ const initUI = (global: Global) => {
     const arChanged = () => dom.arMode.classList[state.hasAR ? 'remove' : 'add']('hidden');
     const vrChanged = () => dom.vrMode.classList[state.hasVR ? 'remove' : 'add']('hidden');
 
-    // XR sessions require a WebGL device. Under WebGPU, prompt the user to reload
-    // the viewer with the WebGL renderer before starting AR/VR. Use replace() so
-    // the renderer-switch reload doesn't add a back-button entry — important
-    // because the viewer often runs inside an iframe (e.g. superspl.at /scene).
+    // When a session can't start on the current (WebGPU) device but would work on
+    // WebGL, prompt the user to reload the viewer with the WebGL renderer before
+    // starting AR/VR. Use replace() so the renderer-switch reload doesn't add a
+    // back-button entry — important because the viewer often runs inside an
+    // iframe (e.g. superspl.at /scene).
     const reloadWithWebgl = () => {
         const reloadUrl = new URL(location.href);
         reloadUrl.searchParams.set('webgl', '');
@@ -490,10 +491,13 @@ const initUI = (global: Global) => {
     dom.xrModal.addEventListener('pointerdown', hideXrModal);
 
     const handleXrClick = (type: 'AR' | 'VR') => {
-        if (global.renderer !== 'webgl') {
-            showXrModal();
-        } else {
+        // Availability is backend-aware: when the session can start on the current
+        // device (WebGPU included), start it directly. Otherwise the button is only
+        // visible because the session would work on WebGL, so offer the reload.
+        if (global.app.xr.isAvailable(type === 'AR' ? 'immersive-ar' : 'immersive-vr')) {
             events.fire(type === 'AR' ? 'startAR' : 'startVR');
+        } else {
+            showXrModal();
         }
     };
 
@@ -635,83 +639,95 @@ const initUI = (global: Global) => {
         showUI();
     });
 
-    // Animation controls
-    events.on('hasAnimation:changed', (value, prev) => {
-        // Start and Stop animation
-        dom.play.addEventListener('click', () => {
+    // Animation controls. Wired up unconditionally: 3D content always has a
+    // camera track (authored, or CameraManager's generated turntable
+    // fallback), so there's always something for play/pause and the
+    // timeline to control. state.hasAnimation is true only for 4DGS content,
+    // in which case these controls drive file playback instead and leave
+    // the camera alone.
+    dom.play.addEventListener('click', () => {
+        if (!state.hasAnimation) {
             state.cameraMode = 'anim';
-            state.animationPaused = false;
-        });
+        }
+        state.animationPaused = false;
+    });
 
-        dom.pause.addEventListener('click', () => {
+    dom.pause.addEventListener('click', () => {
+        if (!state.hasAnimation) {
             state.cameraMode = 'anim';
+        }
+        state.animationPaused = true;
+    });
+
+    const updatePlayPause = () => {
+        const playing = state.hasAnimation ?
+            !state.animationPaused :
+            (state.cameraMode === 'anim' && !state.animationPaused);
+
+        if (playing) {
+            dom.play.classList.add('hidden');
+            dom.pause.classList.remove('hidden');
+        } else {
+            dom.play.classList.remove('hidden');
+            dom.pause.classList.add('hidden');
+        }
+
+        if (state.hasAnimation || state.cameraMode === 'anim') {
+            dom.timelineContainer.classList.remove('hidden');
+        } else {
+            dom.timelineContainer.classList.add('hidden');
+        }
+    };
+
+    // Update UI on animation changes
+    events.on('hasAnimation:changed', updatePlayPause);
+    events.on('cameraMode:changed', updatePlayPause);
+    events.on('animationPaused:changed', updatePlayPause);
+    updatePlayPause();
+
+    const updateSlider = () => {
+        dom.handle.style.left = `${state.animationTime / state.animationDuration * 100}%`;
+        dom.time.style.left = `${state.animationTime / state.animationDuration * 100}%`;
+        dom.time.innerText = `${state.animationTime.toFixed(1)}s`;
+    };
+
+    events.on('animationTime:changed', updateSlider);
+    events.on('animationLength:changed', updateSlider);
+
+    const handleScrub = (event: PointerEvent) => {
+        const rect = dom.timelineContainer.getBoundingClientRect();
+        const t = Math.max(0, Math.min(rect.width - 1, event.clientX - rect.left)) / rect.width;
+        events.fire('scrubAnim', state.animationDuration * t);
+        showUI();
+    };
+
+    let paused = false;
+    let captured = false;
+
+    dom.timelineContainer.addEventListener('pointerdown', (event: PointerEvent) => {
+        if (!captured) {
+            handleScrub(event);
+            dom.timelineContainer.setPointerCapture(event.pointerId);
+            dom.time.classList.remove('hidden');
+            paused = state.animationPaused;
             state.animationPaused = true;
-        });
+            captured = true;
+        }
+    });
 
-        const updatePlayPause = () => {
-            if (state.cameraMode !== 'anim' || state.animationPaused) {
-                dom.play.classList.remove('hidden');
-                dom.pause.classList.add('hidden');
-            } else {
-                dom.play.classList.add('hidden');
-                dom.pause.classList.remove('hidden');
-            }
+    dom.timelineContainer.addEventListener('pointermove', (event: PointerEvent) => {
+        if (captured) {
+            handleScrub(event);
+        }
+    });
 
-            if (state.cameraMode === 'anim') {
-                dom.timelineContainer.classList.remove('hidden');
-            } else {
-                dom.timelineContainer.classList.add('hidden');
-            }
-        };
-
-        // Update UI on animation changes
-        events.on('cameraMode:changed', updatePlayPause);
-        events.on('animationPaused:changed', updatePlayPause);
-
-        const updateSlider = () => {
-            dom.handle.style.left = `${state.animationTime / state.animationDuration * 100}%`;
-            dom.time.style.left = `${state.animationTime / state.animationDuration * 100}%`;
-            dom.time.innerText = `${state.animationTime.toFixed(1)}s`;
-        };
-
-        events.on('animationTime:changed', updateSlider);
-        events.on('animationLength:changed', updateSlider);
-
-        const handleScrub = (event: PointerEvent) => {
-            const rect = dom.timelineContainer.getBoundingClientRect();
-            const t = Math.max(0, Math.min(rect.width - 1, event.clientX - rect.left)) / rect.width;
-            events.fire('scrubAnim', state.animationDuration * t);
-            showUI();
-        };
-
-        let paused = false;
-        let captured = false;
-
-        dom.timelineContainer.addEventListener('pointerdown', (event: PointerEvent) => {
-            if (!captured) {
-                handleScrub(event);
-                dom.timelineContainer.setPointerCapture(event.pointerId);
-                dom.time.classList.remove('hidden');
-                paused = state.animationPaused;
-                state.animationPaused = true;
-                captured = true;
-            }
-        });
-
-        dom.timelineContainer.addEventListener('pointermove', (event: PointerEvent) => {
-            if (captured) {
-                handleScrub(event);
-            }
-        });
-
-        dom.timelineContainer.addEventListener('pointerup', (event) => {
-            if (captured) {
-                dom.timelineContainer.releasePointerCapture(event.pointerId);
-                dom.time.classList.add('hidden');
-                state.animationPaused = paused;
-                captured = false;
-            }
-        });
+    dom.timelineContainer.addEventListener('pointerup', (event) => {
+        if (captured) {
+            dom.timelineContainer.releasePointerCapture(event.pointerId);
+            dom.time.classList.add('hidden');
+            state.animationPaused = paused;
+            captured = false;
+        }
     });
 
     // Camera mode UI

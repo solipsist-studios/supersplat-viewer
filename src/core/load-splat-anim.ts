@@ -55,8 +55,12 @@ const setupSplatAnim = (
 
     const detachAnim = animation.attach(global);
 
+    // Set synchronously (not deferred to 'firstFrame') so CameraManager,
+    // constructed immediately after this resolves, already knows the
+    // content is 4DGS and skips its camera-anim-track defaults.
+    global.state.hasAnimation = true;
+
     const onFirstFrame = () => {
-        global.state.hasAnimation = true;
         global.state.animationDuration = animation.duration;
     };
     global.events.once('firstFrame', onFirstFrame);
