@@ -337,7 +337,7 @@ class StreamedOmg4Data implements Omg4FrameData {
         return fetched;
     }
 
-    private async ensurePrefetchRunning(): Promise<void> {
+    private ensurePrefetchRunning(): Promise<void> {
         if (this.prefetchPromise) {
             return this.prefetchPromise;
         }
@@ -353,6 +353,7 @@ class StreamedOmg4Data implements Omg4FrameData {
         while (this.nextFrameToFetch <= this.prefetchTargetFrame && this.nextFrameToFetch < this.header.numFrames) {
             const startFrame = this.nextFrameToFetch;
             const endFrame = Math.min(this.header.numFrames - 1, startFrame + FRAMES_PER_CHUNK - 1);
+            // eslint-disable-next-line no-await-in-loop
             await this.fetchChunkRange(startFrame, endFrame);
 
             this.nextFrameToFetch = endFrame + 1;

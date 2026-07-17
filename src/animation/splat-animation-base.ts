@@ -40,9 +40,13 @@ abstract class SplatAnimationBase {
 
             applyingFrame = true;
             try {
-                while (queuedFrame !== null && !destroyed) {
+                while (queuedFrame !== null) {
+                    if (destroyed) {
+                        break;
+                    }
                     const frameIdx = queuedFrame;
                     queuedFrame = null;
+                    // eslint-disable-next-line no-await-in-loop
                     if (await this.setFrame(frameIdx)) {
                         sortAndRender();
                     }
@@ -56,7 +60,7 @@ abstract class SplatAnimationBase {
 
         const requestFrame = (frameIdx: number) => {
             queuedFrame = frameIdx;
-            void applyQueuedFrame();
+            applyQueuedFrame();
         };
 
         const onUpdate = (dt: number) => {
