@@ -226,10 +226,21 @@ The viewer supports animated 4D Gaussian Splat scenes produced by the
 
 ### What is `.omg4`?
 
-`.omg4` is a web-friendly binary container that stores pre-baked per-frame
-Gaussian attributes (position, rotation, scale, opacity, colour) so the
-browser can play back an OMG4 animation at runtime without any GPU-side MLP
-inference.
+`.omg4` is a web-friendly binary container for OMG4's 4D (space-time)
+Gaussians. The current **version 2** format stores each Gaussian once —
+position, sliced 3D covariance, colour, plus its temporal parameters
+(linear velocity, temporal centre, temporal std-dev) — and the viewer
+evaluates motion and temporal fade **on the GPU** each frame:
+
+```
+position(t) = position + velocity · (t − t_center)
+alpha(t)    = sigmoid(opacity) · exp(−0.5 · ((t − t_center) / t_sigma)²)
+```
+
+Playback is continuous in time (no baked frames, no per-frame texture
+uploads) and a full 10-second Neural-3D-Video scene fits in ~36 MB
+(~11 MB without view-dependent SH). The legacy version 1 format (baked
+per-frame attributes) is still supported for playback.
 
 ### Converting an OMG4 `.xz` checkpoint
 
@@ -247,40 +258,49 @@ https://example.com/viewer/?content=scene.omg4
 
 The viewer will display a play/pause button and a timeline scrubber, just like
 camera animation.  The user can orbit/fly around the scene while the OMG4
-animation plays. Playback timing follows the per-frame timestamps baked into
-the `.omg4` file, so custom `--omg4-time-min` / `--omg4-time-max` exports from
-`splat-transform` are respected.
+animation plays. The clip time range comes from the file header
+(`--time_min` / `--time_max` at export time).
 
-### File-size guidance
+### File-size guidance (version 2)
 
-| Gaussians (N) | Frames (F) | Approx. file size |
-|---------------|------------|-------------------|
-| 50 000        | 30         | ~42 MB            |
-| 100 000       | 30         | ~84 MB            |
-| 100 000       | 50         | ~140 MB           |
+| Gaussians (N) | Without SH | With 3-band SH |
+|---------------|------------|----------------|
+| 100 000       | ~7.6 MB    | ~26 MB         |
+| 150 000       | ~11 MB     | ~38 MB         |
 
-Standard gzip compression (e.g. `gzip -k scene.omg4`) and serving with
-`Content-Encoding: gzip` typically halves the transfer size.
+File size is independent of clip duration. Standard gzip compression
+(e.g. `gzip -k scene.omg4`) and serving with `Content-Encoding: gzip`
+reduces the transfer size further.
 
-### Binary format specification
+### Binary format specification (version 2)
 
 ```
-Header (28 bytes, all values little-endian):
+Header (32 bytes, all values little-endian):
   uint32  magic = 0x34474D4F  ("OMG4")
-  uint32  version = 1
-  uint32  numSplats
-  uint32  numFrames
-  float32 fps
-  float32 timeDurationMin
-  float32 timeDurationMax
+  uint32  version = 2
+  uint32  numSplats (N)
+  uint32  flags               — bit 0: file includes 45 f_rest SH arrays
+  float32 timeMin             — clip start (seconds)
+  float32 timeMax             — clip end (seconds)
+  float32 fps                 — advisory only (UI)
+  uint32  reserved
 
-Per-frame record (repeated numFrames times):
-  float32          timestamp
-  float32[N × 14]  per-splat data, AoS layout per splat:
-    x  y  z                    — world-space position
-    rot_0  rot_1  rot_2  rot_3  — quaternion (w, x, y, z), raw
-    scale_0  scale_1  scale_2   — log-space scales (renderer applies exp)
-    opacity                     — logit-space opacity (renderer applies sigmoid)
-    f_dc_0  f_dc_1  f_dc_2      — raw SH DC coefficients
-                                  (renderer computes 0.5 + val × SH_C0)
+Data: 19 SoA float32[N] arrays, in order:
+  x  y  z                     — position at t = t_center
+  rot_0  rot_1  rot_2  rot_3  — quaternion (w, x, y, z) of sliced 3D covariance
+  scale_0  scale_1  scale_2   — log-space scales (renderer applies exp)
+  opacity                     — logit-space peak opacity (renderer applies sigmoid)
+  f_dc_0  f_dc_1  f_dc_2      — raw SH DC coefficients
+                                (renderer computes 0.5 + val × SH_C0)
+  vx  vy  vz                  — linear velocity (scene units / second)
+  t_center                    — temporal centre (seconds)
+  t_sigma                     — temporal std-dev (seconds)
+
+If flags bit 0 is set, 45 further float32[N] arrays follow: f_rest_0..44,
+standard 3-band spherical harmonics (PLY channel-major order), baked from
+the OMG4 view MLP at each splat's temporal centre.
 ```
+
+The legacy version 1 layout (28-byte header, baked per-frame AoS records)
+is documented in `src/parsers/omg4.ts` and remains playable via the
+streaming path.

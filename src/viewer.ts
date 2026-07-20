@@ -188,6 +188,11 @@ class Viewer {
         const wgsl = ShaderChunks.get(graphicsDevice, 'wgsl');
         wgsl.set('skyboxPS', patchChunk(wgsl.get('skyboxPS'), 'mapRoughnessUv(uv, uniform.mipLevel)', 'uv', 'wgsl skyboxPS'));
 
+        // Optional screen-space 2D-covariance scale for gsplat rendering,
+        // used by .omg4 v2 files that carry a cov2dScale header field (it
+        // compensates models trained under OMG4's FoV-sentinel footprint
+        // inflation). Identity for all other content.
+
         this.origChunks = {
             glsl: {
                 gsplatOutputVS: glsl.get('gsplatOutputVS'),
