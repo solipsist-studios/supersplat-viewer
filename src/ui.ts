@@ -4,7 +4,7 @@ import { version as appVersion } from '../package.json';
 import { localize } from './localization';
 import type { Annotation } from './settings';
 import { Tooltip } from './tooltip';
-import { Global } from './types';
+import { Global, LoopMode } from './types';
 
 // Initialize the touch joystick for fly mode camera control
 const initJoystick = (
@@ -235,6 +235,8 @@ const initUI = (global: Global) => {
         'timelineContainer', 'handle', 'time',
         'buttonContainer',
         'play', 'pause',
+        'loopMode', 'loopRepeatSvg', 'loopPingpongSvg', 'loopNoneSvg',
+        'playbackSpeed',
         'settings', 'settingsPanel',
         'omg4RotationBlock', 'omg4RotationValue',
         'omg4RotateXNeg', 'omg4RotateXPos',
@@ -649,6 +651,11 @@ const initUI = (global: Global) => {
         if (!state.hasAnimation) {
             state.cameraMode = 'anim';
         }
+        // play-once mode holds at the end; pressing play again restarts
+        if (state.animationLoopMode === 'none' &&
+            state.animationDuration > 0 && state.animationTime >= state.animationDuration) {
+            events.fire('scrubAnim', 0);
+        }
         state.animationPaused = false;
     });
 
@@ -658,6 +665,38 @@ const initUI = (global: Global) => {
         }
         state.animationPaused = true;
     });
+
+    // Loop mode toggle: cycles loop → bounce → play-once.
+    const loopModes: LoopMode[] = ['repeat', 'pingpong', 'none'];
+
+    const updateLoopModeUI = () => {
+        dom.loopRepeatSvg.classList.toggle('hidden', state.animationLoopMode !== 'repeat');
+        dom.loopPingpongSvg.classList.toggle('hidden', state.animationLoopMode !== 'pingpong');
+        dom.loopNoneSvg.classList.toggle('hidden', state.animationLoopMode !== 'none');
+    };
+
+    dom.loopMode.addEventListener('click', () => {
+        const next = loopModes[(loopModes.indexOf(state.animationLoopMode) + 1) % loopModes.length];
+        state.animationLoopMode = next;
+    });
+
+    events.on('animationLoopMode:changed', updateLoopModeUI);
+    updateLoopModeUI();
+
+    // Playback speed: cycles through fixed multipliers.
+    const playbackSpeeds = [0.5, 1, 1.5, 2];
+
+    const updatePlaybackSpeedUI = () => {
+        dom.playbackSpeed.textContent = `${state.animationSpeed}×`;
+    };
+
+    dom.playbackSpeed.addEventListener('click', () => {
+        const idx = playbackSpeeds.indexOf(state.animationSpeed);
+        state.animationSpeed = playbackSpeeds[(idx + 1) % playbackSpeeds.length];
+    });
+
+    events.on('animationSpeed:changed', updatePlaybackSpeedUI);
+    updatePlaybackSpeedUI();
 
     const updatePlayPause = () => {
         const playing = state.hasAnimation ?
@@ -829,6 +868,8 @@ const initUI = (global: Global) => {
 
     tooltip.register(dom.play, localize('tooltip.play'), 'top');
     tooltip.register(dom.pause, localize('tooltip.pause'), 'top');
+    tooltip.register(dom.loopMode, localize('tooltip.loop-mode'), 'top');
+    tooltip.register(dom.playbackSpeed, localize('tooltip.playback-speed'), 'top');
     tooltip.register(dom.orbitCamera, localize('tooltip.orbit-camera'), 'top');
     tooltip.register(dom.flyCamera, localize('tooltip.fly-camera'), 'top');
     tooltip.register(dom.fpsCamera, localize('tooltip.walk-mode'), 'top');

@@ -295,6 +295,19 @@ button {
                 color: $clr-accent;
             }
 
+            /* text-based buttons (e.g. playback speed) — match the outlined
+               look of the SVG icons with a dark text-shadow */
+            &.textButton {
+                font-size: 12px;
+                font-weight: bold;
+                white-space: nowrap;
+                text-shadow:
+                    -1px -1px 0 rgba(black, 0.4),
+                     1px -1px 0 rgba(black, 0.4),
+                    -1px  1px 0 rgba(black, 0.4),
+                     1px  1px 0 rgba(black, 0.4);
+            }
+
             /* camera toggle styling */
             &.toggle {
                 background: linear-gradient(

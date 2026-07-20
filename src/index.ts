@@ -304,6 +304,8 @@ const main = async (canvas: HTMLCanvasElement, settingsJson: any, config: Config
         animationDuration: 0,
         animationTime: 0,
         animationPaused: true,
+        animationLoopMode: 'repeat',
+        animationSpeed: 1,
         hasAR: false,
         hasVR: false,
         hasCollision: false,
