@@ -55,9 +55,17 @@ abstract class SplatAnimationBase {
             }
         };
 
-        const requestFrame = (frameIdx: number) => {
+        // Resolves once the queued frame has been applied. A run already in
+        // flight drains whatever is queued before it finishes, so awaiting it
+        // covers a frame queued behind it.
+        let runPromise: Promise<void> = Promise.resolve();
+
+        const requestFrame = (frameIdx: number): Promise<void> => {
             queuedFrame = frameIdx;
-            void applyQueuedFrame();
+            if (!applyingFrame) {
+                runPromise = applyQueuedFrame();
+            }
+            return runPromise;
         };
 
         const onUpdate = (dt: number) => {
@@ -75,13 +83,15 @@ abstract class SplatAnimationBase {
             requestFrame(frameIdx);
         };
 
-        // Handle timeline scrubbing from the UI.
-        const onScrub = (time: number) => {
+        // Handle timeline scrubbing from the UI. `pending`, when supplied by a
+        // programmatic scrub (window.scrubTo), collects the frame-application
+        // work so the caller can await the new frame actually being in place.
+        const onScrub = (time: number, pending?: Promise<void>[]) => {
             playhead.seek(time, this.duration);
             state.animationTime = playhead.time;
 
             const frameIdx = this.getFrameIndex(playhead.time);
-            requestFrame(frameIdx);
+            pending?.push(requestFrame(frameIdx));
         };
 
         // Leaving pingpong mode resumes normal forward playback.
