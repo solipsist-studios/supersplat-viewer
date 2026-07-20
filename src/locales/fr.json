@@ -6,6 +6,8 @@
 
     "tooltip.play": "Lecture",
     "tooltip.pause": "Pause",
+    "tooltip.loop-mode": "Mode de boucle",
+    "tooltip.playback-speed": "Vitesse de lecture",
     "tooltip.orbit-camera": "Caméra orbitale",
     "tooltip.fly-camera": "Caméra volante",
     "tooltip.walk-mode": "Mode marche",
