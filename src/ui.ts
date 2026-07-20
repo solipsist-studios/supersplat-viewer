@@ -349,9 +349,14 @@ const initUI = (global: Global) => {
 
     updateOmg4RotationVisibility();
 
-    // Remove focus from buttons after click so keyboard input isn't captured by the UI
+    // Remove focus from buttons after click so keyboard input isn't captured by the UI.
+    // Skip actual text inputs (e.g. the custom playback speed field) — blurring those
+    // would undo the focus the same click just gave them.
     dom.ui.addEventListener('click', () => {
-        (document.activeElement as HTMLElement)?.blur();
+        const active = document.activeElement as HTMLElement;
+        if (active && active.tagName !== 'INPUT') {
+            active.blur();
+        }
     });
 
     // Forward wheel events from UI overlays to the canvas so the camera zooms
