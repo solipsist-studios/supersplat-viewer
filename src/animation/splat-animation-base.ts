@@ -1,3 +1,4 @@
+import { Playhead } from './playhead';
 import type { Global } from '../types';
 
 // Abstract base for all animated Gaussian-splat drivers.
@@ -20,8 +21,7 @@ abstract class SplatAnimationBase {
     // Returns a cleanup function that removes the listeners.
     attach(global: Global): () => void {
         const { app, state, events, camera } = global;
-        let animTime = 0;
-        let direction = 1;              // pingpong playback direction
+        const playhead = new Playhead();
         let destroyed = false;
         let applyingFrame = false;
         let queuedFrame: number | null = null;
@@ -62,54 +62,31 @@ abstract class SplatAnimationBase {
 
         const onUpdate = (dt: number) => {
             if (!state.animationPaused) {
-                animTime += dt * state.animationSpeed * direction;
-                if (this.duration <= 0) {
-                    animTime = 0;
-                } else if (animTime > this.duration || animTime < 0) {
-                    switch (state.animationLoopMode) {
-                        case 'none':
-                            // play through once, then hold on the last frame
-                            animTime = this.duration;
-                            state.animationPaused = true;
-                            break;
-                        case 'repeat':
-                            animTime = ((animTime % this.duration) + this.duration) % this.duration;
-                            break;
-                        case 'pingpong':
-                            // bounce off whichever end was crossed
-                            if (animTime > this.duration) {
-                                animTime = 2 * this.duration - animTime;
-                                direction = -1;
-                            } else {
-                                animTime = -animTime;
-                                direction = 1;
-                            }
-                            break;
-                    }
+                if (playhead.advance(dt, this.duration, state)) {
+                    state.animationPaused = true;
                 }
-                state.animationTime = animTime;
+                state.animationTime = playhead.time;
             } else {
                 // Honour external scrubs that write to state.animationTime directly.
-                animTime = state.animationTime;
+                playhead.time = state.animationTime;
             }
 
-            const frameIdx = this.getFrameIndex(animTime);
+            const frameIdx = this.getFrameIndex(playhead.time);
             requestFrame(frameIdx);
         };
 
         // Handle timeline scrubbing from the UI.
         const onScrub = (time: number) => {
-            animTime = Math.max(0, Math.min(this.duration, time));
-            direction = 1;
-            state.animationTime = animTime;
+            playhead.seek(time, this.duration);
+            state.animationTime = playhead.time;
 
-            const frameIdx = this.getFrameIndex(animTime);
+            const frameIdx = this.getFrameIndex(playhead.time);
             requestFrame(frameIdx);
         };
 
         // Leaving pingpong mode resumes normal forward playback.
         const onLoopModeChanged = () => {
-            direction = 1;
+            playhead.resetDirection();
         };
 
         app.on('update', onUpdate);
