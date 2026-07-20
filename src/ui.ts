@@ -236,7 +236,7 @@ const initUI = (global: Global) => {
         'buttonContainer',
         'play', 'pause',
         'loopMode', 'loopRepeatSvg', 'loopPingpongSvg', 'loopNoneSvg',
-        'playbackSpeed',
+        'playbackSpeedControl', 'playbackSpeed', 'playbackSpeedMenu', 'playbackSpeedCustom',
         'settings', 'settingsPanel',
         'omg4RotationBlock', 'omg4RotationValue',
         'omg4RotateXNeg', 'omg4RotateXPos',
@@ -262,6 +262,16 @@ const initUI = (global: Global) => {
         acc[id] = document.getElementById(id);
         return acc;
     }, {});
+
+    // Defined up here (rather than with the rest of the playback-speed wiring
+    // below) because the general dismissal paths — cancel/interrupt and the
+    // inactivity hide — need to close the dropdown too.
+    const isSpeedMenuOpen = () => !dom.playbackSpeedMenu.classList.contains('hidden');
+
+    const closeSpeedMenu = () => {
+        dom.playbackSpeedMenu.classList.add('hidden');
+        dom.playbackSpeed.classList.remove('menuOpen');
+    };
 
     // populate the info-panel title with the app version
     dom.appVersionLabel.textContent = appVersion;
@@ -553,6 +563,7 @@ const initUI = (global: Global) => {
             // close info panel on cancel
             dom.infoPanel.classList.add('hidden');
             dom.settingsPanel.classList.add('hidden');
+            closeSpeedMenu();
 
             // close fullscreen on cancel
             if (state.isFullscreen) {
@@ -560,6 +571,7 @@ const initUI = (global: Global) => {
             }
         } else if (event === 'interrupt') {
             dom.settingsPanel.classList.add('hidden');
+            closeSpeedMenu();
         }
     });
 
@@ -587,6 +599,7 @@ const initUI = (global: Global) => {
         dom.infoPanel.classList.add('hidden');
         dom.settingsPanel.classList.add('hidden');
         dom.walkHint.classList.add('hidden');
+        closeSpeedMenu();
         state.controlsHidden = true;
     };
 
@@ -601,7 +614,9 @@ const initUI = (global: Global) => {
         state.controlsHidden = false;
         uiTimeout = setTimeout(() => {
             uiTimeout = null;
-            if (!annotationVisible) {
+            // an open speed dropdown counts as active interaction — fading the
+            // controls would yank the entry field out from under the user
+            if (!annotationVisible && !isSpeedMenuOpen()) {
                 state.controlsHidden = true;
             }
         }, 4000);
@@ -683,16 +698,67 @@ const initUI = (global: Global) => {
     events.on('animationLoopMode:changed', updateLoopModeUI);
     updateLoopModeUI();
 
-    // Playback speed: cycles through fixed multipliers.
-    const playbackSpeeds = [0.5, 1, 1.5, 2];
+    // Playback speed: a dropdown of presets plus a free-form entry field.
+    // Bounds match the input's min/max in index.html.
+    const minSpeed = 0.1;
+    const maxSpeed = 10;
+    const speedInput = dom.playbackSpeedCustom as HTMLInputElement;
+    const speedPresets = Array.from(
+        dom.playbackSpeedMenu.querySelectorAll<HTMLElement>('.speedPreset')
+    );
+
+    // Trim float noise (1.0500000000000003 → 1.05) so the label stays readable.
+    const formatSpeed = (speed: number) => parseFloat(speed.toFixed(2)).toString();
 
     const updatePlaybackSpeedUI = () => {
-        dom.playbackSpeed.textContent = `${state.animationSpeed}×`;
+        dom.playbackSpeed.textContent = `${formatSpeed(state.animationSpeed)}×`;
+        speedPresets.forEach((preset) => {
+            preset.classList.toggle('active', parseFloat(preset.dataset.speed) === state.animationSpeed);
+        });
+    };
+
+    const openSpeedMenu = () => {
+        // seed the field with the live value so it can be tweaked from there
+        speedInput.value = formatSpeed(state.animationSpeed);
+        dom.playbackSpeedMenu.classList.remove('hidden');
+        dom.playbackSpeed.classList.add('menuOpen');
     };
 
     dom.playbackSpeed.addEventListener('click', () => {
-        const idx = playbackSpeeds.indexOf(state.animationSpeed);
-        state.animationSpeed = playbackSpeeds[(idx + 1) % playbackSpeeds.length];
+        if (isSpeedMenuOpen()) {
+            closeSpeedMenu();
+        } else {
+            openSpeedMenu();
+        }
+    });
+
+    speedPresets.forEach((preset) => {
+        preset.addEventListener('click', () => {
+            state.animationSpeed = parseFloat(preset.dataset.speed);
+            closeSpeedMenu();
+        });
+    });
+
+    // Apply the typed speed, ignoring junk and clamping to the supported range.
+    const applyCustomSpeed = () => {
+        const value = parseFloat(speedInput.value);
+        if (!isFinite(value)) {
+            speedInput.value = formatSpeed(state.animationSpeed);
+            return;
+        }
+        const clamped = Math.min(maxSpeed, Math.max(minSpeed, value));
+        state.animationSpeed = parseFloat(clamped.toFixed(2));
+        speedInput.value = formatSpeed(state.animationSpeed);
+    };
+
+    speedInput.addEventListener('change', applyCustomSpeed);
+    speedInput.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter') {
+            applyCustomSpeed();
+            closeSpeedMenu();
+        }
+        // keep viewer shortcuts (space, escape, …) from firing while typing
+        event.stopPropagation();
     });
 
     events.on('animationSpeed:changed', updatePlaybackSpeedUI);

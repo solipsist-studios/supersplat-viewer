@@ -194,7 +194,19 @@
                                 <g class='fill'><use href="#loopNoneIcon"/></g>
                             </svg>
                         </button>
-                        <button id="playbackSpeed" class="controlButton textButton">1&times;</button>
+                        <div id="playbackSpeedControl">
+                            <button id="playbackSpeed" class="controlButton textButton">1&times;</button>
+                            <div id="playbackSpeedMenu" class="hidden">
+                                <button class="speedPreset" data-speed="2">2&times;</button>
+                                <button class="speedPreset" data-speed="1">1&times;</button>
+                                <button class="speedPreset" data-speed="0.5">0.5&times;</button>
+                                <button class="speedPreset" data-speed="0.25">0.25&times;</button>
+                                <div class="speedCustomRow">
+                                    <input id="playbackSpeedCustom" type="number" min="0.1" max="10" step="0.05" inputmode="decimal" aria-label="Custom playback speed">
+                                    <span>&times;</span>
+                                </div>
+                            </div>
+                        </div>
                     </div>
 
                     <div class="spacer"></div>
