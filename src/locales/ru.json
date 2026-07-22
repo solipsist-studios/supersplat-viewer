@@ -6,6 +6,8 @@
 
     "tooltip.play": "Воспроизвести",
     "tooltip.pause": "Пауза",
+    "tooltip.loop-mode": "Режим повтора",
+    "tooltip.playback-speed": "Скорость воспроизведения",
     "tooltip.orbit-camera": "Орбитальная камера",
     "tooltip.fly-camera": "Полётная камера",
     "tooltip.walk-mode": "Режим ходьбы",

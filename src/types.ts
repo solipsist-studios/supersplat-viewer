@@ -6,6 +6,8 @@ type CameraMode = 'orbit' | 'anim' | 'fly' | 'walk';
 
 type InputMode = 'desktop' | 'touch';
 
+type LoopMode = 'none' | 'repeat' | 'pingpong';
+
 // configuration options are immutable at runtime
 type Config = {
     poster?: HTMLImageElement;
@@ -42,6 +44,8 @@ type State = {
     animationDuration: number;
     animationTime: number;
     animationPaused: boolean;
+    animationLoopMode: LoopMode;                // transport loop behaviour: play once / loop / bounce
+    animationSpeed: number;                     // playback rate multiplier (1 = realtime)
     hasAR: boolean;
     hasVR: boolean;
     hasCollision: boolean;
@@ -63,4 +67,4 @@ type Global = {
     renderer: 'webgl' | 'webgpu';               // actual renderer in use (reflects engine fallback from WebGPU to WebGL2)
 };
 
-export { CameraMode, InputMode, Config, State, Global };
+export { CameraMode, InputMode, LoopMode, Config, State, Global };

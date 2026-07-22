@@ -1,3 +1,4 @@
+import { Playhead } from './playhead';
 import type { Global } from '../types';
 
 // Abstract base for all animated Gaussian-splat drivers.
@@ -20,7 +21,7 @@ abstract class SplatAnimationBase {
     // Returns a cleanup function that removes the listeners.
     attach(global: Global): () => void {
         const { app, state, events, camera } = global;
-        let animTime = 0;
+        const playhead = new Playhead();
         let destroyed = false;
         let applyingFrame = false;
         let queuedFrame: number | null = null;
@@ -58,43 +59,59 @@ abstract class SplatAnimationBase {
             }
         };
 
-        const requestFrame = (frameIdx: number) => {
+        // Resolves once the queued frame has been applied. A run already in
+        // flight drains whatever is queued before it finishes, so awaiting it
+        // covers a frame queued behind it.
+        let runPromise: Promise<void> = Promise.resolve();
+
+        const requestFrame = (frameIdx: number): Promise<void> => {
             queuedFrame = frameIdx;
-            applyQueuedFrame();
+            if (!applyingFrame) {
+                runPromise = applyQueuedFrame();
+            }
+            return runPromise;
         };
 
         const onUpdate = (dt: number) => {
             if (!state.animationPaused) {
-                animTime += dt;
-                if (animTime > this.duration) {
-                    animTime = this.duration > 0 ? animTime % this.duration : 0;
+                if (playhead.advance(dt, this.duration, state)) {
+                    state.animationPaused = true;
                 }
-                state.animationTime = animTime;
+                state.animationTime = playhead.time;
             } else {
                 // Honour external scrubs that write to state.animationTime directly.
-                animTime = state.animationTime;
+                playhead.time = state.animationTime;
             }
 
-            const frameIdx = this.getFrameIndex(animTime);
+            const frameIdx = this.getFrameIndex(playhead.time);
             requestFrame(frameIdx);
         };
 
-        // Handle timeline scrubbing from the UI.
-        const onScrub = (time: number) => {
-            animTime = Math.max(0, Math.min(this.duration, time));
-            state.animationTime = animTime;
+        // Handle timeline scrubbing from the UI. `pending`, when supplied by a
+        // programmatic scrub (window.scrubTo), collects the frame-application
+        // work so the caller can await the new frame actually being in place.
+        const onScrub = (time: number, pending?: Promise<void>[]) => {
+            playhead.seek(time, this.duration);
+            state.animationTime = playhead.time;
 
-            const frameIdx = this.getFrameIndex(animTime);
-            requestFrame(frameIdx);
+            const frameIdx = this.getFrameIndex(playhead.time);
+            pending?.push(requestFrame(frameIdx));
+        };
+
+        // Leaving pingpong mode resumes normal forward playback.
+        const onLoopModeChanged = () => {
+            playhead.resetDirection();
         };
 
         app.on('update', onUpdate);
         events.on('scrubAnim', onScrub);
+        events.on('animationLoopMode:changed', onLoopModeChanged);
 
         return () => {
             destroyed = true;
             app.off('update', onUpdate);
             events.off('scrubAnim', onScrub);
+            events.off('animationLoopMode:changed', onLoopModeChanged);
         };
     }
 }

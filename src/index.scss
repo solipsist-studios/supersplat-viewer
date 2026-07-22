@@ -295,6 +295,24 @@ button {
                 color: $clr-accent;
             }
 
+            /* text-based buttons (e.g. playback speed) — match the outlined
+               look of the SVG icons with a dark text-shadow */
+            &.textButton {
+                font-size: 12px;
+                font-weight: bold;
+                white-space: nowrap;
+                text-shadow:
+                    -1px -1px 0 rgba(black, 0.4),
+                     1px -1px 0 rgba(black, 0.4),
+                    -1px  1px 0 rgba(black, 0.4),
+                     1px  1px 0 rgba(black, 0.4);
+            }
+
+            /* open dropdown keeps its trigger highlighted */
+            &.menuOpen {
+                color: $clr-accent;
+            }
+
             /* camera toggle styling */
             &.toggle {
                 background: linear-gradient(
@@ -335,6 +353,103 @@ button {
             }
         }
 
+        /* playback speed dropdown — anchors its menu above the trigger button */
+
+        #playbackSpeedControl {
+            position: relative;
+            display: flex;
+        }
+
+        #playbackSpeedMenu {
+            position: absolute;
+            bottom: 100%;
+            left: 50%;
+            transform: translateX(-50%);
+            margin-bottom: 8px;
+            padding: 6px;
+            border-radius: 12px;
+            border: 1px solid rgba(white, 0.08);
+
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+
+            color: $clr-text;
+            background-color: rgba($clr-bkg, 0.9);
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+
+            > .speedPreset {
+                min-width: 76px;
+                height: 30px;
+                padding: 0 12px;
+                border: 0;
+                border-radius: 6px;
+                font-size: 13px;
+                cursor: pointer;
+
+                color: $clr-text-dark;
+                background-color: transparent;
+                transition: background-color 250ms ease, color 250ms ease;
+
+                &:hover {
+                    color: $clr-text-light;
+                    background-color: rgba(white, 0.1);
+                }
+
+                /* the preset matching the current speed */
+                &.active {
+                    color: $clr-accent;
+                    background-color: rgba(white, 0.06);
+                }
+            }
+
+            > .speedCustomRow {
+                display: flex;
+                align-items: center;
+                gap: 4px;
+                margin-top: 4px;
+                padding-top: 6px;
+                border-top: 1px solid rgba(white, 0.08);
+
+                font-size: 13px;
+                color: $clr-text-dark;
+
+                > input {
+                    width: 100%;
+                    min-width: 0;
+                    height: 30px;
+                    padding: 0 8px;
+                    border: 1px solid rgba(white, 0.1);
+                    border-radius: 6px;
+                    font-size: 13px;
+                    font-family: inherit;
+
+                    color: $clr-text-light;
+                    background-color: rgba(white, 0.04);
+
+                    /* body sets user-select/touch-action off for the viewer;
+                       re-enable them so the field behaves like a text input */
+                    user-select: text;
+                    touch-action: auto;
+
+                    /* the unit is rendered alongside, so drop the spinners */
+                    appearance: textfield;
+                    -moz-appearance: textfield;
+
+                    &::-webkit-outer-spin-button,
+                    &::-webkit-inner-spin-button {
+                        appearance: none;
+                        margin: 0;
+                    }
+
+                    &:focus {
+                        outline: none;
+                        border-color: $clr-accent;
+                    }
+                }
+            }
+        }
     }
 }
 
