@@ -130,8 +130,20 @@ const initEmbed = (global: Global, viewer: Viewer) => {
             send({ type: 'ssv:xrNeedsWebgl', mode });
         } else if (global.app.xr?.isAvailable(type)) {
             events.fire(mode === 'AR' ? 'startAR' : 'startVR');
+        } else {
+            send({ type: 'ssv:xrError', message: `${type} session is not available on this device` });
         }
     };
+
+    // Preferred entry point for hosts: calling this synchronously from the
+    // host's click handler keeps WebKit's stack-based user activation alive,
+    // which requestSession requires (a postMessage hop would drop it).
+    window.startXr = startXr;
+
+    // Surface session-start failures to the host (they are otherwise silent).
+    global.app.xr?.on('error', (err: Error) => {
+        send({ type: 'ssv:xrError', message: err?.message ?? String(err) });
+    });
 
     let lastTimeSent = 0;
     events.on('animationTime:changed', () => {
