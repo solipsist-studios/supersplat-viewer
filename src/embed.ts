@@ -140,9 +140,26 @@ const initEmbed = (global: Global, viewer: Viewer) => {
     // which requestSession requires (a postMessage hop would drop it).
     window.startXr = startXr;
 
-    // Surface session-start failures to the host (they are otherwise silent).
+    // Surface session-start failures to the host (they are otherwise silent),
+    // with enough context to tell WHICH security check rejected the session:
+    // iframe secure-context, permissions policy, or missing user activation.
     global.app.xr?.on('error', (err: Error) => {
-        send({ type: 'ssv:xrError', message: err?.message ?? String(err) });
+        const nav = navigator as Navigator & {
+            userActivation?: { isActive: boolean; hasBeenActive: boolean }
+        };
+        const doc = document as Document & {
+            featurePolicy?: { allowsFeature: (feature: string) => boolean }
+        };
+        send({
+            type: 'ssv:xrError',
+            message: err?.message ?? String(err),
+            diagnostics: {
+                secureContext: window.isSecureContext,
+                userActivationActive: nav.userActivation?.isActive ?? null,
+                userActivationHasBeenActive: nav.userActivation?.hasBeenActive ?? null,
+                xrPolicyAllowed: doc.featurePolicy?.allowsFeature('xr-spatial-tracking') ?? null
+            }
+        });
     });
 
     let lastTimeSent = 0;
