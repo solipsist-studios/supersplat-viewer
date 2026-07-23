@@ -61,8 +61,15 @@ class InputController {
         this._global = global;
         this._navInteraction = new NavInteraction(picker);
 
-        const { app, events } = global;
+        const { app, config, events } = global;
         const canvas = app.graphicsDevice.canvas as HTMLCanvasElement;
+
+        // In embed mode the host page owns all input (fed in via
+        // extraDevices) — don't attach the native devices or the app-level
+        // helpers, whose window/canvas listeners would fight the host page.
+        if (config.embed) {
+            return;
+        }
 
         // Trackpad MUST attach before KeyboardMouseDevice so its wheel
         // handler runs first; otherwise stopImmediatePropagation can't
@@ -115,11 +122,13 @@ class InputController {
 
         // order: touch first (so touchCount in ctx reflects this frame's
         // count delta), then everyone else.
-        this._touch.update(ctx, this.frame);
-        ctx.touchCount = this._touch.touchCount;
-        this._keyboardMouse.update(ctx, this.frame);
-        this._trackpad.update(ctx, this.frame);
-        this._gamepad.update(ctx, this.frame);
+        if (!this._global.config.embed) {
+            this._touch.update(ctx, this.frame);
+            ctx.touchCount = this._touch.touchCount;
+            this._keyboardMouse.update(ctx, this.frame);
+            this._trackpad.update(ctx, this.frame);
+            this._gamepad.update(ctx, this.frame);
+        }
         this.extraDevices.forEach(device => device.update(ctx, this.frame));
     }
 }

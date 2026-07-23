@@ -24,6 +24,9 @@
     "./settings": {
       "types": "./dist/settings.d.ts",
       "import": "./dist/settings.js"
+    },
+    "./embed-app": {
+      "import": "./dist/embed-app.js"
     }
   },
   "repository": {

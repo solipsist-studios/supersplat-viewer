@@ -109,9 +109,26 @@ const buildSettings = {
     ]
 };
 
+// Self-contained embeddable viewer library (engine bundled, no HTML UI) for
+// hosting the viewer directly in another page's canvas.
+const buildEmbedApp = {
+    input: 'src/embed-app.ts',
+    output: {
+        file: 'dist/embed-app.js',
+        format: 'esm',
+        sourcemap: true
+    },
+    plugins: [
+        resolve(debugEngine ? { exportConditions: ['development'] } : {}),
+        typescript(),
+        json()
+    ]
+};
+
 export default [
     buildCss,
     buildPublic,
     buildDist,
-    buildSettings
+    buildSettings,
+    buildEmbedApp
 ];
