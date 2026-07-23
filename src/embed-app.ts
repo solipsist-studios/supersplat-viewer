@@ -1,4 +1,4 @@
-import { EventHandler } from 'playcanvas';
+import { EventHandler, type Entity } from 'playcanvas';
 
 import { createApp, createViewerState, initCanvas, load3dgs, load4dgs } from './app-setup';
 import { EmbedInputDevice } from './input/devices/external';
@@ -156,14 +156,29 @@ const createEmbedViewer = async (options: EmbedViewerOptions): Promise<EmbedView
     // origins and scales)
     if (options.position || options.scale) {
         const { position, scale } = options;
-        gsplatLoad.then((entity) => {
+        const applyTransform = (entity: Entity) => {
             if (position) {
                 entity.setLocalPosition(position[0], position[1], position[2]);
             }
             if (scale) {
                 entity.setLocalScale(scale[0], scale[1], scale[2]);
             }
+        };
+
+        let contentEntity: Entity | null = null;
+        gsplatLoad.then((entity) => {
+            contentEntity = entity;
+            applyTransform(entity);
         }).catch(() => {});
+
+        // Re-apply on session end so the page view always returns to the
+        // configured transform, whatever happened during the XR session.
+        app.xr?.on('end', () => {
+            if (contentEntity) {
+                applyTransform(contentEntity);
+                app.renderNextFrame = true;
+            }
+        });
     }
 
     // mirrors the play/pause buttons in ui.ts: 3D content switches to the
