@@ -1,4 +1,4 @@
-import { EventHandler, Vec3, type Entity } from 'playcanvas';
+import { EventHandler } from 'playcanvas';
 
 import { createApp, createViewerState, initCanvas, load3dgs, load4dgs } from './app-setup';
 import { EmbedInputDevice } from './input/devices/external';
@@ -33,11 +33,11 @@ type EmbedViewerOptions = {
     /** 4DGS playback loop style (default 'loop'). */
     loopMode?: 'loop' | 'pingpong';
     /**
-     * Raise the content by this many metres while an XR session is active
-     * (AR uses a floor-level origin, so content authored around y=0 can sit
-     * in the ground). Restored on session end.
+     * World-space position for the content entity. Splats are authored at
+     * arbitrary origins/scales, so each needs its own adjustment — this also
+     * determines where content sits relative to the floor in AR (y=0).
      */
-    xrElevation?: number;
+    position?: [number, number, number];
 };
 
 type XrMode = 'AR' | 'VR';
@@ -150,27 +150,12 @@ const createEmbedViewer = async (options: EmbedViewerOptions): Promise<EmbedView
     app.xr?.on('start', () => events.fire('xrStart'));
     app.xr?.on('end', () => events.fire('xrEnd'));
 
-    // Raise the content while in XR (floor-level origin) and restore after.
-    if (options.xrElevation) {
-        let contentEntity: Entity | null = null;
+    // Position the content entity (splats are authored at arbitrary origins)
+    if (options.position) {
+        const [x, y, z] = options.position;
         gsplatLoad.then((entity) => {
-            contentEntity = entity;
+            entity.setLocalPosition(x, y, z);
         }).catch(() => {});
-
-        const preXrPosition = new Vec3();
-        app.xr?.on('start', () => {
-            if (contentEntity) {
-                preXrPosition.copy(contentEntity.getLocalPosition());
-                contentEntity.setLocalPosition(
-                    preXrPosition.x,
-                    preXrPosition.y + options.xrElevation,
-                    preXrPosition.z
-                );
-            }
-        });
-        app.xr?.on('end', () => {
-            contentEntity?.setLocalPosition(preXrPosition);
-        });
     }
 
     // mirrors the play/pause buttons in ui.ts: 3D content switches to the
