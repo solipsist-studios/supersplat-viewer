@@ -1,4 +1,4 @@
-import { EventHandler } from 'playcanvas';
+import { EventHandler, Vec3, type Entity } from 'playcanvas';
 
 import { createApp, createViewerState, initCanvas, load3dgs, load4dgs } from './app-setup';
 import { EmbedInputDevice } from './input/devices/external';
@@ -30,6 +30,14 @@ type EmbedViewerOptions = {
     noanim?: boolean;
     /** OMG4 content rotation in degrees (default [270, 0, 0]). */
     omg4RotationDeg?: [number, number, number];
+    /** 4DGS playback loop style (default 'loop'). */
+    loopMode?: 'loop' | 'pingpong';
+    /**
+     * Raise the content by this many metres while an XR session is active
+     * (AR uses a floor-level origin, so content authored around y=0 can sit
+     * in the ground). Restored on session end.
+     */
+    xrElevation?: number;
 };
 
 type XrMode = 'AR' | 'VR';
@@ -79,6 +87,7 @@ const createEmbedViewer = async (options: EmbedViewerOptions): Promise<EmbedView
         contentFilename: options.contentFilename,
         contents: fetch(options.contentUrl),
         omg4RotationDeg: options.omg4RotationDeg,
+        animLoopMode: options.loopMode,
         noui: true,
         noanim: !!options.noanim,
         embed: true,
@@ -140,6 +149,29 @@ const createEmbedViewer = async (options: EmbedViewerOptions): Promise<EmbedView
     });
     app.xr?.on('start', () => events.fire('xrStart'));
     app.xr?.on('end', () => events.fire('xrEnd'));
+
+    // Raise the content while in XR (floor-level origin) and restore after.
+    if (options.xrElevation) {
+        let contentEntity: Entity | null = null;
+        gsplatLoad.then((entity) => {
+            contentEntity = entity;
+        }).catch(() => {});
+
+        const preXrPosition = new Vec3();
+        app.xr?.on('start', () => {
+            if (contentEntity) {
+                preXrPosition.copy(contentEntity.getLocalPosition());
+                contentEntity.setLocalPosition(
+                    preXrPosition.x,
+                    preXrPosition.y + options.xrElevation,
+                    preXrPosition.z
+                );
+            }
+        });
+        app.xr?.on('end', () => {
+            contentEntity?.setLocalPosition(preXrPosition);
+        });
+    }
 
     // mirrors the play/pause buttons in ui.ts: 3D content switches to the
     // camera track, 4DGS content toggles file playback

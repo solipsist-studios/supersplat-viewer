@@ -63,11 +63,26 @@ abstract class SplatAnimationBase {
             applyQueuedFrame();
         };
 
+        const pingpong = global.config.animLoopMode === 'pingpong';
+        let animDir = 1;
+
         const onUpdate = (dt: number) => {
             if (!state.animationPaused) {
-                animTime += dt;
-                if (animTime > this.duration) {
-                    animTime = this.duration > 0 ? animTime % this.duration : 0;
+                if (pingpong) {
+                    let t = animTime + dt * animDir;
+                    if (t > this.duration) {
+                        animDir = -1;
+                        t = this.duration > 0 ? Math.max(0, this.duration - (t - this.duration)) : 0;
+                    } else if (t < 0) {
+                        animDir = 1;
+                        t = Math.min(this.duration, -t);
+                    }
+                    animTime = t;
+                } else {
+                    animTime += dt;
+                    if (animTime > this.duration) {
+                        animTime = this.duration > 0 ? animTime % this.duration : 0;
+                    }
                 }
                 state.animationTime = animTime;
             } else {
