@@ -38,6 +38,8 @@ type EmbedViewerOptions = {
      * determines where content sits relative to the floor in AR (y=0).
      */
     position?: [number, number, number];
+    /** Scale for the content entity (real-world size in AR). */
+    scale?: [number, number, number];
 };
 
 type XrMode = 'AR' | 'VR';
@@ -150,11 +152,17 @@ const createEmbedViewer = async (options: EmbedViewerOptions): Promise<EmbedView
     app.xr?.on('start', () => events.fire('xrStart'));
     app.xr?.on('end', () => events.fire('xrEnd'));
 
-    // Position the content entity (splats are authored at arbitrary origins)
-    if (options.position) {
-        const [x, y, z] = options.position;
+    // Position/scale the content entity (splats are authored at arbitrary
+    // origins and scales)
+    if (options.position || options.scale) {
+        const { position, scale } = options;
         gsplatLoad.then((entity) => {
-            entity.setLocalPosition(x, y, z);
+            if (position) {
+                entity.setLocalPosition(position[0], position[1], position[2]);
+            }
+            if (scale) {
+                entity.setLocalScale(scale[0], scale[1], scale[2]);
+            }
         }).catch(() => {});
     }
 
