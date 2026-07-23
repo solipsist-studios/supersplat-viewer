@@ -62,10 +62,17 @@ class EmbedInputDevice implements InputDevice {
  *   { type: 'ssv:play' | 'ssv:pause' | 'ssv:restart' | 'ssv:cameraReset' }
  *   { type: 'ssv:seek', time: number }
  *   { type: 'ssv:input', rotate?: [dx, dy], zoom?: dz }   // pixel deltas
+ *   { type: 'ssv:startAr' | 'ssv:startVr' }
  *
  * and receives state snapshots (sent on change, time throttled to ~10Hz):
  *
- *   { type: 'ssv:state', loaded, hasAnimation, duration, time, paused, progress }
+ *   { type: 'ssv:state', loaded, hasAnimation, duration, time, paused, progress,
+ *     hasAR, hasVR, arDirect, vrDirect }
+ *
+ * plus XR notifications:
+ *
+ *   { type: 'ssv:xrState', active }          // session started/ended
+ *   { type: 'ssv:xrNeedsWebgl', mode }       // session needs a reload with ?webgl
  * @param global - The global app context.
  * @param viewer - The viewer instance (provides the input controller once loaded).
  */
@@ -95,14 +102,33 @@ const initEmbed = (global: Global, viewer: Viewer) => {
             duration: state.animationDuration,
             time: state.animationTime,
             paused: state.animationPaused,
-            progress: state.progress
+            progress: state.progress,
+            // hasAR/hasVR include sessions that would work after a reload into
+            // WebGL; arDirect/vrDirect can start on the current device now.
+            hasAR: state.hasAR,
+            hasVR: state.hasVR,
+            arDirect: global.app.xr?.isAvailable('immersive-ar') ?? false,
+            vrDirect: global.app.xr?.isAvailable('immersive-vr') ?? false
         });
     };
 
     events.on('firstFrame', sendState);
-    ['hasAnimation', 'animationDuration', 'animationPaused', 'progress'].forEach((prop) => {
+    ['hasAnimation', 'animationDuration', 'animationPaused', 'progress', 'hasAR', 'hasVR'].forEach((prop) => {
         events.on(`${prop}:changed`, sendState);
     });
+    global.app.xr?.on('available', sendState);
+    global.app.xr?.on('start', () => send({ type: 'ssv:xrState', active: true }));
+    global.app.xr?.on('end', () => send({ type: 'ssv:xrState', active: false }));
+
+    // mirrors handleXrClick in ui.ts: start directly when the current device
+    // supports the session, otherwise ask the host to reload us with ?webgl
+    const startXr = (mode: 'AR' | 'VR') => {
+        if (global.app.xr?.isAvailable(mode === 'AR' ? 'immersive-ar' : 'immersive-vr')) {
+            events.fire(mode === 'AR' ? 'startAR' : 'startVR');
+        } else {
+            send({ type: 'ssv:xrNeedsWebgl', mode });
+        }
+    };
 
     let lastTimeSent = 0;
     events.on('animationTime:changed', () => {
@@ -145,6 +171,12 @@ const initEmbed = (global: Global, viewer: Viewer) => {
                 break;
             case 'ssv:cameraReset':
                 events.fire('inputEvent', 'reset');
+                break;
+            case 'ssv:startAr':
+                startXr('AR');
+                break;
+            case 'ssv:startVr':
+                startXr('VR');
                 break;
             case 'ssv:input':
                 if (Array.isArray(event.data.rotate)) {
