@@ -109,4 +109,4 @@ const fetchSplatAnimBuffer = async (url: string, onProgress: (progress: number) 
     return buffer;
 };
 
-export { fetchSplatAnimBuffer };
+export { fetchSplatAnimBuffer, fullFileCacheKey, fullFileKeyPrefix };

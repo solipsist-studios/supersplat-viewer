@@ -84,10 +84,16 @@ const defaultSettings = {
 };
 
 const createEmbedViewer = async (options: EmbedViewerOptions): Promise<EmbedViewer> => {
+    // 4DGS formats manage their own (streaming/cached) fetches — starting the
+    // eager `contents` prefetch for them would download the file twice.
+    const embedFilename = options.contentFilename ?? new URL(options.contentUrl, location.href).pathname.split('/').pop() ?? '';
+    const embedLower = embedFilename.toLowerCase();
+    const embedIs4dgs = embedLower.endsWith('.omg4') || embedLower.endsWith('.queen');
+
     const config: Config = {
         contentUrl: options.contentUrl,
         contentFilename: options.contentFilename,
-        contents: fetch(options.contentUrl),
+        contents: embedIs4dgs ? undefined : fetch(options.contentUrl),
         omg4RotationDeg: options.omg4RotationDeg,
         animLoopMode: options.loopMode,
         noui: true,

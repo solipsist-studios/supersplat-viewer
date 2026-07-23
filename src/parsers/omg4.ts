@@ -50,6 +50,15 @@ import { GSplatData } from 'playcanvas';
 // Reconstruction at time t (done on the GPU by the viewer):
 //   position(t) = (x,y,z) + (vx,vy,vz) * (t - t_center)
 //   alpha(t)    = sigmoid(opacity) * exp(-0.5 * ((t - t_center) / t_sigma)^2)
+//
+// Streamable variant (flags bit 2 — "tiled"): the header grows to 40 bytes
+// ([32-35] uint32 tileSize in splats, [36-39] reserved2) and the body is
+// chunked-SoA: splats grouped into tiles of tileSize (last tile short), each
+// tile storing all of its fields contiguously (field order as above). Every
+// tile is self-contained, so a sequential download yields renderable splats
+// continuously; files are written importance-sorted for progressive
+// densification. Omg4V2Data itself only consumes the standard layout — the
+// streaming loader de-tiles into a standard-layout buffer as bytes arrive.
 // ─────────────────────────────────────────────────────────────────────────────
 
 const MAGIC = 0x34474D4F;   // little-endian uint32 of "OMG4"
@@ -57,7 +66,13 @@ const HEADER_SIZE = 28;
 const FLOATS_PER_SPLAT = 14;
 
 const V2_HEADER_SIZE = 32;
+const V2_TILED_HEADER_SIZE = 40;
 const V2_NUM_FIELDS = 19;
+const V2_NUM_SH_FIELDS = 45;
+
+const V2_FLAG_SH = 1;
+const V2_FLAG_COV2D = 2;
+const V2_FLAG_TILED = 4;
 
 interface Omg4Header {
     version: number;
@@ -314,7 +329,7 @@ class Omg4V2Data {
 
         // flags bit 1: reserved word carries a screen-space 2D-covariance
         // scale (kx, ky as 2 x float16) that the renderer must apply.
-        if ((flags & 2) !== 0) {
+        if ((flags & V2_FLAG_COV2D) !== 0) {
             const halfToFloat = (h: number) => {
                 const s = (h & 0x8000) ? -1 : 1;
                 const e = (h >> 10) & 0x1f;
@@ -385,6 +400,80 @@ class Omg4V2Data {
 
 const parseOmg4V2 = (buffer: ArrayBuffer): Omg4V2Data => new Omg4V2Data(buffer);
 
+// Parsed v2 header, including the streamable (tiled) extension.
+interface Omg4V2Header {
+    version: number;
+    numSplats: number;
+    flags: number;          // raw flags word (bit 2 included)
+    reserved: number;       // raw reserved word (cov2d packing preserved)
+    hasSH: boolean;
+    tiled: boolean;
+    tileSize: number;       // splats per tile; 0 when not tiled
+    timeMin: number;
+    timeMax: number;
+    fps: number;
+    headerSize: number;     // 32 (standard) or 40 (tiled)
+    numFields: number;      // 19, or 64 with SH
+    /** Total file size implied by the header. */
+    totalBytes: number;
+}
+
+// Parse the v2 header from the first bytes of a file (needs 32 bytes, or 40
+// for tiled files; throws if the buffer is too short for the variant found).
+const readOmg4V2Header = (buffer: ArrayBuffer): Omg4V2Header => {
+    const view = new DataView(buffer);
+    const magic = view.getUint32(0, true);
+    if (magic !== MAGIC) {
+        throw new Error(`Invalid .omg4 file: expected magic 0x${MAGIC.toString(16)}, got 0x${magic.toString(16)}`);
+    }
+    const version = view.getUint32(4, true);
+    if (version !== 2) {
+        throw new Error(`readOmg4V2Header: expected version 2, got ${version}`);
+    }
+
+    const numSplats = view.getUint32(8, true);
+    const flags = view.getUint32(12, true);
+    const hasSH = (flags & V2_FLAG_SH) !== 0;
+    const tiled = (flags & V2_FLAG_TILED) !== 0;
+    const headerSize = tiled ? V2_TILED_HEADER_SIZE : V2_HEADER_SIZE;
+    if (buffer.byteLength < headerSize) {
+        throw new Error(`readOmg4V2Header: need ${headerSize} bytes, got ${buffer.byteLength}`);
+    }
+    const numFields = V2_NUM_FIELDS + (hasSH ? V2_NUM_SH_FIELDS : 0);
+
+    return {
+        version,
+        numSplats,
+        flags,
+        reserved: view.getUint32(28, true),
+        hasSH,
+        tiled,
+        tileSize: tiled ? view.getUint32(32, true) : 0,
+        timeMin: view.getFloat32(16, true),
+        timeMax: view.getFloat32(20, true),
+        fps: view.getFloat32(24, true),
+        headerSize,
+        numFields,
+        totalBytes: headerSize + numFields * numSplats * 4
+    };
+};
+
+// Write a standard (non-tiled) 32-byte v2 header into the start of `dest`,
+// preserving all header semantics except the tiled flag. Used by the
+// streaming loader, which de-tiles into a standard-layout buffer so
+// Omg4V2Data (and the IndexedDB cache) see a regular v2 file.
+const writeOmg4V2StandardHeader = (dest: ArrayBuffer, header: Omg4V2Header) => {
+    const view = new DataView(dest);
+    view.setUint32(0, MAGIC, true);
+    view.setUint32(4, 2, true);
+    view.setUint32(8, header.numSplats, true);
+    view.setUint32(12, header.flags & ~V2_FLAG_TILED, true);
+    view.setFloat32(16, header.timeMin, true);
+    view.setFloat32(20, header.timeMax, true);
+    view.setFloat32(24, header.fps, true);
+    view.setUint32(28, header.reserved, true);
+};
+
 // Read the format version from the first bytes of a .omg4 file (throws on bad magic).
 const readOmg4Version = (buffer: ArrayBuffer): number => {
     const view = new DataView(buffer);
@@ -395,5 +484,9 @@ const readOmg4Version = (buffer: ArrayBuffer): number => {
     return view.getUint32(4, true);
 };
 
-export { Omg4Data, Omg4V2Data, parseOmg4, parseOmg4V2, readOmg4Version };
-export type { Omg4FrameData };
+export {
+    Omg4Data, Omg4V2Data, parseOmg4, parseOmg4V2, readOmg4Version,
+    readOmg4V2Header, writeOmg4V2StandardHeader,
+    V2_HEADER_SIZE, V2_TILED_HEADER_SIZE, V2_NUM_FIELDS
+};
+export type { Omg4FrameData, Omg4V2Header };

@@ -255,6 +255,30 @@ const attachOmg4V2Motion = (resource: GSplatResource, data: Omg4V2Data) => {
     streams.textures.set('splatTemporal', temporalTex);
 };
 
+// Rewrite rows [0, count) of the motion/temporal textures from the data
+// arrays and re-upload. Used by the streaming loader as splats arrive.
+const syncOmg4V2Motion = (resource: GSplatResource, data: Omg4V2Data, count: number) => {
+    const streams = (resource as any).streams;
+    const motionTex = streams.textures.get('splatMotion');
+    const temporalTex = streams.textures.get('splatTemporal');
+    if (!motionTex || !temporalTex) {
+        return;
+    }
+
+    const motion = motionTex.lock() as Float32Array;
+    const temporal = temporalTex.lock() as Float32Array;
+    const n = Math.min(count, data.numSplats);
+    for (let i = 0; i < n; i++) {
+        motion[i * 4 + 0] = data.velocityX[i];
+        motion[i * 4 + 1] = data.velocityY[i];
+        motion[i * 4 + 2] = data.velocityZ[i];
+        motion[i * 4 + 3] = data.tCenter[i];
+        temporal[i] = data.tSigma[i];
+    }
+    motionTex.unlock();
+    temporalTex.unlock();
+};
+
 // Resolve the OMG4_COV_COMP template: with a cov2d scale the block is kept
 // and the KX/KY literals are inlined (no extra uniforms needed on the
 // compute path); without it the block is stripped.
@@ -297,4 +321,4 @@ const setOmg4V2Params = (entity: Entity, time: number, camera?: Entity) => {
     component.setParameter('omg4CamPos', p ? [p.x, p.y, p.z] : [0, 0, 0]);
 };
 
-export { attachOmg4V2Motion, bindOmg4V2Modifier, setOmg4V2Params };
+export { attachOmg4V2Motion, syncOmg4V2Motion, bindOmg4V2Modifier, setOmg4V2Params };

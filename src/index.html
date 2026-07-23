@@ -83,13 +83,18 @@
             const budgetParam = url.searchParams.get('budget');
             const budget = budgetParam !== null ? Number(budgetParam) : undefined;
 
+            // 4DGS formats manage their own (streaming/cached) fetches — the
+            // eager `contents` prefetch would download the file twice.
+            const contentPath = new URL(contentUrl, location.href).pathname.toLowerCase();
+            const contentIs4dgs = contentPath.endsWith('.omg4') || contentPath.endsWith('.queen');
+
             const sseConfig = {
                 poster: posterUrl && createImage(posterUrl),
                 skyboxUrl,
                 collisionUrl,
                 omg4RotationDeg,
                 contentUrl,
-                contents: fetch(contentUrl),
+                contents: contentIs4dgs ? undefined : fetch(contentUrl),
                 noui: url.searchParams.has('noui'),
                 noanim: url.searchParams.has('noanim'),
                 embed: url.searchParams.has('embed'),
