@@ -104,11 +104,12 @@ const initEmbed = (global: Global, viewer: Viewer) => {
             paused: state.animationPaused,
             progress: state.progress,
             // hasAR/hasVR include sessions that would work after a reload into
-            // WebGL; arDirect/vrDirect can start on the current device now.
+            // WebGL; arDirect/vrDirect can start right now (the start rig in
+            // xr.ts only runs under the WebGL renderer).
             hasAR: state.hasAR,
             hasVR: state.hasVR,
-            arDirect: global.app.xr?.isAvailable('immersive-ar') ?? false,
-            vrDirect: global.app.xr?.isAvailable('immersive-vr') ?? false
+            arDirect: global.renderer === 'webgl' && (global.app.xr?.isAvailable('immersive-ar') ?? false),
+            vrDirect: global.renderer === 'webgl' && (global.app.xr?.isAvailable('immersive-vr') ?? false)
         });
     };
 
@@ -120,13 +121,15 @@ const initEmbed = (global: Global, viewer: Viewer) => {
     global.app.xr?.on('start', () => send({ type: 'ssv:xrState', active: true }));
     global.app.xr?.on('end', () => send({ type: 'ssv:xrState', active: false }));
 
-    // mirrors handleXrClick in ui.ts: start directly when the current device
-    // supports the session, otherwise ask the host to reload us with ?webgl
+    // The XR start rig (xr.ts) only registers startAR/startVR listeners under
+    // the WebGL renderer, so under WebGPU always ask the host to reload us
+    // with ?webgl — even when the device reports the session as available.
     const startXr = (mode: 'AR' | 'VR') => {
-        if (global.app.xr?.isAvailable(mode === 'AR' ? 'immersive-ar' : 'immersive-vr')) {
-            events.fire(mode === 'AR' ? 'startAR' : 'startVR');
-        } else {
+        const type = mode === 'AR' ? 'immersive-ar' : 'immersive-vr';
+        if (global.renderer !== 'webgl') {
             send({ type: 'ssv:xrNeedsWebgl', mode });
+        } else if (global.app.xr?.isAvailable(type)) {
+            events.fire(mode === 'AR' ? 'startAR' : 'startVR');
         }
     };
 
