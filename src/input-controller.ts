@@ -9,7 +9,7 @@ import { GamepadDevice } from './input/devices/gamepad';
 import { KeyboardMouseDevice } from './input/devices/keyboard-mouse';
 import { TouchDevice } from './input/devices/touch';
 import { TrackpadDevice } from './input/devices/trackpad';
-import type { UpdateContext } from './input/shared';
+import type { InputDevice, UpdateContext } from './input/shared';
 import type { Picker } from './picker';
 import type { Global } from './types';
 
@@ -24,6 +24,12 @@ class InputController {
         move: [0, 0, 0],
         rotate: [0, 0, 0]
     });
+
+    /**
+     * Additional input devices (e.g. the embed bridge's external-delta
+     * device) updated after the built-in devices each frame.
+     */
+    extraDevices: InputDevice[] = [];
 
     private _global: Global;
 
@@ -114,6 +120,7 @@ class InputController {
         this._keyboardMouse.update(ctx, this.frame);
         this._trackpad.update(ctx, this.frame);
         this._gamepad.update(ctx, this.frame);
+        this.extraDevices.forEach(device => device.update(ctx, this.frame));
     }
 }
 

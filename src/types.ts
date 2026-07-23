@@ -18,6 +18,8 @@ type Config = {
 
     noui: boolean;
     noanim: boolean;
+    embed: boolean;                             // enable the postMessage embed bridge (input, transport, state events)
+    transparent: boolean;                       // render with a transparent background for blending with a host page
     nofx: boolean;                              // disable post effects
     hpr?: boolean;                              // override highPrecisionRendering (undefined = use settings)
     ministats: boolean;

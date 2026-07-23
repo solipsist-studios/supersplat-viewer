@@ -29,6 +29,7 @@ import { observe } from './core/observe';
 import { attachOmg4V2Motion } from './core/omg4-v2-motion';
 import { streamOmg4Data } from './core/stream-omg4';
 import { streamQueenData } from './core/stream-queen';
+import { initEmbed } from './embed';
 import { initLocalization } from './localization';
 import { parseOmg4V2, readOmg4Version } from './parsers/omg4';
 import { importSettings } from './settings';
@@ -176,7 +177,10 @@ const createApp = async (canvas: HTMLCanvasElement, config: Config) => {
         depth: true,
         stencil: false,
         xrCompatible: true,
-        powerPreference: 'high-performance'
+        powerPreference: 'high-performance',
+        // transparent embedding needs an alpha channel in the backbuffer
+        // (WebGPU maps this to alphaMode: 'premultiplied')
+        ...(config.transparent ? { alpha: true } : {})
     });
 
     console.log(`Renderer: ${device.deviceType}`);
@@ -396,7 +400,14 @@ const main = async (canvas: HTMLCanvasElement, settingsJson: any, config: Config
     }
 
     // Create the viewer
-    return new Viewer(global, gsplatLoad, skyboxLoad, collisionLoad);
+    const viewer = new Viewer(global, gsplatLoad, skyboxLoad, collisionLoad);
+
+    // Enable the host-page bridge when embedded
+    if (config.embed) {
+        initEmbed(global, viewer);
+    }
+
+    return viewer;
 };
 
 console.log(`SuperSplat Viewer v${appVersion} | Engine v${engineVersion} (${engineRevision})`);
