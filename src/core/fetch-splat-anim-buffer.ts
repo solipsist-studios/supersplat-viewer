@@ -97,9 +97,14 @@ const fetchSplatAnimBuffer = async (url: string, onProgress: (progress: number) 
 
     const buffer = await fetchSplatAnimBufferNetwork(url, onProgress);
 
-    // Store for next time and drop stale copies of this URL (older validators)
-    await idbSetBuffer(cacheKey, buffer);
-    await idbDeleteByPrefix(fullFileKeyPrefix(url), cacheKey);
+    // Store for next time and drop stale copies of this URL (older
+    // validators). Deliberately NOT awaited: the scene must never be held
+    // hostage to (or lost with) a slow or failing cache write.
+    idbSetBuffer(cacheKey, buffer)
+    .then(() => idbDeleteByPrefix(fullFileKeyPrefix(url), cacheKey))
+    .catch((err) => {
+        if (OMG4_DEBUG_LOG) console.debug('OMG4 full-file cache write failed', err);
+    });
 
     return buffer;
 };
