@@ -133,11 +133,13 @@ const createEmbedViewer = async (options: EmbedViewerOptions): Promise<EmbedView
         viewer.inputController?.extraDevices.push(device);
     });
 
-    // Re-fire XR session errors on the shared event handler so hosts have a
+    // Re-fire XR lifecycle on the shared event handler so hosts have a
     // single subscription point.
     app.xr?.on('error', (err: Error) => {
         events.fire('xrError', err);
     });
+    app.xr?.on('start', () => events.fire('xrStart'));
+    app.xr?.on('end', () => events.fire('xrEnd'));
 
     // mirrors the play/pause buttons in ui.ts: 3D content switches to the
     // camera track, 4DGS content toggles file playback
