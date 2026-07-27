@@ -58,12 +58,22 @@ const initXr = (global: Global) => {
     const cameraRotation = new Quat();
     const angles = new Vec3();
 
+    // The canvas's DOM location before the session, so it can be restored to
+    // its original parent afterwards (embedded viewers don't live in <body>).
+    let canvasParent: HTMLElement | null = null;
+    let canvasNextSibling: Node | null = null;
+
     parent.addComponent('script');
     parent.script.create(XrControllers);
     parent.script.create(XrNavigation);
 
     app.xr.on('start', () => {
         app.autoRender = true;
+
+        // cache the canvas's DOM location
+        const canvas = app.graphicsDevice.canvas;
+        canvasParent = canvas.parentElement;
+        canvasNextSibling = canvas.nextSibling;
 
         // cache original camera rig positions and rotations
         parentPosition.copy(parent.getPosition());
@@ -98,9 +108,17 @@ const initXr = (global: Global) => {
 
         // Restore the canvas to the correct position in the DOM after exiting XR. In
         // some browsers (e.g. Chrome on Android) the canvas is moved to a new root
-        // during XR, and needs to be moved back on exit.
+        // during XR, and needs to be moved back on exit. Restore it to its
+        // pre-session parent — embedded viewers keep the canvas inside the host
+        // page's own container, not directly under <body>.
         requestAnimationFrame(() => {
-            document.body.prepend(app.graphicsDevice.canvas);
+            const canvas = app.graphicsDevice.canvas;
+            if (canvasParent?.isConnected) {
+                const ref = canvasNextSibling?.parentNode === canvasParent ? canvasNextSibling : null;
+                canvasParent.insertBefore(canvas, ref);
+            } else {
+                document.body.prepend(canvas);
+            }
             app.renderNextFrame = true;
         });
     });

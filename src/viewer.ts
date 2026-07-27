@@ -546,6 +546,10 @@ class Viewer {
         const { postEffectSettings } = settings;
         const { background } = settings;
 
+        // transparent embeds clear to zero alpha (rgb 0 so the premultiplied
+        // backbuffer doesn't fringe against the host page)
+        const backgroundColor = config.transparent ? new Color(0, 0, 0, 0) : new Color(background.color);
+
         // hpr override takes precedence over settings.highPrecisionRendering
         const highPrecisionRendering = config.hpr ?? settings.highPrecisionRendering;
 
@@ -595,7 +599,7 @@ class Viewer {
                 return this === app.graphicsDevice.backBuffer ? true : origIsColorBufferSrgb.call(this, index);
             };
 
-            camera.camera.clearColor = new Color(background.color);
+            camera.camera.clearColor = backgroundColor;
         } else {
             // no post effects needed, destroy camera frame if it exists
             if (this.cameraFrame) {
@@ -614,7 +618,7 @@ class Viewer {
 
             if (!app.xr.active) {
                 camera.camera.toneMapping = tonemapTable[settings.tonemapping];
-                camera.camera.clearColor = new Color(background.color);
+                camera.camera.clearColor = backgroundColor;
             }
         }
 

@@ -1,0 +1,175 @@
+import { EmbedInputDevice } from './input/devices/external';
+import type { Global } from './types';
+import type { Viewer } from './viewer';
+
+/**
+ * postMessage bridge for embedding the viewer in a host page (enabled with
+ * the `embed` URL param). The host drives input and transport:
+ *
+ *   { type: 'ssv:play' | 'ssv:pause' | 'ssv:restart' | 'ssv:cameraReset' }
+ *   { type: 'ssv:seek', time: number }
+ *   { type: 'ssv:input', rotate?: [dx, dy], zoom?: dz }   // pixel deltas
+ *   { type: 'ssv:startAr' | 'ssv:startVr' }
+ *
+ * and receives state snapshots (sent on change, time throttled to ~10Hz):
+ *
+ *   { type: 'ssv:state', loaded, hasAnimation, duration, time, paused, progress,
+ *     hasAR, hasVR, arDirect, vrDirect }
+ *
+ * plus XR notifications:
+ *
+ *   { type: 'ssv:xrState', active }          // session started/ended
+ *   { type: 'ssv:xrNeedsWebgl', mode }       // session needs a reload with ?webgl
+ * @param global - The global app context.
+ * @param viewer - The viewer instance (provides the input controller once loaded).
+ */
+const initEmbed = (global: Global, viewer: Viewer) => {
+    const { events, state } = global;
+
+    if (window.parent === window) {
+        return;
+    }
+
+    const device = new EmbedInputDevice();
+
+    // the input controller is created once loading completes
+    events.once('firstFrame', () => {
+        viewer.inputController?.extraDevices.push(device);
+    });
+
+    const send = (data: object) => {
+        window.parent.postMessage(data, location.origin);
+    };
+
+    const sendState = () => {
+        send({
+            type: 'ssv:state',
+            loaded: state.loaded,
+            hasAnimation: state.hasAnimation,
+            duration: state.animationDuration,
+            time: state.animationTime,
+            paused: state.animationPaused,
+            progress: state.progress,
+            // hasAR/hasVR include sessions that would work after a reload into
+            // WebGL; arDirect/vrDirect can start right now (the start rig in
+            // xr.ts only runs under the WebGL renderer).
+            hasAR: state.hasAR,
+            hasVR: state.hasVR,
+            arDirect: global.renderer === 'webgl' && (global.app.xr?.isAvailable('immersive-ar') ?? false),
+            vrDirect: global.renderer === 'webgl' && (global.app.xr?.isAvailable('immersive-vr') ?? false)
+        });
+    };
+
+    events.on('firstFrame', sendState);
+    ['hasAnimation', 'animationDuration', 'animationPaused', 'progress', 'hasAR', 'hasVR'].forEach((prop) => {
+        events.on(`${prop}:changed`, sendState);
+    });
+    global.app.xr?.on('available', sendState);
+    global.app.xr?.on('start', () => send({ type: 'ssv:xrState', active: true }));
+    global.app.xr?.on('end', () => send({ type: 'ssv:xrState', active: false }));
+
+    // The XR start rig (xr.ts) only registers startAR/startVR listeners under
+    // the WebGL renderer, so under WebGPU always ask the host to reload us
+    // with ?webgl — even when the device reports the session as available.
+    const startXr = (mode: 'AR' | 'VR') => {
+        const type = mode === 'AR' ? 'immersive-ar' : 'immersive-vr';
+        if (global.renderer !== 'webgl') {
+            send({ type: 'ssv:xrNeedsWebgl', mode });
+        } else if (global.app.xr?.isAvailable(type)) {
+            events.fire(mode === 'AR' ? 'startAR' : 'startVR');
+        } else {
+            send({ type: 'ssv:xrError', message: `${type} session is not available on this device` });
+        }
+    };
+
+    // Preferred entry point for hosts: calling this synchronously from the
+    // host's click handler keeps WebKit's stack-based user activation alive,
+    // which requestSession requires (a postMessage hop would drop it).
+    window.startXr = startXr;
+
+    // Surface session-start failures to the host (they are otherwise silent),
+    // with enough context to tell WHICH security check rejected the session:
+    // iframe secure-context, permissions policy, or missing user activation.
+    global.app.xr?.on('error', (err: Error) => {
+        const nav = navigator as Navigator & {
+            userActivation?: { isActive: boolean; hasBeenActive: boolean }
+        };
+        const doc = document as Document & {
+            featurePolicy?: { allowsFeature: (feature: string) => boolean }
+        };
+        send({
+            type: 'ssv:xrError',
+            message: err?.message ?? String(err),
+            diagnostics: {
+                secureContext: window.isSecureContext,
+                userActivationActive: nav.userActivation?.isActive ?? null,
+                userActivationHasBeenActive: nav.userActivation?.hasBeenActive ?? null,
+                xrPolicyAllowed: doc.featurePolicy?.allowsFeature('xr-spatial-tracking') ?? null
+            }
+        });
+    });
+
+    let lastTimeSent = 0;
+    events.on('animationTime:changed', () => {
+        const now = performance.now();
+        if (now - lastTimeSent > 100) {
+            lastTimeSent = now;
+            sendState();
+        }
+    });
+
+    // mirrors the play/pause buttons in ui.ts: 3D content switches to the
+    // camera track, 4DGS content toggles file playback
+    const setPaused = (paused: boolean) => {
+        if (!state.hasAnimation) {
+            state.cameraMode = 'anim';
+        }
+        state.animationPaused = paused;
+    };
+
+    window.addEventListener('message', (event: MessageEvent) => {
+        if (event.origin !== location.origin || !event.data || typeof event.data.type !== 'string') {
+            return;
+        }
+
+        switch (event.data.type) {
+            case 'ssv:play':
+                setPaused(false);
+                break;
+            case 'ssv:pause':
+                setPaused(true);
+                break;
+            case 'ssv:restart':
+                events.fire('scrubAnim', 0);
+                setPaused(false);
+                break;
+            case 'ssv:seek':
+                if (typeof event.data.time === 'number') {
+                    events.fire('scrubAnim', event.data.time);
+                }
+                break;
+            case 'ssv:cameraReset':
+                events.fire('inputEvent', 'reset');
+                break;
+            case 'ssv:startAr':
+                startXr('AR');
+                break;
+            case 'ssv:startVr':
+                startXr('VR');
+                break;
+            case 'ssv:input':
+                if (Array.isArray(event.data.rotate)) {
+                    device.queueRotate(event.data.rotate[0], event.data.rotate[1]);
+                }
+                if (typeof event.data.zoom === 'number') {
+                    device.queueZoom(event.data.zoom);
+                }
+                global.app.renderNextFrame = true;
+                break;
+        }
+    });
+
+    send({ type: 'ssv:ready' });
+};
+
+export { initEmbed };

@@ -1,6 +1,6 @@
 {
   "name": "@playcanvas/supersplat-viewer",
-  "version": "1.27.1",
+  "version": "1.28.0",
   "author": "PlayCanvas <support@playcanvas.com>",
   "homepage": "https://github.com/playcanvas/supersplat-viewer#readme",
   "description": "Viewer for https://superspl.at",
@@ -24,6 +24,9 @@
     "./settings": {
       "types": "./dist/settings.d.ts",
       "import": "./dist/settings.js"
+    },
+    "./embed-app": {
+      "import": "./dist/embed-app.js"
     }
   },
   "repository": {

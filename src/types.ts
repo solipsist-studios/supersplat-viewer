@@ -16,10 +16,13 @@ type Config = {
     contentFilename?: string;           // original filename when content is a blob URL (no extension in URL)
     contents?: Promise<Response>;
     omg4RotationDeg?: [number, number, number];
+    animLoopMode?: 'loop' | 'pingpong';        // 4DGS playback loop style (default 'loop')
     collisionUrl?: string;
 
     noui: boolean;
     noanim: boolean;
+    embed: boolean;                             // enable the postMessage embed bridge (input, transport, state events)
+    transparent: boolean;                       // render with a transparent background for blending with a host page
     nofx: boolean;                              // disable post effects
     hpr?: boolean;                              // override highPrecisionRendering (undefined = use settings)
     ministats: boolean;
@@ -30,6 +33,7 @@ type Config = {
     renderer: 'webgl' | 'webgpu';               // requested renderer; the actual one (after engine fallback) is exposed as Global.renderer
     heatmap: boolean;                           // render heatmap debug overlay (WebGPU only)
     debug: boolean;                             // auto-open the developer debug panel; can also be toggled with Ctrl+Shift+D
+    lang?: string;                              // override the UI language (default: detect from browser)
 };
 
 // observable state that can change at runtime
@@ -54,6 +58,7 @@ type State = {
     collisionOverlayEnabled: boolean;
     isFullscreen: boolean;
     controlsHidden: boolean;
+    showAnnotations: boolean;
     gamingControls: boolean;
 };
 

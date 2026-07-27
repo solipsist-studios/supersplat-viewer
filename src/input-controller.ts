@@ -9,7 +9,7 @@ import { GamepadDevice } from './input/devices/gamepad';
 import { KeyboardMouseDevice } from './input/devices/keyboard-mouse';
 import { TouchDevice } from './input/devices/touch';
 import { TrackpadDevice } from './input/devices/trackpad';
-import type { UpdateContext } from './input/shared';
+import type { InputDevice, UpdateContext } from './input/shared';
 import type { Picker } from './picker';
 import type { Global } from './types';
 
@@ -24,6 +24,12 @@ class InputController {
         move: [0, 0, 0],
         rotate: [0, 0, 0]
     });
+
+    /**
+     * Additional input devices (e.g. the embed bridge's external-delta
+     * device) updated after the built-in devices each frame.
+     */
+    extraDevices: InputDevice[] = [];
 
     private _global: Global;
 
@@ -55,8 +61,15 @@ class InputController {
         this._global = global;
         this._navInteraction = new NavInteraction(picker);
 
-        const { app, events } = global;
+        const { app, config, events } = global;
         const canvas = app.graphicsDevice.canvas as HTMLCanvasElement;
+
+        // In embed mode the host page owns all input (fed in via
+        // extraDevices) — don't attach the native devices or the app-level
+        // helpers, whose window/canvas listeners would fight the host page.
+        if (config.embed) {
+            return;
+        }
 
         // Trackpad MUST attach before KeyboardMouseDevice so its wheel
         // handler runs first; otherwise stopImmediatePropagation can't
@@ -109,11 +122,14 @@ class InputController {
 
         // order: touch first (so touchCount in ctx reflects this frame's
         // count delta), then everyone else.
-        this._touch.update(ctx, this.frame);
-        ctx.touchCount = this._touch.touchCount;
-        this._keyboardMouse.update(ctx, this.frame);
-        this._trackpad.update(ctx, this.frame);
-        this._gamepad.update(ctx, this.frame);
+        if (!this._global.config.embed) {
+            this._touch.update(ctx, this.frame);
+            ctx.touchCount = this._touch.touchCount;
+            this._keyboardMouse.update(ctx, this.frame);
+            this._trackpad.update(ctx, this.frame);
+            this._gamepad.update(ctx, this.frame);
+        }
+        this.extraDevices.forEach(device => device.update(ctx, this.frame));
     }
 }
 

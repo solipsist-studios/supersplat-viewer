@@ -16,6 +16,12 @@ interface Window {
 
     animationDuration?: number;
 
+    // Embed mode: start an XR session. Exposed as a window function so a
+    // same-origin host can call it SYNCHRONOUSLY from its own click handler —
+    // WebKit tracks user activation per call stack, so a postMessage task hop
+    // would lose the gesture and requestSession would be rejected.
+    startXr?: (mode: 'AR' | 'VR') => void;
+
     getCameraState?: () => {
         position: [number, number, number];
         angles: [number, number, number];

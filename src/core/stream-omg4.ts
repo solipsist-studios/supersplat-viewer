@@ -1,5 +1,6 @@
 import { GSplatData } from 'playcanvas';
 
+import { idbGetBuffer, idbSetBuffer } from './omg4-cache';
 import type { Omg4FrameData } from '../parsers/omg4';
 
 const MAGIC = 0x34474D4F;
@@ -8,8 +9,6 @@ const FLOATS_PER_SPLAT = 14;
 const MAX_CACHED_FRAMES = 32;
 const FRAMES_PER_CHUNK = 8;
 const OMG4_CACHE_NAME = 'supersplat-omg4-v1';
-const OMG4_IDB_NAME = 'supersplat-omg4-chunks';
-const OMG4_IDB_STORE = 'ranges';
 const OMG4_DEBUG_LOG = true;
 
 type Omg4Header = {
@@ -40,68 +39,8 @@ type WorkArrays = {
 
 const rangeCacheKey = (url: string, start: number, end: number) => `${new URL(url, location.href).toString()}?__omg4_range=${start}-${end}`;
 
-let omg4DbPromise: Promise<IDBDatabase | null> | null = null;
-
-const openOmg4Db = (): Promise<IDBDatabase | null> => {
-    if (typeof indexedDB === 'undefined') {
-        return Promise.resolve(null);
-    }
-
-    if (omg4DbPromise) {
-        return omg4DbPromise;
-    }
-
-    omg4DbPromise = new Promise((resolve) => {
-        const request = indexedDB.open(OMG4_IDB_NAME, 1);
-
-        request.onupgradeneeded = () => {
-            const db = request.result;
-            if (!db.objectStoreNames.contains(OMG4_IDB_STORE)) {
-                db.createObjectStore(OMG4_IDB_STORE);
-            }
-        };
-
-        request.onsuccess = () => resolve(request.result);
-        request.onerror = () => resolve(null);
-    });
-
-    return omg4DbPromise;
-};
-
-const idbGetRange = async (key: string): Promise<ArrayBuffer | null> => {
-    const db = await openOmg4Db();
-    if (!db) {
-        return null;
-    }
-
-    return new Promise((resolve) => {
-        const tx = db.transaction(OMG4_IDB_STORE, 'readonly');
-        const store = tx.objectStore(OMG4_IDB_STORE);
-        const request = store.get(key);
-
-        request.onsuccess = () => {
-            const value = request.result;
-            resolve(value instanceof ArrayBuffer ? value : null);
-        };
-        request.onerror = () => resolve(null);
-    });
-};
-
-const idbSetRange = async (key: string, buffer: ArrayBuffer): Promise<void> => {
-    const db = await openOmg4Db();
-    if (!db) {
-        return;
-    }
-
-    await new Promise<void>((resolve) => {
-        const tx = db.transaction(OMG4_IDB_STORE, 'readwrite');
-        const store = tx.objectStore(OMG4_IDB_STORE);
-        store.put(buffer, key);
-        tx.oncomplete = () => resolve();
-        tx.onerror = () => resolve();
-        tx.onabort = () => resolve();
-    });
-};
+const idbGetRange = idbGetBuffer;
+const idbSetRange = idbSetBuffer;
 
 const fetchRangeNetwork = async (url: string, start: number, end: number): Promise<ArrayBuffer> => {
     const response = await fetch(url, {

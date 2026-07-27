@@ -1,7 +1,29 @@
-// Fetch a 4DGS animation file at the given URL with streaming progress notifications.
-// The onProgress callback receives integer values in [0, 100].
-// Returns the complete response as an ArrayBuffer.
-const fetchSplatAnimBuffer = async (url: string, onProgress: (progress: number) => void): Promise<ArrayBuffer> => {
+import { idbDeleteByPrefix, idbGetBuffer, idbSetBuffer } from './omg4-cache';
+
+const OMG4_DEBUG_LOG = true;
+
+// Cache key for a full-file payload: URL plus a cheap validator (ETag /
+// Last-Modified / size from a HEAD request), so edited files re-download
+// while unchanged ones load from IndexedDB. Browsers won't keep responses
+// this large (hundreds of MB) in the regular HTTP cache.
+const fullFileKeyPrefix = (url: string) => `${new URL(url, location.href).toString()}?__omg4_full=`;
+
+const fullFileCacheKey = async (url: string): Promise<string> => {
+    let validator = '';
+    try {
+        const head = await fetch(url, { method: 'HEAD' });
+        if (head.ok) {
+            validator = head.headers.get('etag') ??
+                head.headers.get('last-modified') ??
+                head.headers.get('content-length') ?? '';
+        }
+    } catch {
+        // offline or HEAD unsupported — fall through to the bare key
+    }
+    return fullFileKeyPrefix(url) + validator;
+};
+
+const fetchSplatAnimBufferNetwork = async (url: string, onProgress: (progress: number) => void): Promise<ArrayBuffer> => {
     const response = await fetch(url);
     if (!response.ok) {
         throw new Error(`Failed to fetch ${url}: ${response.status} ${response.statusText}`);
@@ -60,4 +82,31 @@ const fetchSplatAnimBuffer = async (url: string, onProgress: (progress: number) 
     return bytes.slice(0, received).buffer;
 };
 
-export { fetchSplatAnimBuffer };
+// Fetch a 4DGS animation file at the given URL with streaming progress notifications.
+// The onProgress callback receives integer values in [0, 100].
+// Returns the complete response as an ArrayBuffer, served from a durable
+// IndexedDB cache when the file is unchanged.
+const fetchSplatAnimBuffer = async (url: string, onProgress: (progress: number) => void): Promise<ArrayBuffer> => {
+    const cacheKey = await fullFileCacheKey(url);
+    const cached = await idbGetBuffer(cacheKey);
+    if (cached) {
+        if (OMG4_DEBUG_LOG) console.debug('OMG4 full-file cache hit (idb)', cacheKey);
+        onProgress(100);
+        return cached;
+    }
+
+    const buffer = await fetchSplatAnimBufferNetwork(url, onProgress);
+
+    // Store for next time and drop stale copies of this URL (older
+    // validators). Deliberately NOT awaited: the scene must never be held
+    // hostage to (or lost with) a slow or failing cache write.
+    idbSetBuffer(cacheKey, buffer)
+    .then(() => idbDeleteByPrefix(fullFileKeyPrefix(url), cacheKey))
+    .catch((err) => {
+        if (OMG4_DEBUG_LOG) console.debug('OMG4 full-file cache write failed', err);
+    });
+
+    return buffer;
+};
+
+export { fetchSplatAnimBuffer, fullFileCacheKey, fullFileKeyPrefix };

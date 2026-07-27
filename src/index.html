@@ -83,15 +83,22 @@
             const budgetParam = url.searchParams.get('budget');
             const budget = budgetParam !== null ? Number(budgetParam) : undefined;
 
+            // 4DGS formats manage their own (streaming/cached) fetches — the
+            // eager `contents` prefetch would download the file twice.
+            const contentPath = new URL(contentUrl, location.href).pathname.toLowerCase();
+            const contentIs4dgs = contentPath.endsWith('.omg4') || contentPath.endsWith('.queen');
+
             const sseConfig = {
                 poster: posterUrl && createImage(posterUrl),
                 skyboxUrl,
                 collisionUrl,
                 omg4RotationDeg,
                 contentUrl,
-                contents: fetch(contentUrl),
+                contents: contentIs4dgs ? undefined : fetch(contentUrl),
                 noui: url.searchParams.has('noui'),
                 noanim: url.searchParams.has('noanim'),
+                embed: url.searchParams.has('embed'),
+                transparent: url.searchParams.has('transparent'),
                 nofx: url.searchParams.has('nofx'),
                 hpr: url.searchParams.has('hpr') ? ['', '1', 'true', 'enable'].includes(url.searchParams.get('hpr')) : undefined,
                 ministats: url.searchParams.has('ministats'),
@@ -102,6 +109,7 @@
                 heatmap: url.searchParams.has('heatmap'),
                 fullload: url.searchParams.has('fullload'),
                 debug: url.searchParams.has('debug'),
+                lang: url.searchParams.get('lang'),
             };
 
             window.sse = {
@@ -294,6 +302,10 @@
                 <div id="gamingControlsRow" class="settingsRow">
                     <div id="gamingControlsOption" data-i18n="settings.gaming-controls">Gaming Controls</div>
                     <div id="gamingControlsCheck" class="toggleSwitch"><div class="toggleTrack"><div class="toggleThumb"></div></div></div>
+                </div>
+                <div id="annotationsRow" class="settingsRow">
+                    <div id="annotationsOption" data-i18n="settings.show-annotations">Show Annotations</div>
+                    <div id="annotationsCheck" class="toggleSwitch active"><div class="toggleTrack"><div class="toggleThumb"></div></div></div>
                 </div>
                 <div class="divider"></div>
                 <div id="omg4RotationBlock" class="hidden">
