@@ -1,5 +1,6 @@
 import {
     EventHandler,
+    platform,
     type Texture,
     revision as engineRevision,
     version as engineVersion
@@ -9,6 +10,7 @@ import { version as appVersion } from '../package.json';
 import { createApp, createViewerState, initCanvas, load3dgs, load4dgs, loadSkybox } from './app-setup';
 import { MeshCollision, loadVoxelCollision } from './collision';
 import type { Collision } from './collision';
+import { observe } from './core/observe';
 import { initEmbed } from './embed';
 import { initLocalization } from './localization';
 import { importSettings } from './settings';
@@ -78,8 +80,8 @@ const main = async (canvas: HTMLCanvasElement, settingsJson: any, config: Config
 
     camera.addComponent('camera');
 
-    // Initialize XR support (availability detection always runs so the UI can offer
-    // a reload into WebGL when the user requests AR/VR under WebGPU)
+    // Initialize XR support (any backend; when the current device can't host a
+    // session the UI can offer a reload into WebGL instead)
     initXr(global);
 
     // Initialize user interface
