@@ -7,7 +7,7 @@ import {
 } from 'playcanvas';
 
 import { version as appVersion } from '../package.json';
-import { createApp, createViewerState, initCanvas, load3dgs, load4dgs, loadSkybox } from './app-setup';
+import { createApp, initCanvas, load3dgs, load4dgs, loadSkybox } from './app-setup';
 import { MeshCollision, loadVoxelCollision } from './collision';
 import type { Collision } from './collision';
 import { observe } from './core/observe';

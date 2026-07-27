@@ -72,9 +72,6 @@ abstract class SplatAnimationBase {
             return runPromise;
         };
 
-        const pingpong = global.config.animLoopMode === 'pingpong';
-        let animDir = 1;
-
         const onUpdate = (dt: number) => {
             if (!state.animationPaused) {
                 if (playhead.advance(dt, this.duration, state)) {
