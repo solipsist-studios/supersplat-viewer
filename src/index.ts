@@ -52,6 +52,7 @@ const main = async (canvas: HTMLCanvasElement, settingsJson: any, config: Config
         collisionOverlayEnabled: false,
         isFullscreen: false,
         controlsHidden: false,
+        showAnnotations: localStorage.getItem('showAnnotations') !== 'false',
         gamingControls: localStorage.getItem('gamingControls') === 'true'
     });
 
@@ -82,7 +83,7 @@ const main = async (canvas: HTMLCanvasElement, settingsJson: any, config: Config
     initXr(global);
 
     // Initialize user interface
-    initLocalization();
+    initLocalization(config.lang);
     initUI(global);
 
     // Load model

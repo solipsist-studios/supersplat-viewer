@@ -33,6 +33,7 @@ type Config = {
     renderer: 'webgl' | 'webgpu';               // requested renderer; the actual one (after engine fallback) is exposed as Global.renderer
     heatmap: boolean;                           // render heatmap debug overlay (WebGPU only)
     debug: boolean;                             // auto-open the developer debug panel; can also be toggled with Ctrl+Shift+D
+    lang?: string;                              // override the UI language (default: detect from browser)
 };
 
 // observable state that can change at runtime
@@ -57,6 +58,7 @@ type State = {
     collisionOverlayEnabled: boolean;
     isFullscreen: boolean;
     controlsHidden: boolean;
+    showAnnotations: boolean;
     gamingControls: boolean;
 };
 

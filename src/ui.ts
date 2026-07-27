@@ -142,7 +142,7 @@ const initJoystick = (
 const initAnnotationNav = (
     dom: Record<string, HTMLElement>,
     events: EventHandler,
-    state: { loaded: boolean; inputMode: string; controlsHidden: boolean },
+    state: { loaded: boolean; inputMode: string; controlsHidden: boolean; showAnnotations: boolean },
     annotations: Annotation[]
 ) => {
     // Only show navigator when there are at least 2 annotations
@@ -156,6 +156,10 @@ const initAnnotationNav = (
 
     const updateMode = () => {
         if (!state.loaded) return;
+        if (!state.showAnnotations) {
+            dom.annotationNav.classList.add('hidden');
+            return;
+        }
         dom.annotationNav.classList.remove('desktop', 'touch', 'hidden');
         dom.annotationNav.classList.add(state.inputMode);
     };
@@ -199,6 +203,10 @@ const initAnnotationNav = (
     });
     events.on('inputMode:changed', updateMode);
     events.on('controlsHidden:changed', updateFade);
+    events.on('showAnnotations:changed', () => {
+        updateMode();
+        updateFade();
+    });
 
     // Initial state
     updateDisplay();
@@ -243,6 +251,7 @@ const initUI = (global: Global) => {
         'omg4RotateYNeg', 'omg4RotateYPos',
         'omg4RotateZNeg', 'omg4RotateZPos',
         'omg4RotateReset', 'omg4ClearCache',
+        'annotationsRow', 'annotationsOption', 'annotationsCheck',
         'orbitCamera', 'flyCamera', 'fpsCamera',
         'performanceModeRow', 'performanceModeCheck', 'performanceModeOption',
         'gamingControlsDivider', 'gamingControlsRow', 'gamingControlsCheck', 'gamingControlsOption',
@@ -450,7 +459,6 @@ const initUI = (global: Global) => {
 
     const updatePerformanceMode = () => {
         dom.performanceModeCheck.classList.toggle('active', state.performanceMode);
-        localStorage.setItem('performanceMode', String(state.performanceMode));
     };
     events.on('performanceMode:changed', updatePerformanceMode);
     updatePerformanceMode();
@@ -478,12 +486,30 @@ const initUI = (global: Global) => {
         dom.touchFlyGamingControls.classList.toggle('hidden', !state.gamingControls);
         dom.touchClickToWalk.classList.toggle('hidden', state.gamingControls);
         dom.touchGamingControls.classList.toggle('hidden', !state.gamingControls);
-        localStorage.setItem('gamingControls', String(state.gamingControls));
     };
 
     events.on('gamingControls:changed', updateGamingControls);
     events.on('inputMode:changed', updateGamingControls);
     updateGamingControls();
+
+    // Annotation visibility toggle
+    const updateAnnotationsVisibility = () => {
+        dom.annotationsRow.classList.toggle('hidden', global.settings.annotations.length === 0);
+        dom.annotationsCheck.classList.toggle('active', state.showAnnotations);
+        global.app.renderNextFrame = true;
+    };
+
+    dom.annotationsRow.addEventListener('click', () => {
+        state.showAnnotations = !state.showAnnotations;
+    });
+
+    events.on('showAnnotations:changed', updateAnnotationsVisibility);
+    updateAnnotationsVisibility();
+
+    // persist user preferences on change (never at startup, so defaults are not written into storage)
+    events.on('performanceMode:changed', (value: boolean) => localStorage.setItem('performanceMode', String(value)));
+    events.on('gamingControls:changed', (value: boolean) => localStorage.setItem('gamingControls', String(value)));
+    events.on('showAnnotations:changed', (value: boolean) => localStorage.setItem('showAnnotations', String(value)));
 
     // AR/VR
     const arChanged = () => dom.arMode.classList[state.hasAR ? 'remove' : 'add']('hidden');
