@@ -17,7 +17,11 @@ import type { Omg4V2Data, Omg4V2Header } from '../parsers/omg4';
 // before the download completes.
 
 type StreamCallbacks = {
-    /** Download progress in [0, 100]. */
+    /**
+     * Download progress in [0, 100], measured against the first-batch
+     * prefetch (the reveal point), not the whole file — the bar reads full
+     * when the scene appears while the remainder streams in behind it.
+     */
     onProgress: (progress: number) => void;
     /**
      * Splats [0, readySplats) are complete in the buffer. Throttled (time +
@@ -71,6 +75,13 @@ const streamOmg4V2 = (url: string, header: Omg4V2Header, callbacks: StreamCallba
         firstBatchReject = reject;
     });
     const firstBatchThreshold = Math.min(N, Math.max(tileSize, Math.ceil(N * FIRST_BATCH_FRACTION)));
+
+    // Bytes that must arrive before the first batch resolves: the header plus
+    // whole tiles up to the threshold (firstBatch only resolves on tile
+    // boundaries). This is the denominator for onProgress, so the bar fills
+    // to 100% exactly when the scene becomes renderable.
+    const prefetchSplats = Math.min(N, Math.ceil(firstBatchThreshold / tileSize) * tileSize);
+    const prefetchBytes = header.headerSize + prefetchSplats * numFields * 4;
 
     const complete = (async (): Promise<ArrayBuffer> => {
         const response = await fetch(url);
@@ -163,7 +174,7 @@ const streamOmg4V2 = (url: string, header: Omg4V2Header, callbacks: StreamCallba
                 }
             }
 
-            const progress = Math.min(100, Math.trunc((received / header.totalBytes) * 100));
+            const progress = Math.min(100, Math.trunc((received / prefetchBytes) * 100));
             if (progress > progressWatermark) {
                 progressWatermark = progress;
                 callbacks.onProgress(progress);
