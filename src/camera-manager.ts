@@ -16,7 +16,7 @@ import { WalkSource } from './cameras/walk-source';
 import type { Collision } from './collision';
 import { easeOut } from './core/math';
 import { Annotation } from './settings';
-import { CameraMode, Global } from './types';
+import { CameraMode, Global, LoopMode } from './types';
 
 const tmpCamera = new Camera();
 const tmpv = new Vec3();
@@ -133,7 +133,24 @@ class CameraManager {
 
         if (!isSplatAnimation) {
             state.animationDuration = controllers.anim ? controllers.anim.animState.cursor.duration : 0;
+
+            // seed the transport loop-mode control from the track (authored or
+            // generated); the control then owns it for the rest of the session
+            if (controllers.anim) {
+                state.animationLoopMode = controllers.anim.animState.cursor.loopMode;
+            }
         }
+
+        // transport loop-mode changes drive the camera-track cursor directly
+        events.on('animationLoopMode:changed', (value: LoopMode) => {
+            const cursor = controllers.anim?.animState.cursor;
+            if (cursor) {
+                // collapse a pingpong return-leg cursor (> duration) to its
+                // mapped value so repeat/none don't inherit an out-of-range time
+                cursor.cursor = cursor.value;
+                cursor.loopMode = value;
+            }
+        });
 
         // initialize camera mode and initial camera position. 4DGS content
         // starts in an interactive mode — playback is driven by the timeline,
@@ -173,8 +190,12 @@ class CameraManager {
         // application update
         this.update = (deltaTime: number, frame: CameraFrame) => {
 
-            // use dt of 0 if animation is paused
-            const dt = state.cameraMode === 'anim' && state.animationPaused ? 0 : deltaTime;
+            // use dt of 0 if animation is paused; apply the transport speed
+            // multiplier while a camera track is playing (sources are unused
+            // in anim mode, so the scaled dt only reaches the anim controller)
+            const dt = state.cameraMode === 'anim' ?
+                (state.animationPaused ? 0 : deltaTime * state.animationSpeed) :
+                deltaTime;
 
             // update transition timer
             const prevTransitionTimer = transitionTimer;
@@ -195,7 +216,14 @@ class CameraManager {
 
             // update animation timeline (4DGS content owns the timeline instead)
             if (state.cameraMode === 'anim' && !isSplatAnimation) {
-                state.animationTime = controllers.anim.animState.cursor.value;
+                const { cursor } = controllers.anim.animState;
+                state.animationTime = cursor.value;
+
+                // play-once mode: hold on the final pose and stop the transport
+                if (!state.animationPaused && state.animationLoopMode === 'none' &&
+                    cursor.duration > 0 && cursor.value >= cursor.duration) {
+                    state.animationPaused = true;
+                }
             }
 
             if (clearOrbitTargetOnTransitionEnd && prevTransitionTimer < 1 && transitionTimer === 1) {

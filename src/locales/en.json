@@ -6,6 +6,8 @@
 
     "tooltip.play": "Play",
     "tooltip.pause": "Pause",
+    "tooltip.loop-mode": "Loop Mode",
+    "tooltip.playback-speed": "Playback Speed",
     "tooltip.orbit-camera": "Orbit Camera",
     "tooltip.fly-camera": "Fly Camera",
     "tooltip.walk-mode": "Walk Mode",

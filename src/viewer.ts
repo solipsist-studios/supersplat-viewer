@@ -320,20 +320,36 @@ class Viewer {
             state.loaded = true;
             state.animationPaused = !!config.noanim;
 
-            window.scrubTo = (time: number) => {
-                if (!state.hasAnimation) {
-                    return Promise.reject(new Error('No animation track'));
+            window.scrubTo = async (time: number) => {
+                // 4DGS content owns its own timeline; 3D content scrubs the
+                // camera track, which CameraManager drives off the same event.
+                if (!state.hasAnimation && state.animationDuration <= 0) {
+                    throw new Error('No animation track');
                 }
 
                 state.animationPaused = true;
-                return new Promise<void>((resolve) => {
-                    events.fire('scrubAnim', time);
-                    app.renderNextFrame = true;
+
+                // Per-frame formats fetch/decode/upload the target frame
+                // asynchronously, so collect that work and let it settle —
+                // otherwise we resolve while the previous frame is still shown.
+                const pending: Promise<void>[] = [];
+                events.fire('scrubAnim', time, pending);
+                await Promise.all(pending);
+
+                app.renderNextFrame = true;
+                await new Promise<void>((resolve) => {
                     app.once('frameend', () => resolve());
                 });
             };
 
-            window.animationDuration = state.animationDuration;
+            // Live getter: for 4DGS the duration is published by the loader's
+            // own firstFrame handler, which is registered after this one and so
+            // has not run yet. Reading through to state keeps it correct
+            // regardless of handler order.
+            Object.defineProperty(window, 'animationDuration', {
+                get: () => state.animationDuration,
+                configurable: true
+            });
 
             // Capture hook for the thumbnail pipeline. Renders the scene (with post
             // effects) into an offscreen supersampled target, GPU box-downsamples it to

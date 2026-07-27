@@ -6,6 +6,8 @@
 
     "tooltip.play": "播放",
     "tooltip.pause": "暂停",
+    "tooltip.loop-mode": "循环模式",
+    "tooltip.playback-speed": "播放速度",
     "tooltip.orbit-camera": "环绕相机",
     "tooltip.fly-camera": "飞行相机",
     "tooltip.walk-mode": "行走模式",

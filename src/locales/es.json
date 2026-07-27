@@ -6,6 +6,8 @@
 
     "tooltip.play": "Reproducir",
     "tooltip.pause": "Pausar",
+    "tooltip.loop-mode": "Modo de bucle",
+    "tooltip.playback-speed": "Velocidad de reproducción",
     "tooltip.orbit-camera": "Cámara orbital",
     "tooltip.fly-camera": "Cámara de vuelo",
     "tooltip.walk-mode": "Modo caminar",

@@ -22,7 +22,38 @@ const main = async (canvas: HTMLCanvasElement, settingsJson: any, config: Config
 
     // create events and observable state
     const events = new EventHandler();
-    const state = createViewerState(events);
+
+    // migrate legacy `retinaDisplay` preference (inverted) to `performanceMode`
+    const legacyRetina = localStorage.getItem('retinaDisplay');
+    if (legacyRetina !== null && localStorage.getItem('performanceMode') === null) {
+        localStorage.setItem('performanceMode', String(legacyRetina === 'false'));
+        localStorage.removeItem('retinaDisplay');
+    }
+    const storedPerformanceMode = localStorage.getItem('performanceMode');
+
+    const state = observe(events, {
+        loaded: false,
+        readyToRender: false,
+        performanceMode: storedPerformanceMode !== null ? storedPerformanceMode === 'true' : platform.mobile,
+        progress: 0,
+        inputMode: platform.mobile ? 'touch' : 'desktop',
+        cameraMode: 'orbit',
+        hasAnimation: false,
+        animationDuration: 0,
+        animationTime: 0,
+        animationPaused: true,
+        animationLoopMode: 'repeat',
+        animationSpeed: 1,
+        hasAR: false,
+        hasVR: false,
+        hasCollision: false,
+        hasCollisionOverlay: false,
+        walkAllowed: false,
+        collisionOverlayEnabled: false,
+        isFullscreen: false,
+        controlsHidden: false,
+        gamingControls: localStorage.getItem('gamingControls') === 'true'
+    });
 
     const global: Global = {
         app,

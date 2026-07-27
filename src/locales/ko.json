@@ -6,6 +6,8 @@
 
     "tooltip.play": "재생",
     "tooltip.pause": "일시 정지",
+    "tooltip.loop-mode": "반복 모드",
+    "tooltip.playback-speed": "재생 속도",
     "tooltip.orbit-camera": "오빗 카메라",
     "tooltip.fly-camera": "플라이 카메라",
     "tooltip.walk-mode": "워크 모드",

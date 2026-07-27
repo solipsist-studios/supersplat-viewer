@@ -4,7 +4,7 @@ import { version as appVersion } from '../package.json';
 import { localize } from './localization';
 import type { Annotation } from './settings';
 import { Tooltip } from './tooltip';
-import { Global } from './types';
+import { Global, LoopMode } from './types';
 
 // Initialize the touch joystick for fly mode camera control
 const initJoystick = (
@@ -235,6 +235,8 @@ const initUI = (global: Global) => {
         'timelineContainer', 'handle', 'time',
         'buttonContainer',
         'play', 'pause',
+        'loopMode', 'loopRepeatSvg', 'loopPingpongSvg', 'loopNoneSvg',
+        'playbackSpeedControl', 'playbackSpeed', 'playbackSpeedMenu', 'playbackSpeedCustom',
         'settings', 'settingsPanel',
         'omg4RotationBlock', 'omg4RotationValue',
         'omg4RotateXNeg', 'omg4RotateXPos',
@@ -260,6 +262,16 @@ const initUI = (global: Global) => {
         acc[id] = document.getElementById(id);
         return acc;
     }, {});
+
+    // Defined up here (rather than with the rest of the playback-speed wiring
+    // below) because the general dismissal paths — cancel/interrupt and the
+    // inactivity hide — need to close the dropdown too.
+    const isSpeedMenuOpen = () => !dom.playbackSpeedMenu.classList.contains('hidden');
+
+    const closeSpeedMenu = () => {
+        dom.playbackSpeedMenu.classList.add('hidden');
+        dom.playbackSpeed.classList.remove('menuOpen');
+    };
 
     // populate the info-panel title with the app version
     dom.appVersionLabel.textContent = appVersion;
@@ -337,9 +349,14 @@ const initUI = (global: Global) => {
 
     updateOmg4RotationVisibility();
 
-    // Remove focus from buttons after click so keyboard input isn't captured by the UI
+    // Remove focus from buttons after click so keyboard input isn't captured by the UI.
+    // Skip actual text inputs (e.g. the custom playback speed field) — blurring those
+    // would undo the focus the same click just gave them.
     dom.ui.addEventListener('click', () => {
-        (document.activeElement as HTMLElement)?.blur();
+        const active = document.activeElement as HTMLElement;
+        if (active && active.tagName !== 'INPUT') {
+            active.blur();
+        }
     });
 
     // Forward wheel events from UI overlays to the canvas so the camera zooms
@@ -551,6 +568,7 @@ const initUI = (global: Global) => {
             // close info panel on cancel
             dom.infoPanel.classList.add('hidden');
             dom.settingsPanel.classList.add('hidden');
+            closeSpeedMenu();
 
             // close fullscreen on cancel
             if (state.isFullscreen) {
@@ -558,6 +576,7 @@ const initUI = (global: Global) => {
             }
         } else if (event === 'interrupt') {
             dom.settingsPanel.classList.add('hidden');
+            closeSpeedMenu();
         }
     });
 
@@ -585,6 +604,7 @@ const initUI = (global: Global) => {
         dom.infoPanel.classList.add('hidden');
         dom.settingsPanel.classList.add('hidden');
         dom.walkHint.classList.add('hidden');
+        closeSpeedMenu();
         state.controlsHidden = true;
     };
 
@@ -599,7 +619,9 @@ const initUI = (global: Global) => {
         state.controlsHidden = false;
         uiTimeout = setTimeout(() => {
             uiTimeout = null;
-            if (!annotationVisible) {
+            // an open speed dropdown counts as active interaction — fading the
+            // controls would yank the entry field out from under the user
+            if (!annotationVisible && !isSpeedMenuOpen()) {
                 state.controlsHidden = true;
             }
         }, 4000);
@@ -649,6 +671,11 @@ const initUI = (global: Global) => {
         if (!state.hasAnimation) {
             state.cameraMode = 'anim';
         }
+        // play-once mode holds at the end; pressing play again restarts
+        if (state.animationLoopMode === 'none' &&
+            state.animationDuration > 0 && state.animationTime >= state.animationDuration) {
+            events.fire('scrubAnim', 0);
+        }
         state.animationPaused = false;
     });
 
@@ -658,6 +685,89 @@ const initUI = (global: Global) => {
         }
         state.animationPaused = true;
     });
+
+    // Loop mode toggle: cycles loop → bounce → play-once.
+    const loopModes: LoopMode[] = ['repeat', 'pingpong', 'none'];
+
+    const updateLoopModeUI = () => {
+        dom.loopRepeatSvg.classList.toggle('hidden', state.animationLoopMode !== 'repeat');
+        dom.loopPingpongSvg.classList.toggle('hidden', state.animationLoopMode !== 'pingpong');
+        dom.loopNoneSvg.classList.toggle('hidden', state.animationLoopMode !== 'none');
+    };
+
+    dom.loopMode.addEventListener('click', () => {
+        const next = loopModes[(loopModes.indexOf(state.animationLoopMode) + 1) % loopModes.length];
+        state.animationLoopMode = next;
+    });
+
+    events.on('animationLoopMode:changed', updateLoopModeUI);
+    updateLoopModeUI();
+
+    // Playback speed: a dropdown of presets plus a free-form entry field.
+    // Bounds match the input's min/max in index.html.
+    const minSpeed = 0.1;
+    const maxSpeed = 10;
+    const speedInput = dom.playbackSpeedCustom as HTMLInputElement;
+    const speedPresets = Array.from(
+        dom.playbackSpeedMenu.querySelectorAll<HTMLElement>('.speedPreset')
+    );
+
+    // Trim float noise (1.0500000000000003 → 1.05) so the label stays readable.
+    const formatSpeed = (speed: number) => parseFloat(speed.toFixed(2)).toString();
+
+    const updatePlaybackSpeedUI = () => {
+        dom.playbackSpeed.textContent = `${formatSpeed(state.animationSpeed)}×`;
+        speedPresets.forEach((preset) => {
+            preset.classList.toggle('active', parseFloat(preset.dataset.speed) === state.animationSpeed);
+        });
+    };
+
+    const openSpeedMenu = () => {
+        // seed the field with the live value so it can be tweaked from there
+        speedInput.value = formatSpeed(state.animationSpeed);
+        dom.playbackSpeedMenu.classList.remove('hidden');
+        dom.playbackSpeed.classList.add('menuOpen');
+    };
+
+    dom.playbackSpeed.addEventListener('click', () => {
+        if (isSpeedMenuOpen()) {
+            closeSpeedMenu();
+        } else {
+            openSpeedMenu();
+        }
+    });
+
+    speedPresets.forEach((preset) => {
+        preset.addEventListener('click', () => {
+            state.animationSpeed = parseFloat(preset.dataset.speed);
+            closeSpeedMenu();
+        });
+    });
+
+    // Apply the typed speed, ignoring junk and clamping to the supported range.
+    const applyCustomSpeed = () => {
+        const value = parseFloat(speedInput.value);
+        if (!isFinite(value)) {
+            speedInput.value = formatSpeed(state.animationSpeed);
+            return;
+        }
+        const clamped = Math.min(maxSpeed, Math.max(minSpeed, value));
+        state.animationSpeed = parseFloat(clamped.toFixed(2));
+        speedInput.value = formatSpeed(state.animationSpeed);
+    };
+
+    speedInput.addEventListener('change', applyCustomSpeed);
+    speedInput.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter') {
+            applyCustomSpeed();
+            closeSpeedMenu();
+        }
+        // keep viewer shortcuts (space, escape, …) from firing while typing
+        event.stopPropagation();
+    });
+
+    events.on('animationSpeed:changed', updatePlaybackSpeedUI);
+    updatePlaybackSpeedUI();
 
     const updatePlayPause = () => {
         const playing = state.hasAnimation ?
@@ -829,6 +939,8 @@ const initUI = (global: Global) => {
 
     tooltip.register(dom.play, localize('tooltip.play'), 'top');
     tooltip.register(dom.pause, localize('tooltip.pause'), 'top');
+    tooltip.register(dom.loopMode, localize('tooltip.loop-mode'), 'top');
+    tooltip.register(dom.playbackSpeed, localize('tooltip.playback-speed'), 'top');
     tooltip.register(dom.orbitCamera, localize('tooltip.orbit-camera'), 'top');
     tooltip.register(dom.flyCamera, localize('tooltip.fly-camera'), 'top');
     tooltip.register(dom.fpsCamera, localize('tooltip.walk-mode'), 'top');

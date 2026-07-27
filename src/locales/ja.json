@@ -6,6 +6,8 @@
 
     "tooltip.play": "再生",
     "tooltip.pause": "一時停止",
+    "tooltip.loop-mode": "ループモード",
+    "tooltip.playback-speed": "再生速度",
     "tooltip.orbit-camera": "オービットカメラ",
     "tooltip.fly-camera": "フライカメラ",
     "tooltip.walk-mode": "ウォークモード",

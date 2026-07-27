@@ -1,5 +1,6 @@
 import { Quat, Vec3, type Entity } from 'playcanvas';
 
+import { Playhead } from './playhead';
 import { bindOmg4V2Modifier, setOmg4V2Params } from '../core/omg4-v2-motion';
 import type { Omg4V2Data } from '../parsers/omg4';
 import type { Global } from '../types';
@@ -77,52 +78,44 @@ class Omg4V2SplatAnimation {
     attach(global: Global): () => void {
         const { app, state, events } = global;
         this.camera = global.camera;
-        const pingpong = global.config.animLoopMode === 'pingpong';
-        let animTime = 0;
-        let animDir = 1;
+        const playhead = new Playhead();
 
         const onUpdate = (dt: number) => {
             if (!state.animationPaused) {
-                if (pingpong) {
-                    let t = animTime + dt * animDir;
-                    if (t > this.duration) {
-                        animDir = -1;
-                        t = this.duration > 0 ? Math.max(0, this.duration - (t - this.duration)) : 0;
-                    } else if (t < 0) {
-                        animDir = 1;
-                        t = Math.min(this.duration, -t);
-                    }
-                    animTime = t;
-                } else {
-                    animTime += dt;
-                    if (animTime > this.duration) {
-                        animTime = this.duration > 0 ? animTime % this.duration : 0;
-                    }
+                if (playhead.advance(dt, this.duration, state)) {
+                    state.animationPaused = true;
                 }
-                state.animationTime = animTime;
+                state.animationTime = playhead.time;
             } else {
                 // Honour external scrubs that write to state.animationTime directly.
-                animTime = state.animationTime;
+                playhead.time = state.animationTime;
             }
-            if (this.apply(animTime)) {
+            if (this.apply(playhead.time)) {
                 app.renderNextFrame = true;
             }
         };
 
         const onScrub = (time: number) => {
-            animTime = Math.max(0, Math.min(this.duration, time));
-            state.animationTime = animTime;
-            if (this.apply(animTime)) {
+            playhead.seek(time, this.duration);
+            state.animationTime = playhead.time;
+            if (this.apply(playhead.time)) {
                 app.renderNextFrame = true;
             }
         };
 
+        // Leaving pingpong mode resumes normal forward playback.
+        const onLoopModeChanged = () => {
+            playhead.resetDirection();
+        };
+
         app.on('update', onUpdate);
         events.on('scrubAnim', onScrub);
+        events.on('animationLoopMode:changed', onLoopModeChanged);
 
         return () => {
             app.off('update', onUpdate);
             events.off('scrubAnim', onScrub);
+            events.off('animationLoopMode:changed', onLoopModeChanged);
         };
     }
 }
