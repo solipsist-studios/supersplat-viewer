@@ -18,6 +18,7 @@ import { Omg4V2SplatAnimation } from './animation/omg4-v2-splat-animation';
 import { QueenSplatAnimation } from './animation/queen-splat-animation';
 import { App } from './app';
 import { fetchSplatAnimBuffer, fullFileCacheKey, fullFileKeyPrefix } from './core/fetch-splat-anim-buffer';
+import { isOmg4V3, loadOmg4V3 } from './core/load-omg4-v3';
 import { setupSplatAnim } from './core/load-splat-anim';
 import { observe } from './core/observe';
 import { idbDeleteByPrefix, idbGetBuffer, idbSetBuffer } from './core/omg4-cache';
@@ -202,6 +203,16 @@ const loadOmg4V2Streaming = async (
 // Load and animate a .omg4 (OMG4-encoded 4D Gaussian Splat) file.
 const loadOmg4Gsplat = async (app: AppBase, config: Config, global: Global, progressCallback: (progress: number) => void) => {
     const headerBytes = await fetchOmg4HeaderBytes(config.contentUrl, 40);
+
+    if (isOmg4V3(headerBytes)) {
+        // v3: SOG-compressed ZIP container (webp textures + codebooks).
+        // Full prefetch (with cache handling), decode through the engine's
+        // SOG path, then reuse the whole v2 temporal setup unchanged.
+        const buffer = await fetchSplatAnimBuffer(config.contentUrl, progressCallback);
+        const data = await loadOmg4V3(app, buffer);
+        return setupOmg4V2(app, config, global, data).entity;
+    }
+
     const version = readOmg4Version(headerBytes);
 
     if (version >= 2) {
