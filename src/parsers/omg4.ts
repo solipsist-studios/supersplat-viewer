@@ -298,6 +298,11 @@ class Omg4V2Data {
     // reuses this class's shape; plain v2 files have no segmentation.
     segments?: Omg4Segments;
 
+    // Highest absolute clip time that is fully decoded; the animation
+    // driver holds the playhead here during streaming loads. Plain v2
+    // files are always complete.
+    loadedThrough = Infinity;
+
     readonly numSplats: number;
 
     readonly timeMin: number;

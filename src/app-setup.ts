@@ -18,13 +18,14 @@ import { Omg4V2SplatAnimation } from './animation/omg4-v2-splat-animation';
 import { QueenSplatAnimation } from './animation/queen-splat-animation';
 import { App } from './app';
 import { fetchSplatAnimBuffer, fullFileCacheKey, fullFileKeyPrefix } from './core/fetch-splat-anim-buffer';
-import { isOmg4V3, loadOmg4V3 } from './core/load-omg4-v3';
+import { isOmg4V3, loadOmg4V3, setAabbFromV3Meta } from './core/load-omg4-v3';
 import { setupSplatAnim } from './core/load-splat-anim';
 import { observe } from './core/observe';
 import { idbDeleteByPrefix, idbGetBuffer, idbSetBuffer } from './core/omg4-cache';
 import { attachOmg4V2Motion, syncOmg4V2Motion } from './core/omg4-v2-motion';
 import { streamOmg4Data } from './core/stream-omg4';
 import { streamOmg4V2 } from './core/stream-omg4-v2';
+import { streamOmg4V3 } from './core/stream-omg4-v3';
 import { streamQueenData } from './core/stream-queen';
 import { parseOmg4V2, readOmg4Version, readOmg4V2Header } from './parsers/omg4';
 import type { Omg4V2Data } from './parsers/omg4';
@@ -200,20 +201,107 @@ const loadOmg4V2Streaming = async (
     return entity;
 };
 
+// Progressive load of a streamed v3 archive: reveal the scene once the
+// persistent group and the first temporal segment are decoded, then keep
+// refreshing GPU data as later segments land (playback holds at the loaded
+// boundary via data.loadedThrough if the network falls behind). The
+// complete archive is cached for instant revisits.
+const loadOmg4V3Streaming = async (
+    app: AppBase,
+    config: Config,
+    global: Global,
+    cacheKey: string,
+    progressCallback: (progress: number) => void
+) => {
+    let resource: GSplatResource | null = null;
+    let data: Awaited<ReturnType<typeof loadOmg4V3>> | null = null;
+    let latestReady = 0;
+    let syncCount = 0;
+
+    const sync = (readySplats: number) => {
+        latestReady = readySplats;
+        if (!resource || !data) {
+            return;
+        }
+        const r = resource as any;
+        r.updateColorData(data.gsplatData);
+        r.updateTransformData(data.gsplatData);
+        // SH repack is the most expensive — half cadence, but always at the end
+        const hasSH = !!data.gsplatData.getProp('f_rest_0');
+        if (hasSH && (readySplats >= data.numSplats || syncCount % 2 === 0)) {
+            r.updateSHData(data.gsplatData);
+        }
+        syncCount++;
+
+        syncOmg4V2Motion(resource, data, readySplats);
+
+        // Refresh depth-sorter centers for the splats decoded so far.
+        const centers = r.centers as Float32Array | undefined;
+        if (centers) {
+            const x = data.gsplatData.getProp('x') as Float32Array;
+            const y = data.gsplatData.getProp('y') as Float32Array;
+            const z = data.gsplatData.getProp('z') as Float32Array;
+            for (let i = 0; i < readySplats; i++) {
+                centers[i * 3 + 0] = x[i];
+                centers[i * 3 + 1] = y[i];
+                centers[i * 3 + 2] = z[i];
+            }
+            r.centersVersion++;
+        }
+
+        app.renderNextFrame = true;
+    };
+
+    const stream = streamOmg4V3(app, config.contentUrl, {
+        onProgress: progressCallback,
+        onReady: sync
+    });
+
+    data = await stream.reveal;
+    const setup = setupOmg4V2(app, config, global, data);
+    resource = setup.resource;
+
+    // exact bounds from the global meta range — the arrays are still
+    // partially filled, so computed bounds would understate the scene
+    setAabbFromV3Meta(data.meta, (resource as any).aabb);
+
+    // catch up on any groups that decoded while the entity was being set up
+    // (the reveal set itself was picked up at resource creation)
+    if (latestReady > 0) {
+        sync(latestReady);
+    }
+
+    // cache the complete archive in the background for instant revisits
+    stream.complete
+    .then((buffer) => {
+        idbSetBuffer(cacheKey, buffer)
+        .then(() => idbDeleteByPrefix(fullFileKeyPrefix(config.contentUrl), cacheKey))
+        .catch(() => {});
+    })
+    .catch((err: Error) => {
+        console.warn('OMG4 v3 stream did not complete; partial scene retained:', err);
+    });
+
+    return setup.entity;
+};
+
 // Load and animate a .omg4 (OMG4-encoded 4D Gaussian Splat) file.
 const loadOmg4Gsplat = async (app: AppBase, config: Config, global: Global, progressCallback: (progress: number) => void) => {
     const headerBytes = await fetchOmg4HeaderBytes(config.contentUrl, 40);
 
     if (isOmg4V3(headerBytes)) {
-        // v3: SOG-compressed ZIP container (webp textures + codebooks).
-        // Full prefetch (with cache handling), decode through the engine's
-        // SOG path, then reuse the whole v2 temporal setup unchanged.
-        // Decoding a million-splat archive takes real time, so the progress
-        // budget is split: download 0-70, decode 70-100 — the bar only reads
-        // full once the scene is actually ready.
-        const buffer = await fetchSplatAnimBuffer(config.contentUrl, p => progressCallback(Math.round(p * 0.7)));
-        const data = await loadOmg4V3(app, buffer, p => progressCallback(Math.round(70 + p * 0.3)));
-        return setupOmg4V2(app, config, global, data).entity;
+        // v3: SOG-compressed ZIP container (webp textures + codebooks),
+        // decoded through the engine's SOG path and played through the
+        // whole v2 temporal setup unchanged.
+        const cacheKey = await fullFileCacheKey(config.contentUrl);
+        const cached = await idbGetBuffer(cacheKey);
+        if (cached) {
+            // complete archive available locally — decode straight through
+            console.debug('OMG4 v3 full-file cache hit (idb)', cacheKey);
+            const data = await loadOmg4V3(app, cached, progressCallback);
+            return setupOmg4V2(app, config, global, data).entity;
+        }
+        return loadOmg4V3Streaming(app, config, global, cacheKey, progressCallback);
     }
 
     const version = readOmg4Version(headerBytes);

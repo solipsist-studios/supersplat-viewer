@@ -109,6 +109,15 @@ class Omg4V2SplatAnimation {
                 if (playhead.advance(dt, this.duration, state)) {
                     state.animationPaused = true;
                 }
+                // Streaming loads: hold the playhead at the last fully decoded
+                // time until the next segment arrives. Clamp the playhead
+                // itself, not just the reported time, so `apply()` below does
+                // not push a time past the loaded region. `loadedThrough` is
+                // Infinity for non-streaming sources, making this a no-op.
+                const loadedLimit = this.data.loadedThrough - this.data.timeMin;
+                if (playhead.time > loadedLimit) {
+                    playhead.time = Math.max(0, loadedLimit);
+                }
                 state.animationTime = playhead.time;
             } else {
                 // Honour external scrubs that write to state.animationTime directly.
