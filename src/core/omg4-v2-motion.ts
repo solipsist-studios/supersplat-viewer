@@ -5,7 +5,9 @@ import {
     type GSplatResource
 } from 'playcanvas';
 
+import { uploadTextureRows } from './gsplat-range-sync';
 import type { Omg4V2Data } from '../parsers/omg4';
+
 
 // GPU evaluation of the .omg4 v2 temporal model on the engine's unified
 // gsplat pipeline. Two extra per-splat textures are attached to the
@@ -338,6 +340,31 @@ const syncOmg4V2Motion = (resource: GSplatResource, data: Omg4V2Data, count: num
     temporalTex.unlock();
 };
 
+// Ranged variant of syncOmg4V2Motion: rewrite only splats [a, b) in the
+// textures' persistent CPU copies and upload just the covering rows. Used
+// by the v3 segment streamer, where a full O(numSplats) rewrite per 0.1s
+// segment would stall weak devices.
+const syncOmg4V2MotionRange = (resource: GSplatResource, data: Omg4V2Data, a: number, b: number) => {
+    const streams = (resource as any).streams;
+    const motionTex = streams.textures.get('splatMotion');
+    const temporalTex = streams.textures.get('splatTemporal');
+    const motion = motionTex?._levels?.[0] as Float32Array | undefined;
+    const temporal = temporalTex?._levels?.[0] as Float32Array | undefined;
+    if (!motion || !temporal) {
+        return;
+    }
+    const n = Math.min(b, data.numSplats);
+    for (let i = a; i < n; i++) {
+        motion[i * 4 + 0] = data.velocityX[i];
+        motion[i * 4 + 1] = data.velocityY[i];
+        motion[i * 4 + 2] = data.velocityZ[i];
+        motion[i * 4 + 3] = data.tCenter[i];
+        temporal[i] = data.tSigma[i];
+    }
+    uploadTextureRows(motionTex, 4, a, n);
+    uploadTextureRows(temporalTex, 1, a, n);
+};
+
 // Keep or strip a `#ifdef TAG ... #endif // TAG` template block. Blocks are
 // tag-terminated so multiple independent blocks resolve safely.
 const resolveBlock = (src: string, tag: string, keep: boolean) => {
@@ -395,4 +422,4 @@ const setOmg4V2Params = (entity: Entity, time: number, camera?: Entity,
     }
 };
 
-export { attachOmg4V2Motion, syncOmg4V2Motion, bindOmg4V2Modifier, setOmg4V2Params };
+export { attachOmg4V2Motion, syncOmg4V2Motion, syncOmg4V2MotionRange, bindOmg4V2Modifier, setOmg4V2Params };

@@ -1,7 +1,7 @@
 import type { AppBase } from 'playcanvas';
 
 import {
-    V3Decoder, enumerateV3Groups, groupFileList, parseV3Meta, Omg4V3Data
+    V3Decoder, enumerateV3Groups, groupFileList, loadOmg4V3, parseV3Meta, Omg4V3Data
 } from './load-omg4-v3';
 
 // Progressive loader for streamed v3 archives. The encoder writes the ZIP
@@ -23,9 +23,11 @@ type V3StreamCallbacks = {
     onProgress: (progress: number) => void;
     /**
      * Splats [0, readySplats) are decoded. Fires per group after the
-     * reveal; the caller refreshes GPU data from the shared arrays.
+     * reveal; the caller refreshes GPU data from the shared arrays for
+     * the given [start, end) splat range (null = no new splats, only
+     * loadedThrough changed — e.g. the end-of-stream notification).
      */
-    onReady: (readySplats: number) => void;
+    onReady: (readySplats: number, range: [number, number] | null) => void;
 };
 
 type V3Stream = {
@@ -97,6 +99,7 @@ const streamOmg4V3 = (app: AppBase, url: string, callbacks: V3StreamCallbacks): 
 
         // -- group-decode driver -------------------------------------------
         let meta: any = null;
+        let monolithic = false;
         let decoder: V3Decoder | null = null;
         let groups: ReturnType<typeof enumerateV3Groups> = [];
         let neededNames: string[] = [];
@@ -128,7 +131,7 @@ const streamOmg4V3 = (app: AppBase, url: string, callbacks: V3StreamCallbacks): 
                 revealResolve(data);
             } else if (revealed && data) {
                 data.loadedThrough = loadedThroughAfter(groupIdx);
-                callbacks.onReady(group.range[1]);
+                callbacks.onReady(group.range[1], group.range);
             }
             groupIdx++;
         };
@@ -137,7 +140,10 @@ const streamOmg4V3 = (app: AppBase, url: string, callbacks: V3StreamCallbacks): 
             if (name === 'meta.json') {
                 meta = parseV3Meta(entryData.slice());
                 if (!meta.streams) {
-                    throw new Error('omg4 v3: archive is not in the streamed layout');
+                    // monolithic archive: keep downloading and decode the
+                    // whole buffer once it completes
+                    monolithic = true;
+                    return;
                 }
                 decoder = new V3Decoder(app, meta);
                 groups = enumerateV3Groups(meta);
@@ -149,6 +155,9 @@ const streamOmg4V3 = (app: AppBase, url: string, callbacks: V3StreamCallbacks): 
             }
             if (!meta) {
                 throw new Error(`omg4 v3: unexpected entry ${name} before meta.json`);
+            }
+            if (monolithic) {
+                return;
             }
             if (name === 'shN_centroids.webp') {
                 decoder!.setCentroids(entryData.slice());
@@ -183,6 +192,13 @@ const streamOmg4V3 = (app: AppBase, url: string, callbacks: V3StreamCallbacks): 
                         progressWatermark = progress;
                         callbacks.onProgress(progress);
                     }
+                } else if (monolithic && contentLength > 0) {
+                    // whole-file download maps to 0-70, decode takes 70-100
+                    const progress = Math.min(70, Math.trunc((received / contentLength) * 70));
+                    if (progress > progressWatermark) {
+                        progressWatermark = progress;
+                        callbacks.onProgress(progress);
+                    }
                 }
 
                 for (;;) {
@@ -195,6 +211,17 @@ const streamOmg4V3 = (app: AppBase, url: string, callbacks: V3StreamCallbacks): 
                 }
             }
 
+            const buffer = bytes.byteLength === received ? bytes.buffer : bytes.slice(0, received).buffer;
+
+            if (monolithic) {
+                const decoded = await loadOmg4V3(app, buffer,
+                    p => callbacks.onProgress(Math.min(100, Math.round(70 + p * 0.3))));
+                revealed = true;
+                callbacks.onProgress(100);
+                revealResolve(decoded);
+                return buffer;
+            }
+
             // flush a trailing partial group (shouldn't happen with a well-
             // formed archive, but don't leave decoded splats stranded)
             if (decoder && groupIdx < groups.length && pending.size === neededNames.length) {
@@ -205,11 +232,11 @@ const streamOmg4V3 = (app: AppBase, url: string, callbacks: V3StreamCallbacks): 
             }
             if (data) {
                 data.loadedThrough = Infinity;
-                callbacks.onReady(decoder!.n);
+                callbacks.onReady(decoder!.n, null);
             }
             decoder?.destroy();
 
-            return bytes.byteLength === received ? bytes.buffer : bytes.slice(0, received).buffer;
+            return buffer;
         } catch (err) {
             decoder?.destroy();
             revealReject(err as Error);

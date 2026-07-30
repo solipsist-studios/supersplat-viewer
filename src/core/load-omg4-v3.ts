@@ -313,6 +313,33 @@ class V3Decoder {
             return decodeTexture(this.app, bytes, `${group.prefix ?? 'mono'}-${name}`);
         };
 
+        const useSH = !!this.meta.shN;
+        if (useSH && !this.centroidsTexture) {
+            if (!this.centroidsBytes) {
+                throw new Error('omg4 v3: shN_centroids payload not provided before group decode');
+            }
+            // decoded once, shared by every group
+            this.centroidsTexture = await decodeTexture(this.app, this.centroidsBytes, 'shN_centroids');
+            (this.centroidsTexture as any)._levels[0] = await readTexels(this.centroidsTexture);
+        }
+
+        // Decode every webp payload concurrently (browser image decode runs
+        // off the main thread), then read all textures back in one
+        // concurrent batch — each readback resolves on a GPU fence, so
+        // batching overlaps latency that would otherwise accumulate at
+        // about a frame per texture.
+        const names = [...GROUP_FILE_NAMES];
+        if (useSH) {
+            names.push('shN_labels.webp');
+        }
+        const textures = await Promise.all(names.map(name => texFor(name)));
+        const texels = await Promise.all(textures.map(texture => readTexels(texture)));
+        const tex = new Map<string, Texture>();
+        names.forEach((name, i) => {
+            (textures[i] as any)._levels[0] = texels[i];
+            tex.set(name, textures[i]);
+        });
+
         // Static attributes decode through the engine's own SOG iterator; a
         // per-group shim presents the group textures with the global
         // codebooks/mins (GSplatSogData keys off meta.version === 2, and
@@ -320,35 +347,19 @@ class V3Decoder {
         const sog = new GSplatSogData() as any;
         sog.meta = { ...this.meta, version: 2, count: m };
         sog.numSplats = m;
-        sog.means_l = await texFor('means_l.webp');
-        sog.means_u = await texFor('means_u.webp');
-        sog.quats = await texFor('quats.webp');
-        sog.scales = await texFor('scales.webp');
-        sog.sh0 = await texFor('sh0.webp');
-        if (this.meta.shN) {
-            if (!this.centroidsTexture) {
-                if (!this.centroidsBytes) {
-                    throw new Error('omg4 v3: shN_centroids payload not provided before group decode');
-                }
-                this.centroidsTexture = await decodeTexture(this.app, this.centroidsBytes, 'shN_centroids');
-                (this.centroidsTexture as any)._levels[0] = await readTexels(this.centroidsTexture);
-            }
+        sog.means_l = tex.get('means_l.webp');
+        sog.means_u = tex.get('means_u.webp');
+        sog.quats = tex.get('quats.webp');
+        sog.scales = tex.get('scales.webp');
+        sog.sh0 = tex.get('sh0.webp');
+        if (useSH) {
             sog.sh_centroids = this.centroidsTexture;
-            sog.sh_labels = await texFor('shN_labels.webp');
+            sog.sh_labels = tex.get('shN_labels.webp');
             sog.shBands = this.meta.shN.bands;
         } else {
             sog.shBands = 0;
         }
         sog._patchCodebooks?.();
-
-        const groupTextures = [sog.means_l, sog.means_u, sog.quats, sog.scales, sog.sh0];
-        if (sog.shBands > 0) {
-            groupTextures.push(sog.sh_labels);
-        }
-        for (const texture of groupTextures) {
-            // eslint-disable-next-line no-await-in-loop -- sequential GPU readbacks
-            texture._levels[0] = await readTexels(texture);
-        }
 
         const p = new Vec3();
         const r = new Quat();
@@ -357,6 +368,7 @@ class V3Decoder {
         const sh = sog.shBands > 0 ? new Float32Array(45) : null;
         const iter = sog.createIter(p, r, s, c, sh);
         const arrays = this.arrays;
+        const restArrays = sh ? Array.from({ length: 45 }, (_, j) => arrays[`f_rest_${j}`]) : null;
 
         const CHUNK = 131072;
         for (let start = 0; start < m; start += CHUNK) {
@@ -378,9 +390,9 @@ class V3Decoder {
                 arrays.f_dc_1[o] = (c.y - 0.5) / SH_C0;
                 arrays.f_dc_2[o] = (c.z - 0.5) / SH_C0;
                 arrays.opacity[o] = c.w <= 0 ? -40 : (c.w >= 1 ? 40 : -Math.log(1 / c.w - 1));
-                if (sh) {
+                if (sh && restArrays) {
                     for (let j = 0; j < 45; j++) {
-                        arrays[`f_rest_${j}`][o] = sh[j];
+                        restArrays[j][o] = sh[j];
                     }
                 }
             }
@@ -394,16 +406,14 @@ class V3Decoder {
         sog.sh_centroids = null;
         sog.destroy();
 
-        // Temporal attributes (not part of the engine's SOG model).
-        const readEntry = async (name: string) => {
-            const texture = await texFor(name);
-            const texels = await readTexels(texture);
-            texture.destroy();
-            return texels;
-        };
-        const motionL = await readEntry('motion_l.webp');
-        const motionU = await readEntry('motion_u.webp');
-        const trbf = await readEntry('trbf.webp');
+        // Temporal attributes (not part of the engine's SOG model) — texels
+        // were read back in the batch above; only the textures remain to free.
+        const motionL = (tex.get('motion_l.webp') as any)._levels[0] as Uint8Array;
+        const motionU = (tex.get('motion_u.webp') as any)._levels[0] as Uint8Array;
+        const trbf = (tex.get('trbf.webp') as any)._levels[0] as Uint8Array;
+        tex.get('motion_l.webp')!.destroy();
+        tex.get('motion_u.webp')!.destroy();
+        tex.get('trbf.webp')!.destroy();
 
         const vMins = this.meta.motion.mins as number[];
         const vMaxs = this.meta.motion.maxs as number[];

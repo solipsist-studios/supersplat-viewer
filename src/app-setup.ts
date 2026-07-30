@@ -18,11 +18,12 @@ import { Omg4V2SplatAnimation } from './animation/omg4-v2-splat-animation';
 import { QueenSplatAnimation } from './animation/queen-splat-animation';
 import { App } from './app';
 import { fetchSplatAnimBuffer, fullFileCacheKey, fullFileKeyPrefix } from './core/fetch-splat-anim-buffer';
+import { updateGsplatRangeData } from './core/gsplat-range-sync';
 import { isOmg4V3, loadOmg4V3, setAabbFromV3Meta } from './core/load-omg4-v3';
 import { setupSplatAnim } from './core/load-splat-anim';
 import { observe } from './core/observe';
 import { idbDeleteByPrefix, idbGetBuffer, idbSetBuffer } from './core/omg4-cache';
-import { attachOmg4V2Motion, syncOmg4V2Motion } from './core/omg4-v2-motion';
+import { attachOmg4V2Motion, syncOmg4V2Motion, syncOmg4V2MotionRange } from './core/omg4-v2-motion';
 import { streamOmg4Data } from './core/stream-omg4';
 import { streamOmg4V2 } from './core/stream-omg4-v2';
 import { streamOmg4V3 } from './core/stream-omg4-v3';
@@ -215,41 +216,80 @@ const loadOmg4V3Streaming = async (
 ) => {
     let resource: GSplatResource | null = null;
     let data: Awaited<ReturnType<typeof loadOmg4V3>> | null = null;
-    let latestReady = 0;
-    let syncCount = 0;
+    const pendingRanges: [number, number][] = [];
+    let centersDirty = false;
+    let centersTimer: ReturnType<typeof setTimeout> | null = null;
 
-    const sync = (readySplats: number) => {
-        latestReady = readySplats;
+    // Bumping centersVersion makes the engine re-copy the whole centers
+    // buffer to the sort worker (a full-size buffer clone on the main
+    // thread) and re-sort — far too expensive per 0.1s segment, so batch
+    // bumps on a trailing timer. Newly decoded splats sort with slightly
+    // stale order for at most this window.
+    const CENTERS_BUMP_MS = 400;
+
+    const bumpCenters = () => {
+        centersDirty = false;
+        if (resource) {
+            (resource as any).centersVersion++;
+            app.renderNextFrame = true;
+        }
+    };
+
+    const scheduleCentersBump = () => {
+        centersDirty = true;
+        if (centersTimer === null) {
+            centersTimer = setTimeout(() => {
+                centersTimer = null;
+                if (centersDirty) {
+                    bumpCenters();
+                }
+            }, CENTERS_BUMP_MS);
+        }
+    };
+
+    // Per-segment GPU refresh: ranged repack + partial-row uploads only —
+    // the full engine update methods are O(numSplats) per call, which
+    // froze weak devices for the whole first playback pass.
+    const syncRange = (a: number, b: number) => {
         if (!resource || !data) {
             return;
         }
         const r = resource as any;
-        r.updateColorData(data.gsplatData);
-        r.updateTransformData(data.gsplatData);
-        // SH repack is the most expensive — half cadence, but always at the end
-        const hasSH = !!data.gsplatData.getProp('f_rest_0');
-        if (hasSH && (readySplats >= data.numSplats || syncCount % 2 === 0)) {
-            r.updateSHData(data.gsplatData);
-        }
-        syncCount++;
+        updateGsplatRangeData(r, data.gsplatData, a, b);
+        syncOmg4V2MotionRange(resource, data, a, b);
 
-        syncOmg4V2Motion(resource, data, readySplats);
-
-        // Refresh depth-sorter centers for the splats decoded so far.
         const centers = r.centers as Float32Array | undefined;
         if (centers) {
             const x = data.gsplatData.getProp('x') as Float32Array;
             const y = data.gsplatData.getProp('y') as Float32Array;
             const z = data.gsplatData.getProp('z') as Float32Array;
-            for (let i = 0; i < readySplats; i++) {
+            for (let i = a; i < b; i++) {
                 centers[i * 3 + 0] = x[i];
                 centers[i * 3 + 1] = y[i];
                 centers[i * 3 + 2] = z[i];
             }
-            r.centersVersion++;
+            scheduleCentersBump();
         }
 
         app.renderNextFrame = true;
+    };
+
+    const sync = (readySplats: number, range: [number, number] | null) => {
+        if (!resource || !data) {
+            if (range) {
+                pendingRanges.push(range);
+            }
+            return;
+        }
+        if (range) {
+            syncRange(range[0], range[1]);
+        } else {
+            // end of stream: flush any deferred sorter refresh
+            if (centersDirty) {
+                bumpCenters();
+            }
+            app.renderNextFrame = true;
+        }
     };
 
     const stream = streamOmg4V3(app, config.contentUrl, {
@@ -267,8 +307,8 @@ const loadOmg4V3Streaming = async (
 
     // catch up on any groups that decoded while the entity was being set up
     // (the reveal set itself was picked up at resource creation)
-    if (latestReady > 0) {
-        sync(latestReady);
+    for (const [a, b] of pendingRanges.splice(0)) {
+        syncRange(a, b);
     }
 
     // cache the complete archive in the background for instant revisits
