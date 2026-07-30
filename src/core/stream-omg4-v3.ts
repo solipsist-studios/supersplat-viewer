@@ -120,12 +120,37 @@ const streamOmg4V3 = (app: AppBase, url: string, callbacks: V3StreamCallbacks): 
         let data: Omg4V3Data | null = null;
         let revealed = false;
         let progressWatermark = -1;
+        let playGate = false;           // playback held at t=0 for buffering
+        let gatedLoadedThrough = 0;     // decoded boundary withheld while gated
+        let downloadStart = 0;
 
         // Absolute clip time playable once groups [0, idx] are decoded: up
         // to the start of the next (not yet decoded) segment's coverage.
         const loadedThroughAfter = (idx: number): number => {
             const next = groups[idx + 1];
             return next ? meta.segments.list[next.segIndex].t0 : Infinity;
+        };
+
+        // Buffer-ahead criterion: start (or keep) the playhead running only
+        // when, at the measured bandwidth, the rest of the geometry will
+        // arrive before the playhead needs it. Below-realtime connections
+        // otherwise starve the playhead at segment boundaries all through
+        // the first pass — perceived as rhythmic hitching on every device,
+        // since the stall is network-bound, not compute-bound. Holding at
+        // t=0 (scene revealed, camera live) trades that for one predictable
+        // buffering wait.
+        const gateOpen = (): boolean => {
+            const gb = meta?.streams?.geometry_bytes;
+            if (!gb || received >= gb) {
+                return true;
+            }
+            const elapsed = (performance.now() - downloadStart) / 1000;
+            if (elapsed < 0.15) {
+                return false;
+            }
+            const remaining = (gb - received) / (received / elapsed);
+            const duration = Math.max(0.1, (meta.time?.max ?? 0) - (meta.time?.min ?? 0));
+            return remaining * 1.3 + 0.3 <= duration;
         };
 
         const groupComplete = async () => {
@@ -136,12 +161,24 @@ const streamOmg4V3 = (app: AppBase, url: string, callbacks: V3StreamCallbacks): 
 
             if (!revealed && groupIdx === revealGroupIdx) {
                 data = decoder!.buildData();
-                data.loadedThrough = loadedThroughAfter(groupIdx);
+                gatedLoadedThrough = loadedThroughAfter(groupIdx);
+                if (gateOpen()) {
+                    data.loadedThrough = gatedLoadedThrough;
+                } else {
+                    playGate = true;
+                    data.loadedThrough = data.timeMin;
+                }
                 revealed = true;
                 callbacks.onProgress(100);
                 revealResolve(data);
             } else if (revealed && data) {
-                callbacks.onReady(group.range, loadedThroughAfter(groupIdx));
+                gatedLoadedThrough = loadedThroughAfter(groupIdx);
+                if (playGate && !gateOpen()) {
+                    callbacks.onReady(group.range, data.timeMin);
+                } else {
+                    playGate = false;
+                    callbacks.onReady(group.range, gatedLoadedThrough);
+                }
             }
             groupIdx++;
         };
@@ -205,9 +242,19 @@ const streamOmg4V3 = (app: AppBase, url: string, callbacks: V3StreamCallbacks): 
                 if (done) {
                     break;
                 }
+                if (!downloadStart) {
+                    downloadStart = performance.now();
+                }
                 ensureCapacity(received + value.length);
                 bytes.set(value, received);
                 received += value.length;
+
+                // release a buffering hold as soon as bandwidth allows —
+                // don't wait for the next group to finish decoding
+                if (playGate && revealed && data && gateOpen()) {
+                    playGate = false;
+                    callbacks.onReady(null, gatedLoadedThrough);
+                }
 
                 if (meta?.streams?.reveal_bytes && !revealed) {
                     const progress = Math.min(99, Math.trunc((received / meta.streams.reveal_bytes) * 100));

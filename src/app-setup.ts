@@ -216,15 +216,6 @@ const loadOmg4V3Streaming = async (
 ) => {
     let resource: GSplatResource | null = null;
     let data: Awaited<ReturnType<typeof loadOmg4V3>> | null = null;
-    let centersDirty = false;
-    let centersTimer: ReturnType<typeof setTimeout> | null = null;
-
-    // Bumping centersVersion makes the engine re-copy the whole centers
-    // buffer to the sort worker (a full-size buffer clone on the main
-    // thread) and re-sort — far too expensive per 0.1s segment, so batch
-    // bumps on a trailing timer. Newly decoded splats sort with slightly
-    // stale order for at most this window.
-    const CENTERS_BUMP_MS = 400;
 
     // GPU repack runs in small chunks against a per-slice time budget —
     // chunk counts alone can't bound task length on weak devices (the SH
@@ -235,23 +226,17 @@ const loadOmg4V3Streaming = async (
     const SYNC_CHUNK_SPLATS = 256;
     const SYNC_SLICE_MS = 6;
 
+    // Refreshing the depth sorter (centersVersion) re-clones the whole
+    // centers buffer to the sort worker and rebuilds the sorted order —
+    // measured at ~90ms of main-thread + driver-sync work per refresh on
+    // real GPUs, which read as metronomic playback hitches when done on a
+    // cadence during streaming. So the sorter is refreshed exactly once,
+    // when the stream completes: until then newly streamed splats render
+    // at their correct positions but blend in slightly stale depth order.
     const bumpCenters = () => {
-        centersDirty = false;
         if (resource) {
             (resource as any).centersVersion++;
             app.renderNextFrame = true;
-        }
-    };
-
-    const scheduleCentersBump = () => {
-        centersDirty = true;
-        if (centersTimer === null) {
-            centersTimer = setTimeout(() => {
-                centersTimer = null;
-                if (centersDirty) {
-                    bumpCenters();
-                }
-            }, CENTERS_BUMP_MS);
         }
     };
 
@@ -314,14 +299,13 @@ const loadOmg4V3Streaming = async (
                 uploadGsplatRows(r, a, b, item.sh);
                 if (!item.sh) {
                     uploadOmg4V2MotionRows(resource, a, b);
-                    scheduleCentersBump();
                 }
             }
             if (data && item.loadedThrough !== null) {
                 data.loadedThrough = item.loadedThrough;
             }
-            if (!item.range && centersDirty) {
-                // end of stream: flush the deferred sorter refresh
+            if (!item.range) {
+                // end of stream: single sorter refresh over the full scene
                 bumpCenters();
             }
             app.renderNextFrame = true;
