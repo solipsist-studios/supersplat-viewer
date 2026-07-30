@@ -208,8 +208,11 @@ const loadOmg4Gsplat = async (app: AppBase, config: Config, global: Global, prog
         // v3: SOG-compressed ZIP container (webp textures + codebooks).
         // Full prefetch (with cache handling), decode through the engine's
         // SOG path, then reuse the whole v2 temporal setup unchanged.
-        const buffer = await fetchSplatAnimBuffer(config.contentUrl, progressCallback);
-        const data = await loadOmg4V3(app, buffer);
+        // Decoding a million-splat archive takes real time, so the progress
+        // budget is split: download 0-70, decode 70-100 — the bar only reads
+        // full once the scene is actually ready.
+        const buffer = await fetchSplatAnimBuffer(config.contentUrl, p => progressCallback(p * 0.7));
+        const data = await loadOmg4V3(app, buffer, p => progressCallback(70 + p * 0.3));
         return setupOmg4V2(app, config, global, data).entity;
     }
 

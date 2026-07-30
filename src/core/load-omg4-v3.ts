@@ -2,7 +2,10 @@ import {
     GSplatData,
     GSplatSogData,
     PIXELFORMAT_RGBA8,
+    Quat,
     Texture,
+    Vec3,
+    Vec4,
     type AppBase
 } from 'playcanvas';
 
@@ -182,7 +185,102 @@ const isOmg4V3 = (buffer: ArrayBuffer): boolean => {
     return buffer.byteLength >= 4 && new DataView(buffer).getUint32(0, true) === ZIP_LOCAL_MAGIC;
 };
 
-const loadOmg4V3 = async (app: AppBase, buffer: ArrayBuffer): Promise<Omg4V3Data> => {
+// Yield to the event loop so progress UI can repaint mid-decode. setTimeout
+// rather than requestAnimationFrame: rAF never fires in hidden tabs.
+const yieldToUi = () => new Promise((resolve) => {
+    setTimeout(resolve, 0);
+});
+
+const SH_C0 = 0.28209479177387814;
+
+// Chunked equivalent of GSplatSogData.decompress(): identical math via the
+// engine's own iterator, but processed in slices with UI yields and progress
+// callbacks — the engine version is a single synchronous pass over every
+// splat, which freezes the page (and the progress bar) for seconds on
+// million-splat scenes.
+const decompressChunked = async (sog: any, onProgress: (frac: number) => void): Promise<GSplatData> => {
+    const textures = [sog.means_l, sog.means_u, sog.quats, sog.scales, sog.sh0];
+    if (sog.shBands > 0) {
+        textures.push(sog.sh_labels, sog.sh_centroids);
+    }
+    for (const texture of textures) {
+        // eslint-disable-next-line no-await-in-loop -- sequential GPU readbacks
+        texture._levels[0] = await readTexels(texture);
+    }
+
+    const n = sog.numSplats as number;
+    const members = [
+        'x', 'y', 'z',
+        'f_dc_0', 'f_dc_1', 'f_dc_2',
+        'opacity',
+        'scale_0', 'scale_1', 'scale_2',
+        'rot_0', 'rot_1', 'rot_2', 'rot_3'
+    ];
+    if (sog.shBands > 0) {
+        for (let i = 0; i < 45; i++) {
+            members.push(`f_rest_${i}`);
+        }
+    }
+    const data: Record<string, Float32Array> = {};
+    members.forEach((name) => {
+        data[name] = new Float32Array(n);
+    });
+
+    const p = new Vec3();
+    const r = new Quat();
+    const s = new Vec3();
+    const c = new Vec4();
+    const sh = sog.shBands > 0 ? new Float32Array(45) : null;
+    const iter = sog.createIter(p, r, s, c, sh);
+
+    const CHUNK = 131072;
+    for (let start = 0; start < n; start += CHUNK) {
+        const end = Math.min(n, start + CHUNK);
+        for (let i = start; i < end; i++) {
+            iter.read(i);
+            data.x[i] = p.x;
+            data.y[i] = p.y;
+            data.z[i] = p.z;
+            data.rot_0[i] = r.w;
+            data.rot_1[i] = r.x;
+            data.rot_2[i] = r.y;
+            data.rot_3[i] = r.z;
+            data.scale_0[i] = s.x;
+            data.scale_1[i] = s.y;
+            data.scale_2[i] = s.z;
+            data.f_dc_0[i] = (c.x - 0.5) / SH_C0;
+            data.f_dc_1[i] = (c.y - 0.5) / SH_C0;
+            data.f_dc_2[i] = (c.z - 0.5) / SH_C0;
+            data.opacity[i] = c.w <= 0 ? -40 : (c.w >= 1 ? 40 : -Math.log(1 / c.w - 1));
+            if (sh) {
+                for (let j = 0; j < 45; j++) {
+                    data[`f_rest_${j}`][i] = sh[j];
+                }
+            }
+        }
+        onProgress(end / n);
+        // eslint-disable-next-line no-await-in-loop -- deliberate UI yield
+        await yieldToUi();
+    }
+
+    return new GSplatData([{
+        name: 'vertex',
+        count: n,
+        properties: members.map(name => ({
+            name,
+            type: 'float' as const,
+            byteSize: 4,
+            storage: data[name]
+        }))
+    }]);
+};
+
+const loadOmg4V3 = async (app: AppBase, buffer: ArrayBuffer,
+    onProgress?: (progress: number) => void): Promise<Omg4V3Data> => {
+    // Decode-phase progress budget (0..100): webp decode/upload 0-15,
+    // splat decompression 15-90, temporal decode + wrap-up 90-100.
+    const report = (value: number) => onProgress?.(Math.min(100, Math.round(value)));
+
     const entries = parseZipEntries(buffer);
     const files = new Map<string, Uint8Array>();
     for (const entry of entries) {
@@ -225,6 +323,7 @@ const loadOmg4V3 = async (app: AppBase, buffer: ArrayBuffer): Promise<Omg4V3Data
     } else {
         sog.shBands = 0;
     }
+    report(10);
 
     // Temporal attributes (decoded here; not part of the engine's SOG model).
     const readEntry = async (filename: string) => {
@@ -236,8 +335,10 @@ const loadOmg4V3 = async (app: AppBase, buffer: ArrayBuffer): Promise<Omg4V3Data
     const motionL = await readEntry(meta.motion.files[0]);
     const motionU = await readEntry(meta.motion.files[1]);
     const trbf = await readEntry(meta.trbf.files[0]);
+    report(15);
 
-    const gsplatData: GSplatData = await sog.decompress();
+    sog._patchCodebooks?.();
+    const gsplatData: GSplatData = await decompressChunked(sog, frac => report(15 + frac * 75));
     sog.destroy();
 
     const n = meta.count as number;
@@ -254,6 +355,7 @@ const loadOmg4V3 = async (app: AppBase, buffer: ArrayBuffer): Promise<Omg4V3Data
             out[i] = Math.sign(t) * (Math.exp(Math.abs(t)) - 1);
         }
     }
+    report(95);
 
     const centerCodebook = meta.trbf.center.codebook as number[];
     const sigmaCodebook = meta.trbf.sigma.codebook as number[];
@@ -263,6 +365,7 @@ const loadOmg4V3 = async (app: AppBase, buffer: ArrayBuffer): Promise<Omg4V3Data
         tCenter[i] = centerCodebook[trbf[i * 4]];
         tSigma[i] = sigmaCodebook[trbf[i * 4 + 1]];
     }
+    report(100);
 
     return new Omg4V3Data(meta, gsplatData, velocity, tCenter, tSigma);
 };
