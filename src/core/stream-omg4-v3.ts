@@ -119,10 +119,14 @@ const streamOmg4V3 = (app: AppBase, url: string, callbacks: V3StreamCallbacks): 
         let revealGroupIdx = 0;      // last group index needed before reveal
         let data: Omg4V3Data | null = null;
         let revealed = false;
+        let revealPending = false;      // reveal set decoded, awaiting buffer
         let progressWatermark = -1;
-        let playGate = false;           // playback held at t=0 for buffering
-        let gatedLoadedThrough = 0;     // decoded boundary withheld while gated
+        let decodedThrough = 0;         // decoded content boundary (absolute)
         let downloadStart = 0;
+        // trailing samples of (wall time, buffered content) for the fill-
+        // rate estimate — a cumulative mean drags below the sustained rate
+        // during the initial decode ramp and over-delays the reveal
+        const fillSamples: { t: number, b: number }[] = [];
 
         // Absolute clip time playable once groups [0, idx] are decoded: up
         // to the start of the next (not yet decoded) segment's coverage.
@@ -131,59 +135,122 @@ const streamOmg4V3 = (app: AppBase, url: string, callbacks: V3StreamCallbacks): 
             return next ? meta.segments.list[next.segIndex].t0 : Infinity;
         };
 
-        // Buffer-ahead criterion: start (or keep) the playhead running only
-        // when, at the measured bandwidth, the rest of the geometry will
-        // arrive before the playhead needs it. Below-realtime connections
-        // otherwise starve the playhead at segment boundaries all through
-        // the first pass — perceived as rhythmic hitching on every device,
-        // since the stall is network-bound, not compute-bound. Holding at
-        // t=0 (scene revealed, camera live) trades that for one predictable
-        // buffering wait.
-        const gateOpen = (): boolean => {
+        // Buffer-ahead readiness. The scene is revealed (and the playhead
+        // started) only when the whole pipeline is provably ahead of
+        // playback — otherwise the playhead starves at segment boundaries
+        // through the first pass, perceived as rhythmic hitching. Two
+        // sides, both with margin:
+        //
+        //  bytesQ: at the measured bandwidth, the remaining geometry bytes
+        //          download within the clip duration (network side);
+        //  fillQ:  the classic buffering inequality on the measured fill
+        //          rate f of decoded content-time (network + decode + sync
+        //          combined — this is what protects slow CPUs, where decode
+        //          rather than download is the bottleneck):
+        //          buffered >= duration * (1 - f) * margin.
+        //
+        // Both quotients also drive the tail of the progress bar, so the
+        // bar reaches 100 exactly when playback can start cleanly.
+        const gateInfo = (): { bytesQ: number, fillQ: number } => {
             const gb = meta?.streams?.geometry_bytes;
-            if (!gb || received >= gb) {
-                return true;
+            if (!gb) {
+                return { bytesQ: 1, fillQ: 1 };
             }
-            const elapsed = (performance.now() - downloadStart) / 1000;
-            if (elapsed < 0.15) {
-                return false;
-            }
-            const remaining = (gb - received) / (received / elapsed);
             const duration = Math.max(0.1, (meta.time?.max ?? 0) - (meta.time?.min ?? 0));
-            return remaining * 1.3 + 0.3 <= duration;
-        };
+            const elapsed = (performance.now() - downloadStart) / 1000;
 
-        const groupComplete = async () => {
-            const group = groups[groupIdx];
-            const files = pending;
-            pending = new Map();
-            await decoder!.decodeGroup(group, files);
-
-            if (!revealed && groupIdx === revealGroupIdx) {
-                data = decoder!.buildData();
-                gatedLoadedThrough = loadedThroughAfter(groupIdx);
-                if (gateOpen()) {
-                    data.loadedThrough = gatedLoadedThrough;
+            let bytesQ = 1;
+            if (received < gb) {
+                if (elapsed < 0.15) {
+                    bytesQ = 0;
                 } else {
-                    playGate = true;
-                    data.loadedThrough = data.timeMin;
-                }
-                revealed = true;
-                callbacks.onProgress(100);
-                revealResolve(data);
-            } else if (revealed && data) {
-                gatedLoadedThrough = loadedThroughAfter(groupIdx);
-                if (playGate && !gateOpen()) {
-                    callbacks.onReady(group.range, data.timeMin);
-                } else {
-                    playGate = false;
-                    callbacks.onReady(group.range, gatedLoadedThrough);
+                    const bw = received / elapsed;
+                    const target = Math.max(1, gb - (bw * (duration - 0.3)) / 1.3);
+                    bytesQ = Math.min(1, received / target);
                 }
             }
-            groupIdx++;
+
+            let fillQ = 0;
+            if (!isFinite(decodedThrough)) {
+                fillQ = 1;      // geometry fully decoded
+            } else if (fillSamples.length > 1) {
+                const buffered = decodedThrough - (meta.time?.min ?? 0);
+                const now = performance.now();
+                // oldest sample within the trailing window
+                let ref = fillSamples[0];
+                for (const sample of fillSamples) {
+                    if (now - sample.t <= 1500) {
+                        break;
+                    }
+                    ref = sample;
+                }
+                const span = (now - ref.t) / 1000;
+                if (buffered > 0 && span >= 0.35) {
+                    const f = Math.min(1, Math.max(0, buffered - ref.b) / span);
+                    const required = Math.max(0.3, duration * (1 - f) * 1.25);
+                    fillQ = Math.min(1, buffered / required);
+                }
+            }
+            return { bytesQ, fillQ };
         };
 
-        const handleEntry = async (name: string, entryData: Uint8Array) => {
+        const gateReady = (): boolean => {
+            const { bytesQ, fillQ } = gateInfo();
+            return bytesQ >= 1 && fillQ >= 1;
+        };
+
+        const doReveal = () => {
+            data!.loadedThrough = decodedThrough;
+            revealed = true;
+            revealPending = false;
+            callbacks.onProgress(100);
+            revealResolve(data!);
+        };
+
+        // Decode runs on its own promise chain so the network loop never
+        // pauses for it — serializing download behind decode both wastes
+        // bandwidth and drags the measured fill rate (and therefore the
+        // buffering gate) well below what the connection supports.
+        let decodeChain: Promise<void> = Promise.resolve();
+        const enqueueDecode = (task: () => Promise<void>) => {
+            decodeChain = decodeChain.then(task);
+            // rejection is delivered where the chain is awaited (stream
+            // tail) — this handler only silences the interim unhandled-
+            // rejection warning
+            decodeChain.catch(() => { });
+        };
+
+        const processGroup = async (idx: number, group: ReturnType<typeof enumerateV3Groups>[number], files: Map<string, Uint8Array>) => {
+            await decoder!.decodeGroup(group, files);
+            if (idx >= revealGroupIdx) {
+                decodedThrough = loadedThroughAfter(idx);
+                if (isFinite(decodedThrough)) {
+                    fillSamples.push({ t: performance.now(), b: decodedThrough - (meta.time?.min ?? 0) });
+                    if (fillSamples.length > 40) {
+                        fillSamples.shift();
+                    }
+                }
+            }
+
+            if (!revealed && idx === revealGroupIdx) {
+                data = decoder!.buildData();
+                revealPending = true;
+                if (gateReady()) {
+                    doReveal();
+                }
+            } else if (!revealed && revealPending) {
+                // still buffering: later groups keep decoding into the
+                // shared arrays (the resource created at reveal picks them
+                // up); reveal as soon as the pipeline is provably ahead
+                if (gateReady()) {
+                    doReveal();
+                }
+            } else if (revealed && data) {
+                callbacks.onReady(group.range, decodedThrough);
+            }
+        };
+
+        const handleEntry = (name: string, entryData: Uint8Array) => {
             if (name === 'meta.json') {
                 meta = parseV3Meta(entryData.slice());
                 if (!meta.streams) {
@@ -218,8 +285,11 @@ const streamOmg4V3 = (app: AppBase, url: string, callbacks: V3StreamCallbacks): 
                 const prefix = name.slice(0, -'/shN_labels.webp'.length);
                 const group = groups.find(g => g.prefix === prefix);
                 if (group) {
-                    await decoder!.decodeGroupSH(group, entryData.slice());
-                    callbacks.onShReady?.(group.range);
+                    const labels = entryData.slice();
+                    enqueueDecode(async () => {
+                        await decoder!.decodeGroupSH(group, labels);
+                        callbacks.onShReady?.(group.range);
+                    });
                 }
                 return;
             }
@@ -231,7 +301,11 @@ const streamOmg4V3 = (app: AppBase, url: string, callbacks: V3StreamCallbacks): 
             // (reallocated) while the group is still pending
             pending.set(name.slice(group.prefix!.length + 1), entryData.slice());
             if (pending.size === neededNames.length) {
-                await groupComplete();
+                const idx = groupIdx;
+                const files = pending;
+                pending = new Map();
+                groupIdx++;
+                enqueueDecode(() => processGroup(idx, groups[idx], files));
             }
         };
 
@@ -249,15 +323,24 @@ const streamOmg4V3 = (app: AppBase, url: string, callbacks: V3StreamCallbacks): 
                 bytes.set(value, received);
                 received += value.length;
 
-                // release a buffering hold as soon as bandwidth allows —
-                // don't wait for the next group to finish decoding
-                if (playGate && revealed && data && gateOpen()) {
-                    playGate = false;
-                    callbacks.onReady(null, gatedLoadedThrough);
+                // release a pending reveal as soon as the buffer criterion
+                // is met — don't wait for the next group to finish decoding
+                if (revealPending && !revealed && gateReady()) {
+                    doReveal();
                 }
 
                 if (meta?.streams?.reveal_bytes && !revealed) {
-                    const progress = Math.min(99, Math.trunc((received / meta.streams.reveal_bytes) * 100));
+                    // download maps to 0-70; buffer-readiness (the lower of
+                    // the bandwidth and fill quotients) maps to 70-99, so
+                    // the bar hits 100 exactly at a play-ready reveal
+                    let progress;
+                    if (meta.streams.geometry_bytes) {
+                        const dl = Math.min(1, received / meta.streams.reveal_bytes);
+                        const { bytesQ, fillQ } = gateInfo();
+                        progress = Math.trunc(70 * dl + 29 * Math.min(bytesQ, fillQ));
+                    } else {
+                        progress = Math.min(99, Math.trunc((received / meta.streams.reveal_bytes) * 100));
+                    }
                     if (progress > progressWatermark) {
                         progressWatermark = progress;
                         callbacks.onProgress(progress);
@@ -276,8 +359,7 @@ const streamOmg4V3 = (app: AppBase, url: string, callbacks: V3StreamCallbacks): 
                     if (!entry) {
                         break;
                     }
-                    // eslint-disable-next-line no-await-in-loop -- entries decode in order
-                    await handleEntry(entry.name, entry.data);
+                    handleEntry(entry.name, entry.data);
                 }
             }
 
@@ -295,7 +377,17 @@ const streamOmg4V3 = (app: AppBase, url: string, callbacks: V3StreamCallbacks): 
             // flush a trailing partial group (shouldn't happen with a well-
             // formed archive, but don't leave decoded splats stranded)
             if (decoder && groupIdx < groups.length && pending.size === neededNames.length) {
-                await groupComplete();
+                const idx = groupIdx;
+                const files = pending;
+                pending = new Map();
+                groupIdx++;
+                enqueueDecode(() => processGroup(idx, groups[idx], files));
+            }
+            // drain all queued decodes (also surfaces any decode error)
+            await decodeChain;
+            if (revealPending && !revealed) {
+                // download finished — nothing left to buffer against
+                doReveal();
             }
             if (!revealed) {
                 throw new Error('omg4 v3: stream ended before the reveal set was decoded');

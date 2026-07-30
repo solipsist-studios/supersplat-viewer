@@ -221,10 +221,13 @@ const loadOmg4V3Streaming = async (
     // chunk counts alone can't bound task length on weak devices (the SH
     // pass dominates at ~45 coeffs per splat, and a throttled CPU can
     // spend >100ms on a chunk that takes 5ms on a fast one). Uploads are
-    // NOT per chunk: slices only write the CPU level copies, and each
-    // queue item ends with a single row-upload pass over its whole range.
+    // NOT per repack chunk: slices only write the CPU level copies, and
+    // each queue item ends with row-upload passes bounded to about a
+    // megabyte per task — a single multi-MB texSubImage2D batch into
+    // actively-sampled textures can stall the driver for a frame or more.
     const SYNC_CHUNK_SPLATS = 256;
     const SYNC_SLICE_MS = 6;
+    const UPLOAD_CHUNK_SPLATS = 16384;
 
     // Refreshing the depth sorter (centersVersion) re-clones the whole
     // centers buffer to the sort worker and rebuilds the sorted order —
@@ -295,10 +298,14 @@ const loadOmg4V3Streaming = async (
                     // eslint-disable-next-line no-await-in-loop -- deliberate UI yield
                     await yieldToUi();
                 }
-                // one row-upload pass over the whole range (its own task)
-                uploadGsplatRows(r, a, b, item.sh);
-                if (!item.sh) {
-                    uploadOmg4V2MotionRows(resource, a, b);
+                for (let u = a; u < b; u += UPLOAD_CHUNK_SPLATS) {
+                    const e = Math.min(b, u + UPLOAD_CHUNK_SPLATS);
+                    uploadGsplatRows(r, u, e, item.sh);
+                    if (!item.sh) {
+                        uploadOmg4V2MotionRows(resource, u, e);
+                    }
+                    // eslint-disable-next-line no-await-in-loop -- deliberate UI yield
+                    await yieldToUi();
                 }
             }
             if (data && item.loadedThrough !== null) {
