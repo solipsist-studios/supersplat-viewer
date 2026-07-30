@@ -216,7 +216,6 @@ const loadOmg4V3Streaming = async (
 ) => {
     let resource: GSplatResource | null = null;
     let data: Awaited<ReturnType<typeof loadOmg4V3>> | null = null;
-    const pendingRanges: [number, number][] = [];
     let centersDirty = false;
     let centersTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -226,6 +225,12 @@ const loadOmg4V3Streaming = async (
     // bumps on a trailing timer. Newly decoded splats sort with slightly
     // stale order for at most this window.
     const CENTERS_BUMP_MS = 400;
+
+    // GPU repack runs in 1024-splat chunks against a per-slice time budget
+    // — chunk counts alone can't bound task length on weak devices (the SH
+    // pass dominates at ~45 coeffs per splat).
+    const SYNC_CHUNK_SPLATS = 1024;
+    const SYNC_SLICE_MS = 6;
 
     const bumpCenters = () => {
         centersDirty = false;
@@ -247,48 +252,73 @@ const loadOmg4V3Streaming = async (
         }
     };
 
-    // Per-segment GPU refresh: ranged repack + partial-row uploads only —
-    // the full engine update methods are O(numSplats) per call, which
-    // froze weak devices for the whole first playback pass.
-    const syncRange = (a: number, b: number) => {
-        if (!resource || !data) {
+    // Per-segment GPU refreshes run through a FIFO queue processed in
+    // small slices with yields in between: segments decode behind live
+    // playback, and a whole-segment repack in one task reads as a visible
+    // hitch on weak devices. data.loadedThrough only advances once a
+    // segment's slices have all been pushed to the GPU, so the playhead
+    // can never enter a segment that isn't fully renderable yet.
+    const queue: { range: [number, number] | null, loadedThrough: number }[] = [];
+    let pumping = false;
+
+    const yieldToUi = () => new Promise((resolve) => {
+        setTimeout(resolve, 0);
+    });
+
+    const pump = async () => {
+        if (pumping) {
             return;
         }
-        const r = resource as any;
-        updateGsplatRangeData(r, data.gsplatData, a, b);
-        syncOmg4V2MotionRange(resource, data, a, b);
-
-        const centers = r.centers as Float32Array | undefined;
-        if (centers) {
-            const x = data.gsplatData.getProp('x') as Float32Array;
-            const y = data.gsplatData.getProp('y') as Float32Array;
-            const z = data.gsplatData.getProp('z') as Float32Array;
-            for (let i = a; i < b; i++) {
-                centers[i * 3 + 0] = x[i];
-                centers[i * 3 + 1] = y[i];
-                centers[i * 3 + 2] = z[i];
+        pumping = true;
+        while (queue.length > 0) {
+            const item = queue.shift()!;
+            if (item.range && resource && data) {
+                const r = resource as any;
+                const [a, b] = item.range;
+                const centers = r.centers as Float32Array | undefined;
+                const x = data.gsplatData.getProp('x') as Float32Array;
+                const y = data.gsplatData.getProp('y') as Float32Array;
+                const z = data.gsplatData.getProp('z') as Float32Array;
+                let s = a;
+                while (s < b) {
+                    const sliceStart = performance.now();
+                    while (s < b) {
+                        const e = Math.min(b, s + SYNC_CHUNK_SPLATS);
+                        updateGsplatRangeData(r, data.gsplatData, s, e);
+                        syncOmg4V2MotionRange(resource, data, s, e);
+                        if (centers) {
+                            for (let i = s; i < e; i++) {
+                                centers[i * 3 + 0] = x[i];
+                                centers[i * 3 + 1] = y[i];
+                                centers[i * 3 + 2] = z[i];
+                            }
+                        }
+                        s = e;
+                        if (performance.now() - sliceStart >= SYNC_SLICE_MS) {
+                            break;
+                        }
+                    }
+                    // eslint-disable-next-line no-await-in-loop -- deliberate UI yield
+                    await yieldToUi();
+                }
+                scheduleCentersBump();
             }
-            scheduleCentersBump();
-        }
-
-        app.renderNextFrame = true;
-    };
-
-    const sync = (readySplats: number, range: [number, number] | null) => {
-        if (!resource || !data) {
-            if (range) {
-                pendingRanges.push(range);
+            if (data) {
+                data.loadedThrough = item.loadedThrough;
             }
-            return;
-        }
-        if (range) {
-            syncRange(range[0], range[1]);
-        } else {
-            // end of stream: flush any deferred sorter refresh
-            if (centersDirty) {
+            if (!item.range && centersDirty) {
+                // end of stream: flush the deferred sorter refresh
                 bumpCenters();
             }
             app.renderNextFrame = true;
+        }
+        pumping = false;
+    };
+
+    const sync = (range: [number, number] | null, loadedThrough: number) => {
+        queue.push({ range, loadedThrough });
+        if (resource && data) {
+            pump();
         }
     };
 
@@ -307,9 +337,7 @@ const loadOmg4V3Streaming = async (
 
     // catch up on any groups that decoded while the entity was being set up
     // (the reveal set itself was picked up at resource creation)
-    for (const [a, b] of pendingRanges.splice(0)) {
-        syncRange(a, b);
-    }
+    pump();
 
     // cache the complete archive in the background for instant revisits
     stream.complete

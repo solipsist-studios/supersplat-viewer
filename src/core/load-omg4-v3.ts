@@ -129,6 +129,104 @@ const readTexels = async (texture: Texture): Promise<Uint8Array> => {
     return texels as Uint8Array;
 };
 
+// The SOG iterator only reads texel arrays (_levels[0]) plus dimensions,
+// so decode feeds it these plain holders instead of real GPU textures.
+interface TexelImage {
+    width: number;
+    height: number;
+    _levels: [Uint8Array];
+    destroy: () => void;
+}
+
+// Decodes webp payloads to raw RGBA texels in a worker with its own
+// OffscreenCanvas WebGL context. The main-thread alternative (upload +
+// texture.read on the app's context) forces every readback to sync behind
+// queued rendering work — profiled at ~40% of the main thread during
+// streaming playback, and the single biggest source of first-pass stutter
+// on weak devices. A 2D canvas cannot be used instead: getImageData
+// premultiplies, corrupting codebook indices next to data-bearing alpha
+// (sh0 stores opacity there). In the worker, readPixels blocks only the
+// worker.
+const TEXEL_WORKER_SRC = `
+let canvas = null, gl = null, tex = null, fbo = null;
+self.onmessage = async (e) => {
+    const { id, bytes } = e.data;
+    try {
+        const bitmap = await createImageBitmap(new Blob([bytes], { type: 'image/webp' }), {
+            premultiplyAlpha: 'none',
+            colorSpaceConversion: 'none'
+        });
+        const w = bitmap.width, h = bitmap.height;
+        if (!gl) {
+            canvas = new OffscreenCanvas(1, 1);
+            gl = canvas.getContext('webgl2', { antialias: false, depth: false });
+            if (!gl) throw new Error('no webgl2 in worker');
+            tex = gl.createTexture();
+            fbo = gl.createFramebuffer();
+        }
+        gl.bindTexture(gl.TEXTURE_2D, tex);
+        gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+        gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+        gl.pixelStorei(gl.UNPACK_COLORSPACE_CONVERSION_WEBGL, gl.NONE);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, bitmap);
+        bitmap.close();
+        gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+        gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+        const data = new Uint8Array(w * h * 4);
+        gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, data);
+        self.postMessage({ id, width: w, height: h, data }, [data.buffer]);
+    } catch (err) {
+        self.postMessage({ id, error: String(err) });
+    }
+};
+`;
+
+class WebpTexelWorker {
+    private worker: Worker | null = null;
+
+    private pending = new Map<number, { resolve:(t: TexelImage) => void, reject: (e: Error) => void }>();
+
+    private nextId = 0;
+
+    decode(bytes: Uint8Array): Promise<TexelImage> {
+        if (!this.worker) {
+            const blob = new Blob([TEXEL_WORKER_SRC], { type: 'text/javascript' });
+            this.worker = new Worker(URL.createObjectURL(blob));
+            this.worker.onmessage = (e: MessageEvent) => {
+                const { id, width, height, data, error } = e.data;
+                const entry = this.pending.get(id);
+                if (!entry) {
+                    return;
+                }
+                this.pending.delete(id);
+                if (error) {
+                    entry.reject(new Error(error));
+                } else {
+                    entry.resolve({
+                        width, height, _levels: [data], destroy: () => { }
+                    });
+                }
+            };
+        }
+        const id = this.nextId++;
+        // exact-size copy so the underlying buffer can transfer without
+        // detaching (or wholesale-cloning) the caller's archive buffer
+        const copy = bytes.slice();
+        return new Promise<TexelImage>((resolve, reject) => {
+            this.pending.set(id, { resolve, reject });
+            this.worker!.postMessage({ id, bytes: copy }, [copy.buffer]);
+        });
+    }
+
+    destroy() {
+        this.worker?.terminate();
+        this.worker = null;
+        const failure = new Error('texel worker destroyed');
+        this.pending.forEach(entry => entry.reject(failure));
+        this.pending.clear();
+    }
+}
+
 // Structural twin of Omg4V2Data (parsers/omg4.ts): the v2 setup path —
 // GSplatResource creation, attachOmg4V2Motion, Omg4V2SplatAnimation — is
 // typed against that shape and works on this unchanged.
@@ -201,6 +299,10 @@ const yieldToUi = () => new Promise((resolve) => {
 
 const SH_C0 = 0.28209479177387814;
 
+// Main-thread budget per decode slice. Decode runs behind live playback on
+// streaming loads; slices above ~a half frame read as visible stutter.
+const DECODE_SLICE_MS = 6;
+
 // Canonical per-group texture names. Monolithic archives use these bare;
 // streamed archives prefix them with the group directory ("persistent/",
 // "seg_000/", ...). shN_centroids is global either way.
@@ -261,7 +363,11 @@ class V3Decoder {
 
     private centroidsBytes: Uint8Array | null = null;
 
-    private centroidsTexture: Texture | null = null;
+    private centroidsTexture: TexelImage | Texture | null = null;
+
+    private texelWorker = new WebpTexelWorker();
+
+    private texelWorkerBroken = false;
 
     constructor(app: AppBase, meta: any) {
         this.app = app;
@@ -296,6 +402,22 @@ class V3Decoder {
         this.centroidsBytes = bytes;
     }
 
+    // webp -> raw texels, off the main thread; falls back to the app
+    // context's upload + readback path if the worker cannot run.
+    private async decodeTexels(bytes: Uint8Array, name: string): Promise<TexelImage | Texture> {
+        if (!this.texelWorkerBroken) {
+            try {
+                return await this.texelWorker.decode(bytes);
+            } catch (err) {
+                console.warn('omg4 v3: worker texel decode unavailable, using GPU readback:', err);
+                this.texelWorkerBroken = true;
+            }
+        }
+        const texture = await decodeTexture(this.app, bytes, name);
+        (texture as any)._levels[0] = await readTexels(texture);
+        return texture;
+    }
+
     // Decode one group's texture payloads (keyed by bare canonical name)
     // into [range[0], range[1]) of the full arrays.
     async decodeGroup(group: V3Group, files: Map<string, Uint8Array>,
@@ -305,12 +427,12 @@ class V3Decoder {
         if (m <= 0) {
             return;
         }
-        const texFor = (name: string): Promise<Texture> => {
+        const texFor = (name: string): Promise<TexelImage | Texture> => {
             const bytes = files.get(name);
             if (!bytes) {
                 throw new Error(`omg4 v3: ${group.prefix ?? ''}/${name} missing from archive`);
             }
-            return decodeTexture(this.app, bytes, `${group.prefix ?? 'mono'}-${name}`);
+            return this.decodeTexels(bytes, `${group.prefix ?? 'mono'}-${name}`);
         };
 
         const useSH = !!this.meta.shN;
@@ -319,24 +441,17 @@ class V3Decoder {
                 throw new Error('omg4 v3: shN_centroids payload not provided before group decode');
             }
             // decoded once, shared by every group
-            this.centroidsTexture = await decodeTexture(this.app, this.centroidsBytes, 'shN_centroids');
-            (this.centroidsTexture as any)._levels[0] = await readTexels(this.centroidsTexture);
+            this.centroidsTexture = await this.decodeTexels(this.centroidsBytes, 'shN_centroids');
         }
 
-        // Decode every webp payload concurrently (browser image decode runs
-        // off the main thread), then read all textures back in one
-        // concurrent batch — each readback resolves on a GPU fence, so
-        // batching overlaps latency that would otherwise accumulate at
-        // about a frame per texture.
+        // all payloads decode concurrently in the worker
         const names = [...GROUP_FILE_NAMES];
         if (useSH) {
             names.push('shN_labels.webp');
         }
         const textures = await Promise.all(names.map(name => texFor(name)));
-        const texels = await Promise.all(textures.map(texture => readTexels(texture)));
-        const tex = new Map<string, Texture>();
+        const tex = new Map<string, TexelImage | Texture>();
         names.forEach((name, i) => {
-            (textures[i] as any)._levels[0] = texels[i];
             tex.set(name, textures[i]);
         });
 
@@ -370,10 +485,14 @@ class V3Decoder {
         const arrays = this.arrays;
         const restArrays = sh ? Array.from({ length: 45 }, (_, j) => arrays[`f_rest_${j}`]) : null;
 
-        const CHUNK = 131072;
-        for (let start = 0; start < m; start += CHUNK) {
-            const end = Math.min(m, start + CHUNK);
-            for (let i = start; i < end; i++) {
+        // Time-budgeted slices rather than a fixed chunk size: decode runs
+        // behind live playback on streaming loads, so no single slice may
+        // hold the main thread past a few milliseconds — segment sizes vary
+        // wildly (tens of thousands of splats on dense scenes) and a
+        // count-based chunk either yields too rarely (jank) or too often.
+        for (let i = 0; i < m;) {
+            const sliceStart = performance.now();
+            while (i < m) {
                 iter.read(i);
                 const o = a + i;
                 arrays.x[o] = p.x;
@@ -395,8 +514,12 @@ class V3Decoder {
                         restArrays[j][o] = sh[j];
                     }
                 }
+                i++;
+                if ((i & 255) === 0 && performance.now() - sliceStart >= DECODE_SLICE_MS) {
+                    break;
+                }
             }
-            onProgress?.(end / m);
+            onProgress?.(i / m);
             // eslint-disable-next-line no-await-in-loop -- deliberate UI yield
             await yieldToUi();
         }
@@ -417,20 +540,25 @@ class V3Decoder {
 
         const vMins = this.meta.motion.mins as number[];
         const vMaxs = this.meta.motion.maxs as number[];
-        for (let ch = 0; ch < 3; ch++) {
-            const mn = vMins[ch];
-            const span = vMaxs[ch] - vMins[ch];
-            const out = this.velocity[ch];
-            for (let i = 0; i < m; i++) {
-                const t = mn + span * ((motionU[i * 4 + ch] << 8) + motionL[i * 4 + ch]) / 65535;
-                out[a + i] = Math.sign(t) * (Math.exp(Math.abs(t)) - 1);
-            }
-        }
         const centerCodebook = this.meta.trbf.center.codebook as number[];
         const sigmaCodebook = this.meta.trbf.sigma.codebook as number[];
-        for (let i = 0; i < m; i++) {
-            this.tCenter[a + i] = centerCodebook[trbf[i * 4]];
-            this.tSigma[a + i] = sigmaCodebook[trbf[i * 4 + 1]];
+        for (let i = 0; i < m;) {
+            const sliceStart = performance.now();
+            while (i < m) {
+                const o = a + i;
+                for (let ch = 0; ch < 3; ch++) {
+                    const t = vMins[ch] + (vMaxs[ch] - vMins[ch]) * ((motionU[i * 4 + ch] << 8) + motionL[i * 4 + ch]) / 65535;
+                    this.velocity[ch][o] = Math.sign(t) * (Math.exp(Math.abs(t)) - 1);
+                }
+                this.tCenter[o] = centerCodebook[trbf[i * 4]];
+                this.tSigma[o] = sigmaCodebook[trbf[i * 4 + 1]];
+                i++;
+                if ((i & 1023) === 0 && performance.now() - sliceStart >= DECODE_SLICE_MS) {
+                    break;
+                }
+            }
+            // eslint-disable-next-line no-await-in-loop -- deliberate UI yield
+            await yieldToUi();
         }
     }
 
@@ -449,6 +577,7 @@ class V3Decoder {
     }
 
     destroy() {
+        this.texelWorker.destroy();
         try {
             this.centroidsTexture?.destroy();
         } catch {

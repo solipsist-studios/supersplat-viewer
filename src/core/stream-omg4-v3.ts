@@ -22,12 +22,15 @@ type V3StreamCallbacks = {
      */
     onProgress: (progress: number) => void;
     /**
-     * Splats [0, readySplats) are decoded. Fires per group after the
-     * reveal; the caller refreshes GPU data from the shared arrays for
-     * the given [start, end) splat range (null = no new splats, only
-     * loadedThrough changed — e.g. the end-of-stream notification).
+     * A group finished decoding into the shared arrays. Fires per group
+     * after the reveal; the caller refreshes GPU data for the given
+     * [start, end) splat range (null = no new splats, e.g. the
+     * end-of-stream notification) and then advances data.loadedThrough
+     * to the given value — the driver deliberately does not advance it
+     * itself, so the playhead can never enter a segment whose GPU data
+     * the caller has not finished syncing.
      */
-    onReady: (readySplats: number, range: [number, number] | null) => void;
+    onReady: (range: [number, number] | null, loadedThrough: number) => void;
 };
 
 type V3Stream = {
@@ -130,8 +133,7 @@ const streamOmg4V3 = (app: AppBase, url: string, callbacks: V3StreamCallbacks): 
                 callbacks.onProgress(100);
                 revealResolve(data);
             } else if (revealed && data) {
-                data.loadedThrough = loadedThroughAfter(groupIdx);
-                callbacks.onReady(group.range[1], group.range);
+                callbacks.onReady(group.range, loadedThroughAfter(groupIdx));
             }
             groupIdx++;
         };
@@ -231,8 +233,7 @@ const streamOmg4V3 = (app: AppBase, url: string, callbacks: V3StreamCallbacks): 
                 throw new Error('omg4 v3: stream ended before the reveal set was decoded');
             }
             if (data) {
-                data.loadedThrough = Infinity;
-                callbacks.onReady(decoder!.n, null);
+                callbacks.onReady(null, Infinity);
             }
             decoder?.destroy();
 
