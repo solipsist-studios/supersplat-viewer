@@ -211,8 +211,8 @@ const loadOmg4Gsplat = async (app: AppBase, config: Config, global: Global, prog
         // Decoding a million-splat archive takes real time, so the progress
         // budget is split: download 0-70, decode 70-100 — the bar only reads
         // full once the scene is actually ready.
-        const buffer = await fetchSplatAnimBuffer(config.contentUrl, p => progressCallback(p * 0.7));
-        const data = await loadOmg4V3(app, buffer, p => progressCallback(70 + p * 0.3));
+        const buffer = await fetchSplatAnimBuffer(config.contentUrl, p => progressCallback(Math.round(p * 0.7)));
+        const data = await loadOmg4V3(app, buffer, p => progressCallback(Math.round(70 + p * 0.3)));
         return setupOmg4V2(app, config, global, data).entity;
     }
 
