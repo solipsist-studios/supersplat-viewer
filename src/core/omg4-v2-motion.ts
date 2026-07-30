@@ -24,6 +24,14 @@ import type { Omg4V2Data } from '../parsers/omg4';
 //
 // splatMotion   (RGBA32F): xyz = velocity (units/sec), w = t_center (sec)
 // splatTemporal (R32F)   : r = t_sigma (sec)
+//
+// Segmented (v3) content additionally culls splats outside the active
+// temporal window: the file orders splats [persistent | segment 0 | ...],
+// and each frame the animation driver pushes omg4CullRanges =
+// (persistentEnd, dynamicStart, dynamicEnd, 0). Splats outside
+// [0, persistentEnd) ∪ [dynamicStart, dynamicEnd) have temporal opacity
+// ~0 at the current time, so they collapse to zero scale/alpha — saving
+// their motion math, blending and fill.
 
 const glslModifyChunk = /* glsl */ `
 uniform highp sampler2D splatMotion;
@@ -32,6 +40,14 @@ uniform float omg4Time;
 uniform vec4 omg4ModelRotation;   // entity world rotation (x, y, z, w)
 uniform vec4 omg4CamRot;          // camera world rotation (x, y, z, w)
 uniform vec3 omg4CamPos;          // camera world position
+#ifdef OMG4_SEG_CULL
+uniform vec4 omg4CullRanges;      // x = persistent end, y/z = dynamic [start, end)
+
+bool omg4Culled() {
+    float idx = float(splat.uv.y * textureSize(splatMotion, 0).x + splat.uv.x);
+    return idx >= omg4CullRanges.x && (idx < omg4CullRanges.y || idx >= omg4CullRanges.z);
+}
+#endif // OMG4_SEG_CULL
 
 vec3 omg4QuatRotate(vec4 q, vec3 v) {
     return v + 2.0 * cross(q.xyz, cross(q.xyz, v) + q.w * v);
@@ -62,10 +78,21 @@ vec4 omg4MatToQuat(mat3 m) {
     return vec4((r02 + r20) / s, (r12 + r21) / s, 0.25 * s, (r10 - r01) / s);
 }
 void modifySplatCenter(inout vec3 center) {
+#ifdef OMG4_SEG_CULL
+    if (omg4Culled()) {
+        return;
+    }
+#endif // OMG4_SEG_CULL
     vec4 m = texelFetch(splatMotion, splat.uv, 0);
     center += omg4QuatRotate(omg4ModelRotation, m.xyz) * (omg4Time - m.w);
 }
 void modifySplatRotationScale(vec3 originalCenter, vec3 modifiedCenter, inout vec4 rotation, inout vec3 scale) {
+#ifdef OMG4_SEG_CULL
+    if (omg4Culled()) {
+        scale = vec3(0.0);
+        return;
+    }
+#endif // OMG4_SEG_CULL
 #ifdef OMG4_COV_COMP
     // Reproduce the screen-space footprint the OMG4 reference rasterizer
     // produced during training (FoV-sentinel bug): inflate by (KX, KY) along
@@ -117,9 +144,15 @@ void modifySplatRotationScale(vec3 originalCenter, vec3 modifiedCenter, inout ve
         V[2] = -V[2];
     }
     rotation = omg4MatToQuat(V);
-#endif
+#endif // OMG4_COV_COMP
 }
 void modifySplatColor(vec3 center, inout vec4 color) {
+#ifdef OMG4_SEG_CULL
+    if (omg4Culled()) {
+        color.a = 0.0;
+        return;
+    }
+#endif // OMG4_SEG_CULL
     float tCenter = texelFetch(splatMotion, splat.uv, 0).w;
     float tSigma = texelFetch(splatTemporal, splat.uv, 0).r;
     float dt = (omg4Time - tCenter) / max(tSigma, 1e-6);
@@ -134,6 +167,15 @@ uniform omg4Time: f32;
 uniform omg4ModelRotation: vec4f;
 uniform omg4CamRot: vec4f;
 uniform omg4CamPos: vec3f;
+#ifdef OMG4_SEG_CULL
+uniform omg4CullRanges: vec4f;
+
+fn omg4Culled() -> bool {
+    let dims = textureDimensions(splatMotion, 0);
+    let idx = f32(splat.uv.y * i32(dims.x) + splat.uv.x);
+    return idx >= uniform.omg4CullRanges.x && (idx < uniform.omg4CullRanges.y || idx >= uniform.omg4CullRanges.z);
+}
+#endif // OMG4_SEG_CULL
 
 fn omg4QuatRotate(q: vec4f, v: vec3f) -> vec3f {
     return v + 2.0 * cross(q.xyz, cross(q.xyz, v) + q.w * v);
@@ -164,10 +206,21 @@ fn omg4MatToQuat(m: mat3x3f) -> vec4f {
     return vec4f((r02 + r20) / s, (r12 + r21) / s, 0.25 * s, (r10 - r01) / s);
 }
 fn modifySplatCenter(center: ptr<function, vec3f>) {
+#ifdef OMG4_SEG_CULL
+    if (omg4Culled()) {
+        return;
+    }
+#endif // OMG4_SEG_CULL
     let m = textureLoad(splatMotion, splat.uv, 0);
     *center += omg4QuatRotate(uniform.omg4ModelRotation, m.xyz) * (uniform.omg4Time - m.w);
 }
 fn modifySplatRotationScale(originalCenter: vec3f, modifiedCenter: vec3f, rotation: ptr<function, vec4f>, scale: ptr<function, vec3f>) {
+#ifdef OMG4_SEG_CULL
+    if (omg4Culled()) {
+        *scale = vec3f(0.0);
+        return;
+    }
+#endif // OMG4_SEG_CULL
 #ifdef OMG4_COV_COMP
     let Rc = omg4QuatToMat(uniform.omg4CamRot);
     let vcam = transpose(Rc) * (modifiedCenter - uniform.omg4CamPos);
@@ -215,9 +268,15 @@ fn modifySplatRotationScale(originalCenter: vec3f, modifiedCenter: vec3f, rotati
         V[2] = -V[2];
     }
     *rotation = omg4MatToQuat(V);
-#endif
+#endif // OMG4_COV_COMP
 }
 fn modifySplatColor(center: vec3f, color: ptr<function, vec4f>) {
+#ifdef OMG4_SEG_CULL
+    if (omg4Culled()) {
+        (*color).a = 0.0;
+        return;
+    }
+#endif // OMG4_SEG_CULL
     let tCenter = textureLoad(splatMotion, splat.uv, 0).w;
     let tSigma = textureLoad(splatTemporal, splat.uv, 0).x;
     let dt = (uniform.omg4Time - tCenter) / max(tSigma, 1e-6);
@@ -279,35 +338,47 @@ const syncOmg4V2Motion = (resource: GSplatResource, data: Omg4V2Data, count: num
     temporalTex.unlock();
 };
 
-// Resolve the OMG4_COV_COMP template: with a cov2d scale the block is kept
-// and the KX/KY literals are inlined (no extra uniforms needed on the
-// compute path); without it the block is stripped.
-const buildModifyChunk = (src: string, cov2dScale: [number, number] | null) => {
+// Keep or strip a `#ifdef TAG ... #endif // TAG` template block. Blocks are
+// tag-terminated so multiple independent blocks resolve safely.
+const resolveBlock = (src: string, tag: string, keep: boolean) => {
+    const re = new RegExp(`#ifdef ${tag}\\n([\\s\\S]*?)#endif // ${tag}\\n`, 'g');
+    return src.replace(re, keep ? '$1' : '');
+};
+
+// Resolve the chunk template: the OMG4_COV_COMP block is kept (with the
+// KX/KY literals inlined — no extra uniforms needed on the compute path)
+// only when a cov2d scale is present; the OMG4_SEG_CULL block is kept only
+// for segmented (v3) content, so v2 files compile the identical shader as
+// before.
+const buildModifyChunk = (src: string, cov2dScale: [number, number] | null, segmented: boolean) => {
+    let out = resolveBlock(src, 'OMG4_SEG_CULL', segmented);
+    out = resolveBlock(out, 'OMG4_COV_COMP', !!cov2dScale);
     if (cov2dScale) {
-        return src
-        .replace('#ifdef OMG4_COV_COMP\n', '')
-        .replace('#endif\n', '')
+        out = out
         .replace(/OMG4_KX/g, cov2dScale[0].toFixed(6))
         .replace(/OMG4_KY/g, cov2dScale[1].toFixed(6));
     }
-    return src.replace(/#ifdef OMG4_COV_COMP[\s\S]*?#endif\n/, '');
+    return out;
 };
 
 // Install the temporal-evaluation modifier on the gsplat component.
-const bindOmg4V2Modifier = (entity: Entity, cov2dScale: [number, number] | null = null) => {
+const bindOmg4V2Modifier = (entity: Entity, cov2dScale: [number, number] | null = null, segmented = false) => {
     const component = entity.gsplat as any;
     if (!component) {
         throw new Error('omg4 v2: entity has no gsplat component');
     }
     component.setWorkBufferModifier({
-        glsl: buildModifyChunk(glslModifyChunk, cov2dScale),
-        wgsl: buildModifyChunk(wgslModifyChunk, cov2dScale)
+        glsl: buildModifyChunk(glslModifyChunk, cov2dScale, segmented),
+        wgsl: buildModifyChunk(wgslModifyChunk, cov2dScale, segmented)
     });
 };
 
 // Update the time / rotation uniforms. Setting a parameter marks the
 // placement render-dirty, so only call when a value actually changed.
-const setOmg4V2Params = (entity: Entity, time: number, camera?: Entity) => {
+// `cullRanges` = (persistentEnd, dynamicStart, dynamicEnd) splat-index
+// bounds for segmented content (see the chunk comment above).
+const setOmg4V2Params = (entity: Entity, time: number, camera?: Entity,
+    cullRanges?: [number, number, number] | null) => {
     const component = entity.gsplat as any;
     if (!component) {
         return;
@@ -319,6 +390,9 @@ const setOmg4V2Params = (entity: Entity, time: number, camera?: Entity) => {
     component.setParameter('omg4CamRot', c ? [c.x, c.y, c.z, c.w] : [0, 0, 0, 1]);
     const p = camera?.getPosition();
     component.setParameter('omg4CamPos', p ? [p.x, p.y, p.z] : [0, 0, 0]);
+    if (cullRanges) {
+        component.setParameter('omg4CullRanges', [cullRanges[0], cullRanges[1], cullRanges[2], 0]);
+    }
 };
 
 export { attachOmg4V2Motion, syncOmg4V2Motion, bindOmg4V2Modifier, setOmg4V2Params };

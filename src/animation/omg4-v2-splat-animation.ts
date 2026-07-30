@@ -45,7 +45,30 @@ class Omg4V2SplatAnimation {
     bind(entity: Entity, cov2dScale: [number, number] | null = null) {
         this.entity = entity;
         this.cov2dScale = cov2dScale;
-        bindOmg4V2Modifier(entity, cov2dScale);
+        bindOmg4V2Modifier(entity, cov2dScale, !!this.data.segments);
+    }
+
+    // Active splat-index bounds for segmented (v3) content at an absolute
+    // clip time: persistent splats plus the contiguous run of segments
+    // whose time coverage contains t. Null when the file has no segments.
+    private cullRanges(absTime: number): [number, number, number] | null {
+        const segments = this.data.segments;
+        if (!segments) {
+            return null;
+        }
+        let lo = -1;
+        let hi = -1;
+        for (const s of segments.list) {
+            if (s.t0 <= absTime && absTime <= s.t1) {
+                lo = lo < 0 ? s.range[0] : Math.min(lo, s.range[0]);
+                hi = Math.max(hi, s.range[1]);
+            }
+        }
+        if (lo < 0) {
+            lo = 0;
+            hi = 0;
+        }
+        return [segments.persistent[1], lo, hi];
     }
 
     // Push uniforms if the time, entity rotation or (when covariance
@@ -71,7 +94,8 @@ class Omg4V2SplatAnimation {
         if (camPosition) {
             this.lastCamPosition.copy(camPosition);
         }
-        setOmg4V2Params(this.entity, this.data.timeMin + animTime, this.camera ?? undefined);
+        const absTime = this.data.timeMin + animTime;
+        setOmg4V2Params(this.entity, absTime, this.camera ?? undefined, this.cullRanges(absTime));
         return true;
     }
 

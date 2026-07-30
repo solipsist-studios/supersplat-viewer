@@ -279,10 +279,25 @@ class Omg4Data {
 // Parse a .omg4 ArrayBuffer and return an Omg4Data instance.
 const parseOmg4 = (buffer: ArrayBuffer): Omg4Data => new Omg4Data(buffer);
 
+// Temporal segment table (v3 containers). Splats are ordered
+// [persistent | segment 0 | segment 1 | ...]; at time t a player draws
+// [0, persistent[1]) plus the contiguous index range of segments whose
+// [t0, t1] coverage contains t.
+interface Omg4Segments {
+    duration: number;
+    k_sigma: number;
+    persistent: [number, number];
+    list: { t0: number, t1: number, range: [number, number] }[];
+}
+
 // Version-2 data: static splat attributes plus per-splat temporal parameters
 // (velocity, temporal centre, temporal std-dev). There is no per-frame data;
 // the viewer evaluates motion and temporal fade on the GPU each frame.
 class Omg4V2Data {
+    // Temporal segment table — only ever set for v3 (SOG) content, which
+    // reuses this class's shape; plain v2 files have no segmentation.
+    segments?: Omg4Segments;
+
     readonly numSplats: number;
 
     readonly timeMin: number;
@@ -489,4 +504,4 @@ export {
     readOmg4V2Header, writeOmg4V2StandardHeader,
     V2_HEADER_SIZE, V2_TILED_HEADER_SIZE, V2_NUM_FIELDS
 };
-export type { Omg4FrameData, Omg4V2Header };
+export type { Omg4FrameData, Omg4V2Header, Omg4Segments };

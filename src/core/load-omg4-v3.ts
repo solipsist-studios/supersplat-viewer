@@ -6,6 +6,8 @@ import {
     type AppBase
 } from 'playcanvas';
 
+import type { Omg4Segments } from '../parsers/omg4';
+
 // .omg4 version 3: SOG-compressed temporal splats.
 //
 // The file is a ZIP archive (identified by the leading "PK\x03\x04" magic
@@ -128,6 +130,9 @@ const readTexels = async (texture: Texture): Promise<Uint8Array> => {
 // GSplatResource creation, attachOmg4V2Motion, Omg4V2SplatAnimation — is
 // typed against that shape and works on this unchanged.
 class Omg4V3Data {
+    // Temporal segment table for per-segment culling (see parsers/omg4.ts).
+    segments?: Omg4Segments;
+
     readonly numSplats: number;
 
     readonly timeMin: number;
@@ -158,6 +163,9 @@ class Omg4V3Data {
         this.timeMax = meta.time?.max ?? 0;
         this.fps = meta.time?.fps ?? 30;
         this.cov2dScale = meta.cov2d_scale ? [meta.cov2d_scale[0], meta.cov2d_scale[1]] : null;
+        if (meta.segments?.list?.length && meta.segments.persistent) {
+            this.segments = meta.segments as Omg4Segments;
+        }
         this.gsplatData = gsplatData;
         [this.velocityX, this.velocityY, this.velocityZ] = velocity;
         this.tCenter = tCenter;
