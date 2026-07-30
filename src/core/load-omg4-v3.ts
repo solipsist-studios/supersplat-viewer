@@ -435,7 +435,10 @@ class V3Decoder {
             return this.decodeTexels(bytes, `${group.prefix ?? 'mono'}-${name}`);
         };
 
-        const useSH = !!this.meta.shN;
+        // SH decodes with the group only when its labels are present —
+        // sh-deferred archives ship labels behind all geometry, and those
+        // groups take a later decodeGroupSH pass instead.
+        const useSH = !!this.meta.shN && files.has('shN_labels.webp');
         if (useSH && !this.centroidsTexture) {
             if (!this.centroidsBytes) {
                 throw new Error('omg4 v3: shN_centroids payload not provided before group decode');
@@ -515,7 +518,7 @@ class V3Decoder {
                     }
                 }
                 i++;
-                if ((i & 255) === 0 && performance.now() - sliceStart >= DECODE_SLICE_MS) {
+                if ((i & 63) === 0 && performance.now() - sliceStart >= DECODE_SLICE_MS) {
                     break;
                 }
             }
@@ -553,13 +556,65 @@ class V3Decoder {
                 this.tCenter[o] = centerCodebook[trbf[i * 4]];
                 this.tSigma[o] = sigmaCodebook[trbf[i * 4 + 1]];
                 i++;
-                if ((i & 1023) === 0 && performance.now() - sliceStart >= DECODE_SLICE_MS) {
+                if ((i & 255) === 0 && performance.now() - sliceStart >= DECODE_SLICE_MS) {
                     break;
                 }
             }
             // eslint-disable-next-line no-await-in-loop -- deliberate UI yield
             await yieldToUi();
         }
+    }
+
+    // Decode a deferred SH labels payload for one group into the f_rest
+    // arrays (sh-deferred archives ship all labels behind the geometry so
+    // the scene can reveal DC-only and layer view dependence in later).
+    async decodeGroupSH(group: V3Group, labelsBytes: Uint8Array) {
+        const [a, b] = group.range;
+        const m = b - a;
+        if (m <= 0 || !this.meta.shN) {
+            return;
+        }
+        if (!this.centroidsTexture) {
+            if (!this.centroidsBytes) {
+                throw new Error('omg4 v3: shN_centroids payload must precede deferred labels');
+            }
+            this.centroidsTexture = await this.decodeTexels(this.centroidsBytes, 'shN_centroids');
+        }
+        const labels = await this.decodeTexels(labelsBytes, `${group.prefix ?? 'mono'}-shN_labels`);
+
+        // SH-only iterator: null attribute targets skip every texture but
+        // sh_labels/sh_centroids
+        const sog = new GSplatSogData() as any;
+        sog.meta = { ...this.meta, version: 2, count: m };
+        sog.numSplats = m;
+        sog.sh_labels = labels;
+        sog.sh_centroids = this.centroidsTexture;
+        sog.shBands = this.meta.shN.bands;
+        sog._patchCodebooks?.();
+
+        const sh = new Float32Array(45);
+        const iter = sog.createIter(null, null, null, null, sh);
+        const arrays = this.arrays;
+        const restArrays = Array.from({ length: 45 }, (_, j) => arrays[`f_rest_${j}`]);
+        for (let i = 0; i < m;) {
+            const sliceStart = performance.now();
+            while (i < m) {
+                iter.read(i);
+                const o = a + i;
+                for (let j = 0; j < 45; j++) {
+                    restArrays[j][o] = sh[j];
+                }
+                i++;
+                if ((i & 63) === 0 && performance.now() - sliceStart >= DECODE_SLICE_MS) {
+                    break;
+                }
+            }
+            // eslint-disable-next-line no-await-in-loop -- deliberate UI yield
+            await yieldToUi();
+        }
+
+        sog.sh_centroids = null;
+        sog.destroy();
     }
 
     buildData(): Omg4V3Data {
@@ -665,5 +720,6 @@ const setAabbFromV3Meta = (meta: any, aabb: any) => {
 
 export {
     isOmg4V3, loadOmg4V3, Omg4V3Data,
-    V3Decoder, enumerateV3Groups, groupFileList, parseV3Meta, setAabbFromV3Meta
+    V3Decoder, enumerateV3Groups, groupFileList, parseV3Meta, setAabbFromV3Meta,
+    GROUP_FILE_NAMES
 };

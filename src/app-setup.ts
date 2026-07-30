@@ -18,12 +18,12 @@ import { Omg4V2SplatAnimation } from './animation/omg4-v2-splat-animation';
 import { QueenSplatAnimation } from './animation/queen-splat-animation';
 import { App } from './app';
 import { fetchSplatAnimBuffer, fullFileCacheKey, fullFileKeyPrefix } from './core/fetch-splat-anim-buffer';
-import { updateGsplatRangeData } from './core/gsplat-range-sync';
+import { updateGsplatRangeData, updateGsplatSHRange, uploadGsplatRows } from './core/gsplat-range-sync';
 import { isOmg4V3, loadOmg4V3, setAabbFromV3Meta } from './core/load-omg4-v3';
 import { setupSplatAnim } from './core/load-splat-anim';
 import { observe } from './core/observe';
 import { idbDeleteByPrefix, idbGetBuffer, idbSetBuffer } from './core/omg4-cache';
-import { attachOmg4V2Motion, syncOmg4V2Motion, syncOmg4V2MotionRange } from './core/omg4-v2-motion';
+import { attachOmg4V2Motion, syncOmg4V2Motion, syncOmg4V2MotionRange, uploadOmg4V2MotionRows } from './core/omg4-v2-motion';
 import { streamOmg4Data } from './core/stream-omg4';
 import { streamOmg4V2 } from './core/stream-omg4-v2';
 import { streamOmg4V3 } from './core/stream-omg4-v3';
@@ -226,10 +226,13 @@ const loadOmg4V3Streaming = async (
     // stale order for at most this window.
     const CENTERS_BUMP_MS = 400;
 
-    // GPU repack runs in 1024-splat chunks against a per-slice time budget
-    // — chunk counts alone can't bound task length on weak devices (the SH
-    // pass dominates at ~45 coeffs per splat).
-    const SYNC_CHUNK_SPLATS = 1024;
+    // GPU repack runs in small chunks against a per-slice time budget —
+    // chunk counts alone can't bound task length on weak devices (the SH
+    // pass dominates at ~45 coeffs per splat, and a throttled CPU can
+    // spend >100ms on a chunk that takes 5ms on a fast one). Uploads are
+    // NOT per chunk: slices only write the CPU level copies, and each
+    // queue item ends with a single row-upload pass over its whole range.
+    const SYNC_CHUNK_SPLATS = 256;
     const SYNC_SLICE_MS = 6;
 
     const bumpCenters = () => {
@@ -258,7 +261,7 @@ const loadOmg4V3Streaming = async (
     // hitch on weak devices. data.loadedThrough only advances once a
     // segment's slices have all been pushed to the GPU, so the playhead
     // can never enter a segment that isn't fully renderable yet.
-    const queue: { range: [number, number] | null, loadedThrough: number }[] = [];
+    const queue: { range: [number, number] | null, loadedThrough: number | null, sh: boolean }[] = [];
     let pumping = false;
 
     const yieldToUi = () => new Promise((resolve) => {
@@ -284,13 +287,19 @@ const loadOmg4V3Streaming = async (
                     const sliceStart = performance.now();
                     while (s < b) {
                         const e = Math.min(b, s + SYNC_CHUNK_SPLATS);
-                        updateGsplatRangeData(r, data.gsplatData, s, e);
-                        syncOmg4V2MotionRange(resource, data, s, e);
-                        if (centers) {
-                            for (let i = s; i < e; i++) {
-                                centers[i * 3 + 0] = x[i];
-                                centers[i * 3 + 1] = y[i];
-                                centers[i * 3 + 2] = z[i];
+                        if (item.sh) {
+                            // deferred SH arrival: geometry for this range
+                            // is already live, only the SH textures change
+                            updateGsplatSHRange(r, data.gsplatData, s, e, false);
+                        } else {
+                            updateGsplatRangeData(r, data.gsplatData, s, e, false);
+                            syncOmg4V2MotionRange(resource, data, s, e, false);
+                            if (centers) {
+                                for (let i = s; i < e; i++) {
+                                    centers[i * 3 + 0] = x[i];
+                                    centers[i * 3 + 1] = y[i];
+                                    centers[i * 3 + 2] = z[i];
+                                }
                             }
                         }
                         s = e;
@@ -301,9 +310,14 @@ const loadOmg4V3Streaming = async (
                     // eslint-disable-next-line no-await-in-loop -- deliberate UI yield
                     await yieldToUi();
                 }
-                scheduleCentersBump();
+                // one row-upload pass over the whole range (its own task)
+                uploadGsplatRows(r, a, b, item.sh);
+                if (!item.sh) {
+                    uploadOmg4V2MotionRows(resource, a, b);
+                    scheduleCentersBump();
+                }
             }
-            if (data) {
+            if (data && item.loadedThrough !== null) {
                 data.loadedThrough = item.loadedThrough;
             }
             if (!item.range && centersDirty) {
@@ -316,7 +330,14 @@ const loadOmg4V3Streaming = async (
     };
 
     const sync = (range: [number, number] | null, loadedThrough: number) => {
-        queue.push({ range, loadedThrough });
+        queue.push({ range, loadedThrough, sh: false });
+        if (resource && data) {
+            pump();
+        }
+    };
+
+    const syncSh = (range: [number, number]) => {
+        queue.push({ range, loadedThrough: null, sh: true });
         if (resource && data) {
             pump();
         }
@@ -324,7 +345,8 @@ const loadOmg4V3Streaming = async (
 
     const stream = streamOmg4V3(app, config.contentUrl, {
         onProgress: progressCallback,
-        onReady: sync
+        onReady: sync,
+        onShReady: syncSh
     });
 
     data = await stream.reveal;

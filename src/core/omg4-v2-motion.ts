@@ -340,11 +340,18 @@ const syncOmg4V2Motion = (resource: GSplatResource, data: Omg4V2Data, count: num
     temporalTex.unlock();
 };
 
+// Upload the motion/temporal texture rows covering [a, b).
+const uploadOmg4V2MotionRows = (resource: GSplatResource, a: number, b: number) => {
+    const streams = (resource as any).streams;
+    uploadTextureRows(streams.textures.get('splatMotion'), 4, a, b);
+    uploadTextureRows(streams.textures.get('splatTemporal'), 1, a, b);
+};
+
 // Ranged variant of syncOmg4V2Motion: rewrite only splats [a, b) in the
 // textures' persistent CPU copies and upload just the covering rows. Used
 // by the v3 segment streamer, where a full O(numSplats) rewrite per 0.1s
 // segment would stall weak devices.
-const syncOmg4V2MotionRange = (resource: GSplatResource, data: Omg4V2Data, a: number, b: number) => {
+const syncOmg4V2MotionRange = (resource: GSplatResource, data: Omg4V2Data, a: number, b: number, upload = true) => {
     const streams = (resource as any).streams;
     const motionTex = streams.textures.get('splatMotion');
     const temporalTex = streams.textures.get('splatTemporal');
@@ -361,8 +368,9 @@ const syncOmg4V2MotionRange = (resource: GSplatResource, data: Omg4V2Data, a: nu
         motion[i * 4 + 3] = data.tCenter[i];
         temporal[i] = data.tSigma[i];
     }
-    uploadTextureRows(motionTex, 4, a, n);
-    uploadTextureRows(temporalTex, 1, a, n);
+    if (upload) {
+        uploadOmg4V2MotionRows(resource, a, n);
+    }
 };
 
 // Keep or strip a `#ifdef TAG ... #endif // TAG` template block. Blocks are
@@ -422,4 +430,4 @@ const setOmg4V2Params = (entity: Entity, time: number, camera?: Entity,
     }
 };
 
-export { attachOmg4V2Motion, syncOmg4V2Motion, syncOmg4V2MotionRange, bindOmg4V2Modifier, setOmg4V2Params };
+export { attachOmg4V2Motion, syncOmg4V2Motion, syncOmg4V2MotionRange, uploadOmg4V2MotionRows, bindOmg4V2Modifier, setOmg4V2Params };

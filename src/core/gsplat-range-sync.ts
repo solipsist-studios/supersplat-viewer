@@ -15,11 +15,11 @@ const SH_C0 = 0.28209479177387814;
 // level copy is already updated in place, so devices without a partial
 // write path (WebGPU) fall back to a full upload of that copy.
 const uploadTextureRows = (texture: any, elemsPerTexel: number, a: number, b: number) => {
-    const w = texture.width as number;
-    const level = texture._levels?.[0];
+    const level = texture?._levels?.[0];
     if (!level) {
         return;
     }
+    const w = texture.width as number;
     if (texture.impl?.write) {
         const rowA = Math.floor(a / w);
         const rowB = Math.min(texture.height as number, Math.ceil(b / w));
@@ -30,7 +30,7 @@ const uploadTextureRows = (texture: any, elemsPerTexel: number, a: number, b: nu
     }
 };
 
-const updateColorRange = (resource: any, gsplatData: GSplatData, a: number, b: number) => {
+const updateColorRange = (resource: any, gsplatData: GSplatData, a: number, b: number, upload: boolean) => {
     const texture = resource.streams.getTexture('splatColor');
     const level = texture?._levels?.[0] as Uint16Array | undefined;
     if (!level) {
@@ -48,10 +48,12 @@ const updateColorRange = (resource: any, gsplatData: GSplatData, a: number, b: n
         level[i * 4 + 2] = float2Half(cb[i] * SH_C0 + 0.5);
         level[i * 4 + 3] = float2Half(1 / (1 + Math.exp(-ca[i])));
     }
-    uploadTextureRows(texture, 4, a, b);
+    if (upload) {
+        uploadTextureRows(texture, 4, a, b);
+    }
 };
 
-const updateTransformRange = (resource: any, gsplatData: GSplatData, a: number, b: number) => {
+const updateTransformRange = (resource: any, gsplatData: GSplatData, a: number, b: number, upload: boolean) => {
     const transformA = resource.streams.getTexture('transformA');
     const transformB = resource.streams.getTexture('transformB');
     const dataA = transformA?._levels?.[0] as Uint32Array | undefined;
@@ -81,11 +83,28 @@ const updateTransformRange = (resource: any, gsplatData: GSplatData, a: number, 
         dataB[i * 4 + 2] = float2Half(s.z);
         dataB[i * 4 + 3] = float2Half(r.z);
     }
-    uploadTextureRows(transformA, 4, a, b);
-    uploadTextureRows(transformB, 4, a, b);
+    if (upload) {
+        uploadTextureRows(transformA, 4, a, b);
+        uploadTextureRows(transformB, 4, a, b);
+    }
 };
 
-const updateSHRange = (resource: any, gsplatData: GSplatData, a: number, b: number) => {
+const uploadSHRows = (resource: any, a: number, b: number) => {
+    const shBands = resource.shBands as number;
+    if (shBands <= 0) {
+        return;
+    }
+    uploadTextureRows(resource.streams.getTexture('splatSH_1to3'), 4, a, b);
+    if (shBands > 1) {
+        uploadTextureRows(resource.streams.getTexture('splatSH_4to7'), 4, a, b);
+        uploadTextureRows(resource.streams.getTexture('splatSH_8to11'), shBands > 2 ? 4 : 1, a, b);
+        if (shBands > 2) {
+            uploadTextureRows(resource.streams.getTexture('splatSH_12to15'), 4, a, b);
+        }
+    }
+};
+
+const updateSHRange = (resource: any, gsplatData: GSplatData, a: number, b: number, upload: boolean) => {
     const shBands = resource.shBands as number;
     const sh1to3Texture = resource.streams.getTexture('splatSH_1to3');
     const sh4to7Texture = resource.streams.getTexture('splatSH_4to7');
@@ -151,26 +170,46 @@ const updateSHRange = (resource: any, gsplatData: GSplatData, a: number, b: numb
             }
         }
     }
-    uploadTextureRows(sh1to3Texture, 4, a, b);
-    if (shBands > 1) {
-        uploadTextureRows(sh4to7Texture, 4, a, b);
-        uploadTextureRows(sh8to11Texture, shBands > 2 ? 4 : 1, a, b);
-        if (shBands > 2) {
-            uploadTextureRows(sh12to15Texture, 4, a, b);
-        }
+    if (upload) {
+        uploadSHRows(resource, a, b);
     }
 };
 
-// Refresh GPU splat data for splats [a, b) only.
-const updateGsplatRangeData = (resource: any, gsplatData: GSplatData, a: number, b: number) => {
+// Repack GPU splat data for splats [a, b). With upload=false only the CPU
+// level copies are written — callers slicing a large range into many small
+// repack chunks should pass false and finish with one uploadGsplatRows
+// call over the whole range, so upload overhead isn't paid per chunk.
+const updateGsplatRangeData = (resource: any, gsplatData: GSplatData, a: number, b: number, upload = true) => {
     if (b <= a) {
         return;
     }
-    updateColorRange(resource, gsplatData, a, b);
-    updateTransformRange(resource, gsplatData, a, b);
+    updateColorRange(resource, gsplatData, a, b, upload);
+    updateTransformRange(resource, gsplatData, a, b, upload);
     if (resource.shBands > 0) {
-        updateSHRange(resource, gsplatData, a, b);
+        updateSHRange(resource, gsplatData, a, b, upload);
     }
 };
 
-export { updateGsplatRangeData, uploadTextureRows };
+// SH-only repack for splats [a, b) — used when deferred SH coefficients
+// arrive after a range's geometry is already live.
+const updateGsplatSHRange = (resource: any, gsplatData: GSplatData, a: number, b: number, upload = true) => {
+    if (b <= a || resource.shBands <= 0) {
+        return;
+    }
+    updateSHRange(resource, gsplatData, a, b, upload);
+};
+
+// Upload the texture rows covering [a, b) for the streams repacked above.
+const uploadGsplatRows = (resource: any, a: number, b: number, shOnly = false) => {
+    if (b <= a) {
+        return;
+    }
+    if (!shOnly) {
+        uploadTextureRows(resource.streams.getTexture('splatColor'), 4, a, b);
+        uploadTextureRows(resource.streams.getTexture('transformA'), 4, a, b);
+        uploadTextureRows(resource.streams.getTexture('transformB'), 4, a, b);
+    }
+    uploadSHRows(resource, a, b);
+};
+
+export { updateGsplatRangeData, updateGsplatSHRange, uploadGsplatRows, uploadTextureRows };

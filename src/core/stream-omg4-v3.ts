@@ -1,7 +1,8 @@
 import type { AppBase } from 'playcanvas';
 
 import {
-    V3Decoder, enumerateV3Groups, groupFileList, loadOmg4V3, parseV3Meta, Omg4V3Data
+    V3Decoder, enumerateV3Groups, groupFileList, loadOmg4V3, parseV3Meta, Omg4V3Data,
+    GROUP_FILE_NAMES
 } from './load-omg4-v3';
 
 // Progressive loader for streamed v3 archives. The encoder writes the ZIP
@@ -31,6 +32,13 @@ type V3StreamCallbacks = {
      * the caller has not finished syncing.
      */
     onReady: (range: [number, number] | null, loadedThrough: number) => void;
+    /**
+     * A deferred SH labels payload finished decoding into the f_rest
+     * arrays (sh-deferred archives only). The caller refreshes the GPU SH
+     * data for the given [start, end) splat range; nothing about playback
+     * gating changes — splats render DC-only until this lands.
+     */
+    onShReady?: (range: [number, number]) => void;
 };
 
 type V3Stream = {
@@ -149,7 +157,9 @@ const streamOmg4V3 = (app: AppBase, url: string, callbacks: V3StreamCallbacks): 
                 }
                 decoder = new V3Decoder(app, meta);
                 groups = enumerateV3Groups(meta);
-                neededNames = groupFileList(meta);
+                // sh-deferred archives ship labels behind all geometry, so
+                // geometry groups complete on the base texture set alone
+                neededNames = meta.streams.sh_deferred ? [...GROUP_FILE_NAMES] : groupFileList(meta);
                 // reveal set = persistent group plus the first temporal segment
                 const firstSeg = groups.findIndex(g => g.segIndex >= 0);
                 revealGroupIdx = firstSeg >= 0 ? firstSeg : groups.length - 1;
@@ -163,6 +173,17 @@ const streamOmg4V3 = (app: AppBase, url: string, callbacks: V3StreamCallbacks): 
             }
             if (name === 'shN_centroids.webp') {
                 decoder!.setCentroids(entryData.slice());
+                return;
+            }
+            if (meta.streams.sh_deferred && name.endsWith('/shN_labels.webp')) {
+                // trailing SH pass: geometry for this group is long since
+                // decoded and (possibly) playing DC-only
+                const prefix = name.slice(0, -'/shN_labels.webp'.length);
+                const group = groups.find(g => g.prefix === prefix);
+                if (group) {
+                    await decoder!.decodeGroupSH(group, entryData.slice());
+                    callbacks.onShReady?.(group.range);
+                }
                 return;
             }
             const group = groups[groupIdx];
