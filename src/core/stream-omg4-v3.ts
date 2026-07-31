@@ -1,8 +1,7 @@
 import type { AppBase } from 'playcanvas';
 
 import {
-    V3Decoder, enumerateV3Groups, groupFileList, loadOmg4V3, parseV3Meta, Omg4V3Data,
-    GROUP_FILE_NAMES
+    V3Decoder, enumerateV3Groups, groupFileList, groupBaseNames, loadOmg4V3, parseV3Meta, Omg4V3Data
 } from './load-omg4-v3';
 
 // Progressive loader for streamed v3 archives. The encoder writes the ZIP
@@ -263,7 +262,7 @@ const streamOmg4V3 = (app: AppBase, url: string, callbacks: V3StreamCallbacks): 
                 groups = enumerateV3Groups(meta);
                 // sh-deferred archives ship labels behind all geometry, so
                 // geometry groups complete on the base texture set alone
-                neededNames = meta.streams.sh_deferred ? [...GROUP_FILE_NAMES] : groupFileList(meta);
+                neededNames = meta.streams.sh_deferred ? [...groupBaseNames(meta)] : groupFileList(meta);
                 // reveal set = persistent group plus the first temporal segment
                 const firstSeg = groups.findIndex(g => g.segIndex >= 0);
                 revealGroupIdx = firstSeg >= 0 ? firstSeg : groups.length - 1;

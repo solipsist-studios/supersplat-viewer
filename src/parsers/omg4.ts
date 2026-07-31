@@ -73,6 +73,7 @@ const V2_NUM_SH_FIELDS = 45;
 const V2_FLAG_SH = 1;
 const V2_FLAG_COV2D = 2;
 const V2_FLAG_TILED = 4;
+const V2_FLAG_ACCEL = 8;
 
 interface Omg4Header {
     version: number;
@@ -327,6 +328,14 @@ class Omg4V2Data {
 
     readonly tSigma: Float32Array;
 
+    // Degree-2 motion (flags bit 3): quadratic coefficient (units/sec^2),
+    // center(t) = xyz + v*dt + a*dt^2. Null on degree-1 content.
+    accelX: Float32Array | null = null;
+
+    accelY: Float32Array | null = null;
+
+    accelZ: Float32Array | null = null;
+
     constructor(buffer: ArrayBuffer) {
         const view = new DataView(buffer);
 
@@ -362,7 +371,8 @@ class Omg4V2Data {
             this.cov2dScale = [halfToFloat(reserved & 0xffff), halfToFloat(reserved >>> 16)];
         }
 
-        const numFields = V2_NUM_FIELDS + (hasSH ? 45 : 0);
+        const hasAccel = (flags & V2_FLAG_ACCEL) !== 0;
+        const numFields = V2_NUM_FIELDS + (hasSH ? 45 : 0) + (hasAccel ? 3 : 0);
         const expectedSize = V2_HEADER_SIZE + numFields * N * 4;
         if (buffer.byteLength < expectedSize) {
             throw new Error(`Invalid .omg4 v2 file: expected at least ${expectedSize} bytes, got ${buffer.byteLength}`);
@@ -411,6 +421,12 @@ class Omg4V2Data {
         this.velocityZ = field(16);
         this.tCenter = field(17);
         this.tSigma = field(18);
+        if (hasAccel) {
+            const base = V2_NUM_FIELDS + (hasSH ? 45 : 0);
+            this.accelX = field(base);
+            this.accelY = field(base + 1);
+            this.accelZ = field(base + 2);
+        }
     }
 
     get duration(): number {

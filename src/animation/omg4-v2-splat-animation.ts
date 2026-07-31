@@ -45,7 +45,7 @@ class Omg4V2SplatAnimation {
     bind(entity: Entity, cov2dScale: [number, number] | null = null) {
         this.entity = entity;
         this.cov2dScale = cov2dScale;
-        bindOmg4V2Modifier(entity, cov2dScale, !!this.data.segments);
+        bindOmg4V2Modifier(entity, cov2dScale, !!this.data.segments, !!this.data.accelX);
     }
 
     // Active splat-index bounds for segmented (v3) content at an absolute

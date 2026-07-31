@@ -38,6 +38,9 @@ import type { Omg4V2Data } from '../parsers/omg4';
 const glslModifyChunk = /* glsl */ `
 uniform highp sampler2D splatMotion;
 uniform highp sampler2D splatTemporal;
+#ifdef OMG4_ACCEL
+uniform highp sampler2D splatAccel;
+#endif // OMG4_ACCEL
 uniform float omg4Time;
 uniform vec4 omg4ModelRotation;   // entity world rotation (x, y, z, w)
 uniform vec4 omg4CamRot;          // camera world rotation (x, y, z, w)
@@ -86,7 +89,12 @@ void modifySplatCenter(inout vec3 center) {
     }
 #endif // OMG4_SEG_CULL
     vec4 m = texelFetch(splatMotion, splat.uv, 0);
-    center += omg4QuatRotate(omg4ModelRotation, m.xyz) * (omg4Time - m.w);
+    float omg4Dt = omg4Time - m.w;
+    vec3 omg4Disp = m.xyz * omg4Dt;
+#ifdef OMG4_ACCEL
+    omg4Disp += texelFetch(splatAccel, splat.uv, 0).xyz * (omg4Dt * omg4Dt);
+#endif // OMG4_ACCEL
+    center += omg4QuatRotate(omg4ModelRotation, omg4Disp);
 }
 void modifySplatRotationScale(vec3 originalCenter, vec3 modifiedCenter, inout vec4 rotation, inout vec3 scale) {
 #ifdef OMG4_SEG_CULL
@@ -165,6 +173,9 @@ void modifySplatColor(vec3 center, inout vec4 color) {
 const wgslModifyChunk = /* wgsl */ `
 var splatMotion: texture_2d<f32>;
 var splatTemporal: texture_2d<f32>;
+#ifdef OMG4_ACCEL
+var splatAccel: texture_2d<f32>;
+#endif // OMG4_ACCEL
 uniform omg4Time: f32;
 uniform omg4ModelRotation: vec4f;
 uniform omg4CamRot: vec4f;
@@ -214,7 +225,12 @@ fn modifySplatCenter(center: ptr<function, vec3f>) {
     }
 #endif // OMG4_SEG_CULL
     let m = textureLoad(splatMotion, splat.uv, 0);
-    *center += omg4QuatRotate(uniform.omg4ModelRotation, m.xyz) * (uniform.omg4Time - m.w);
+    let omg4Dt = uniform.omg4Time - m.w;
+    var omg4Disp = m.xyz * omg4Dt;
+#ifdef OMG4_ACCEL
+    omg4Disp += textureLoad(splatAccel, splat.uv, 0).xyz * (omg4Dt * omg4Dt);
+#endif // OMG4_ACCEL
+    *center += omg4QuatRotate(uniform.omg4ModelRotation, omg4Disp);
 }
 fn modifySplatRotationScale(originalCenter: vec3f, modifiedCenter: vec3f, rotation: ptr<function, vec4f>, scale: ptr<function, vec3f>) {
 #ifdef OMG4_SEG_CULL
@@ -314,6 +330,17 @@ const attachOmg4V2Motion = (resource: GSplatResource, data: Omg4V2Data) => {
     const temporalTex = streams.createTexture('splatTemporal', PIXELFORMAT_R32F, dims, temporal);
     streams.textures.set('splatMotion', motionTex);
     streams.textures.set('splatTemporal', temporalTex);
+
+    if (data.accelX && data.accelY && data.accelZ) {
+        const accel = new Float32Array(w * h * 4);
+        for (let i = 0; i < N; i++) {
+            accel[i * 4 + 0] = data.accelX[i];
+            accel[i * 4 + 1] = data.accelY[i];
+            accel[i * 4 + 2] = data.accelZ[i];
+        }
+        streams.textures.set('splatAccel',
+            streams.createTexture('splatAccel', PIXELFORMAT_RGBA32F, dims, accel));
+    }
 };
 
 // Rewrite rows [0, count) of the motion/temporal textures from the data
@@ -338,6 +365,17 @@ const syncOmg4V2Motion = (resource: GSplatResource, data: Omg4V2Data, count: num
     }
     motionTex.unlock();
     temporalTex.unlock();
+
+    const accelTex = streams.textures.get('splatAccel');
+    if (accelTex && data.accelX && data.accelY && data.accelZ) {
+        const accel = accelTex.lock() as Float32Array;
+        for (let i = 0; i < n; i++) {
+            accel[i * 4 + 0] = data.accelX[i];
+            accel[i * 4 + 1] = data.accelY[i];
+            accel[i * 4 + 2] = data.accelZ[i];
+        }
+        accelTex.unlock();
+    }
 };
 
 // Upload the motion/temporal texture rows covering [a, b).
@@ -345,6 +383,10 @@ const uploadOmg4V2MotionRows = (resource: GSplatResource, a: number, b: number) 
     const streams = (resource as any).streams;
     uploadTextureRows(streams.textures.get('splatMotion'), 4, a, b);
     uploadTextureRows(streams.textures.get('splatTemporal'), 1, a, b);
+    const accelTex = streams.textures.get('splatAccel');
+    if (accelTex) {
+        uploadTextureRows(accelTex, 4, a, b);
+    }
 };
 
 // Ranged variant of syncOmg4V2Motion: rewrite only splats [a, b) in the
@@ -368,6 +410,15 @@ const syncOmg4V2MotionRange = (resource: GSplatResource, data: Omg4V2Data, a: nu
         motion[i * 4 + 3] = data.tCenter[i];
         temporal[i] = data.tSigma[i];
     }
+    const accelTex = streams.textures.get('splatAccel');
+    const accel = accelTex?._levels?.[0] as Float32Array | undefined;
+    if (accel && data.accelX && data.accelY && data.accelZ) {
+        for (let i = a; i < n; i++) {
+            accel[i * 4 + 0] = data.accelX[i];
+            accel[i * 4 + 1] = data.accelY[i];
+            accel[i * 4 + 2] = data.accelZ[i];
+        }
+    }
     if (upload) {
         uploadOmg4V2MotionRows(resource, a, n);
     }
@@ -385,9 +436,10 @@ const resolveBlock = (src: string, tag: string, keep: boolean) => {
 // only when a cov2d scale is present; the OMG4_SEG_CULL block is kept only
 // for segmented (v3) content, so v2 files compile the identical shader as
 // before.
-const buildModifyChunk = (src: string, cov2dScale: [number, number] | null, segmented: boolean) => {
+const buildModifyChunk = (src: string, cov2dScale: [number, number] | null, segmented: boolean, accel = false) => {
     let out = resolveBlock(src, 'OMG4_SEG_CULL', segmented);
     out = resolveBlock(out, 'OMG4_COV_COMP', !!cov2dScale);
+    out = resolveBlock(out, 'OMG4_ACCEL', accel);
     if (cov2dScale) {
         out = out
         .replace(/OMG4_KX/g, cov2dScale[0].toFixed(6))
@@ -397,14 +449,14 @@ const buildModifyChunk = (src: string, cov2dScale: [number, number] | null, segm
 };
 
 // Install the temporal-evaluation modifier on the gsplat component.
-const bindOmg4V2Modifier = (entity: Entity, cov2dScale: [number, number] | null = null, segmented = false) => {
+const bindOmg4V2Modifier = (entity: Entity, cov2dScale: [number, number] | null = null, segmented = false, accel = false) => {
     const component = entity.gsplat as any;
     if (!component) {
         throw new Error('omg4 v2: entity has no gsplat component');
     }
     component.setWorkBufferModifier({
-        glsl: buildModifyChunk(glslModifyChunk, cov2dScale, segmented),
-        wgsl: buildModifyChunk(wgslModifyChunk, cov2dScale, segmented)
+        glsl: buildModifyChunk(glslModifyChunk, cov2dScale, segmented, accel),
+        wgsl: buildModifyChunk(wgslModifyChunk, cov2dScale, segmented, accel)
     });
 };
 

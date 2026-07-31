@@ -263,9 +263,18 @@ class Omg4V3Data {
 
     readonly tSigma: Float32Array;
 
+    // Degree-2 motion: quadratic coefficient arrays (units/sec^2), or null
+    // on degree-1 content. Same contract as Omg4V2Data.
+    accelX: Float32Array | null = null;
+
+    accelY: Float32Array | null = null;
+
+    accelZ: Float32Array | null = null;
+
     constructor(meta: any, gsplatData: GSplatData,
         velocity: [Float32Array, Float32Array, Float32Array],
-        tCenter: Float32Array, tSigma: Float32Array) {
+        tCenter: Float32Array, tSigma: Float32Array,
+        accel: [Float32Array, Float32Array, Float32Array] | null = null) {
         this.meta = meta;
         this.numSplats = meta.count;
         this.timeMin = meta.time?.min ?? 0;
@@ -279,6 +288,9 @@ class Omg4V3Data {
         [this.velocityX, this.velocityY, this.velocityZ] = velocity;
         this.tCenter = tCenter;
         this.tSigma = tSigma;
+        if (accel) {
+            [this.accelX, this.accelY, this.accelZ] = accel;
+        }
     }
 
     get duration(): number {
@@ -311,6 +323,12 @@ const GROUP_FILE_NAMES = [
     'motion_l.webp', 'motion_u.webp', 'trbf.webp'
 ];
 
+// Per-group texture names for this archive: degree-2 (accel) content adds
+// the accel split pair to every group.
+const groupBaseNames = (meta: any): string[] => {
+    return meta.accel ? [...GROUP_FILE_NAMES, 'accel_l.webp', 'accel_u.webp'] : GROUP_FILE_NAMES;
+};
+
 interface V3Group {
     prefix: string | null;          // null => monolithic (bare names)
     range: [number, number];
@@ -336,7 +354,8 @@ const enumerateV3Groups = (meta: any): V3Group[] => {
 };
 
 const groupFileList = (meta: any): string[] => {
-    return meta.shN ? [...GROUP_FILE_NAMES, 'shN_labels.webp'] : GROUP_FILE_NAMES;
+    const base = groupBaseNames(meta);
+    return meta.shN ? [...base, 'shN_labels.webp'] : base;
 };
 
 // Incremental decoder: allocates the full-length attribute arrays up front
@@ -356,6 +375,8 @@ class V3Decoder {
     readonly arrays: Record<string, Float32Array>;
 
     readonly velocity: [Float32Array, Float32Array, Float32Array];
+
+    readonly accel: [Float32Array, Float32Array, Float32Array] | null;
 
     readonly tCenter: Float32Array;
 
@@ -393,6 +414,8 @@ class V3Decoder {
         // negative opacity logit (same trick as the v2 streaming prefill)
         this.arrays.opacity.fill(-40);
         this.velocity = [new Float32Array(this.n), new Float32Array(this.n), new Float32Array(this.n)];
+        this.accel = meta.accel ?
+            [new Float32Array(this.n), new Float32Array(this.n), new Float32Array(this.n)] : null;
         this.tCenter = new Float32Array(this.n);
         this.tSigma = new Float32Array(this.n);
         this.tSigma.fill(1);
@@ -448,7 +471,7 @@ class V3Decoder {
         }
 
         // all payloads decode concurrently in the worker
-        const names = [...GROUP_FILE_NAMES];
+        const names = [...groupBaseNames(this.meta)];
         if (useSH) {
             names.push('shN_labels.webp');
         }
@@ -541,6 +564,17 @@ class V3Decoder {
         tex.get('motion_u.webp')!.destroy();
         tex.get('trbf.webp')!.destroy();
 
+        let accelL: Uint8Array | null = null;
+        let accelU: Uint8Array | null = null;
+        const aMins = this.meta.accel?.mins as number[] | undefined;
+        const aMaxs = this.meta.accel?.maxs as number[] | undefined;
+        if (this.accel) {
+            accelL = (tex.get('accel_l.webp') as any)._levels[0] as Uint8Array;
+            accelU = (tex.get('accel_u.webp') as any)._levels[0] as Uint8Array;
+            tex.get('accel_l.webp')!.destroy();
+            tex.get('accel_u.webp')!.destroy();
+        }
+
         const vMins = this.meta.motion.mins as number[];
         const vMaxs = this.meta.motion.maxs as number[];
         const centerCodebook = this.meta.trbf.center.codebook as number[];
@@ -552,6 +586,12 @@ class V3Decoder {
                 for (let ch = 0; ch < 3; ch++) {
                     const t = vMins[ch] + (vMaxs[ch] - vMins[ch]) * ((motionU[i * 4 + ch] << 8) + motionL[i * 4 + ch]) / 65535;
                     this.velocity[ch][o] = Math.sign(t) * (Math.exp(Math.abs(t)) - 1);
+                }
+                if (this.accel && accelL && accelU && aMins && aMaxs) {
+                    for (let ch = 0; ch < 3; ch++) {
+                        const t = aMins[ch] + (aMaxs[ch] - aMins[ch]) * ((accelU[i * 4 + ch] << 8) + accelL[i * 4 + ch]) / 65535;
+                        this.accel[ch][o] = Math.sign(t) * (Math.exp(Math.abs(t)) - 1);
+                    }
                 }
                 this.tCenter[o] = centerCodebook[trbf[i * 4]];
                 this.tSigma[o] = sigmaCodebook[trbf[i * 4 + 1]];
@@ -628,7 +668,7 @@ class V3Decoder {
                 storage: this.arrays[name]
             }))
         }]);
-        return new Omg4V3Data(this.meta, gsplatData, this.velocity, this.tCenter, this.tSigma);
+        return new Omg4V3Data(this.meta, gsplatData, this.velocity, this.tCenter, this.tSigma, this.accel);
     }
 
     destroy() {
@@ -720,6 +760,6 @@ const setAabbFromV3Meta = (meta: any, aabb: any) => {
 
 export {
     isOmg4V3, loadOmg4V3, Omg4V3Data,
-    V3Decoder, enumerateV3Groups, groupFileList, parseV3Meta, setAabbFromV3Meta,
+    V3Decoder, enumerateV3Groups, groupFileList, groupBaseNames, parseV3Meta, setAabbFromV3Meta,
     GROUP_FILE_NAMES
 };
