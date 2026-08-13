@@ -14,7 +14,10 @@ class Playhead {
     // Advance by dt seconds. Returns true once a 'none' loop has run past the
     // end, signalling the caller to pause the transport.
     advance(dt: number, duration: number, state: State): boolean {
-        this.time += dt * state.animationSpeed * this.direction;
+        // `?? 1` guards against a host state object that predates the transport
+        // fields — a NaN here poisons `time` permanently (NaN fails every range
+        // test below and re-fires observe() forever)
+        this.time += dt * (state.animationSpeed ?? 1) * this.direction;
 
         if (duration <= 0) {
             this.time = 0;

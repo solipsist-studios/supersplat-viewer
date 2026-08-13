@@ -1,16 +1,14 @@
 import {
     EventHandler,
-    platform,
     type Texture,
     revision as engineRevision,
     version as engineVersion
 } from 'playcanvas';
 
 import { version as appVersion } from '../package.json';
-import { createApp, initCanvas, load3dgs, load4dgs, loadSkybox } from './app-setup';
+import { createApp, createViewerState, initCanvas, load3dgs, load4dgs, loadSkybox } from './app-setup';
 import { MeshCollision, loadVoxelCollision } from './collision';
 import type { Collision } from './collision';
-import { observe } from './core/observe';
 import { initEmbed } from './embed';
 import { initLocalization } from './localization';
 import { importSettings } from './settings';
@@ -25,38 +23,9 @@ const main = async (canvas: HTMLCanvasElement, settingsJson: any, config: Config
     // create events and observable state
     const events = new EventHandler();
 
-    // migrate legacy `retinaDisplay` preference (inverted) to `performanceMode`
-    const legacyRetina = localStorage.getItem('retinaDisplay');
-    if (legacyRetina !== null && localStorage.getItem('performanceMode') === null) {
-        localStorage.setItem('performanceMode', String(legacyRetina === 'false'));
-        localStorage.removeItem('retinaDisplay');
-    }
-    const storedPerformanceMode = localStorage.getItem('performanceMode');
-
-    const state = observe(events, {
-        loaded: false,
-        readyToRender: false,
-        performanceMode: storedPerformanceMode !== null ? storedPerformanceMode === 'true' : platform.mobile,
-        progress: 0,
-        inputMode: platform.mobile ? 'touch' : 'desktop',
-        cameraMode: 'orbit',
-        hasAnimation: false,
-        animationDuration: 0,
-        animationTime: 0,
-        animationPaused: true,
-        animationLoopMode: 'repeat',
-        animationSpeed: 1,
-        hasAR: false,
-        hasVR: false,
-        hasCollision: false,
-        hasCollisionOverlay: false,
-        walkAllowed: false,
-        collisionOverlayEnabled: false,
-        isFullscreen: false,
-        controlsHidden: false,
-        showAnnotations: localStorage.getItem('showAnnotations') !== 'false',
-        gamingControls: localStorage.getItem('gamingControls') === 'true'
-    });
+    // shared with the embed entry point — keep the defaults in one place so the two
+    // bundles cannot drift (a missing field here reads as `undefined` at runtime)
+    const state = createViewerState(events);
 
     const global: Global = {
         app,

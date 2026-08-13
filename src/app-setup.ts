@@ -423,6 +423,8 @@ const createViewerState = (events: EventHandler): State => {
         animationDuration: 0,
         animationTime: 0,
         animationPaused: true,
+        animationLoopMode: 'repeat',
+        animationSpeed: 1,
         hasAR: false,
         hasVR: false,
         hasCollision: false,
@@ -431,6 +433,7 @@ const createViewerState = (events: EventHandler): State => {
         collisionOverlayEnabled: false,
         isFullscreen: false,
         controlsHidden: false,
+        showAnnotations: localStorage.getItem('showAnnotations') !== 'false',
         gamingControls: localStorage.getItem('gamingControls') === 'true'
     });
 };

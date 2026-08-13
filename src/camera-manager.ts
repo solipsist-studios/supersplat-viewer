@@ -194,7 +194,7 @@ class CameraManager {
             // multiplier while a camera track is playing (sources are unused
             // in anim mode, so the scaled dt only reaches the anim controller)
             const dt = state.cameraMode === 'anim' ?
-                (state.animationPaused ? 0 : deltaTime * state.animationSpeed) :
+                (state.animationPaused ? 0 : deltaTime * (state.animationSpeed ?? 1)) :
                 deltaTime;
 
             // update transition timer
