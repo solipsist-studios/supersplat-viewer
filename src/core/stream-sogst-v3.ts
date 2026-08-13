@@ -94,6 +94,16 @@ const streamSogstV3 = (app: AppBase, url: string, callbacks: V3StreamCallbacks):
                 entriesDone = true;
                 return null;
             }
+            // Walking entries by local-header size only works because the
+            // format forbids data descriptors (general-purpose bit 3). A
+            // writer that emits them zeroes the local sizes, which would make
+            // `total` the header length and march us into the payload as if
+            // it were the next entry — garbage names, no error. Fail loudly
+            // instead: this is a malformed archive, not a stream underrun.
+            const flags = view.getUint16(6, true);
+            if ((flags & 0x8) !== 0) {
+                throw new Error('sogst v3: archive uses ZIP data descriptors, which the format forbids');
+            }
             const compressedSize = view.getUint32(18, true);
             const nameLength = view.getUint16(26, true);
             const extraLength = view.getUint16(28, true);
