@@ -531,6 +531,15 @@ class V3Decoder {
                 arrays.scale_0[o] = s.x;
                 arrays.scale_1[o] = s.y;
                 arrays.scale_2[o] = s.z;
+                // The spec permits an encoder to lose the RGB of any texel
+                // whose alpha is zero (libwebp may rewrite fully-transparent
+                // blocks when the `exact` flag is unavailable), so nothing may
+                // *depend* on the colour read here. Storing it unconditionally
+                // is safe only because the splat stays invisible: opacity
+                // saturates to -40 below, and the temporal factor in
+                // sogst-motion.ts multiplies alpha by exp(-0.5*dt^2) <= 1 and
+                // so can never raise it. Do not add a path that scales alpha
+                // up without guarding on c.w > 0 here.
                 arrays.f_dc_0[o] = (c.x - 0.5) / SH_C0;
                 arrays.f_dc_1[o] = (c.y - 0.5) / SH_C0;
                 arrays.f_dc_2[o] = (c.z - 0.5) / SH_C0;
