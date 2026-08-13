@@ -1,18 +1,18 @@
 import { Quat, Vec3, type Entity } from 'playcanvas';
 
 import { Playhead } from './playhead';
-import { bindOmg4V2Modifier, setOmg4V2Params } from '../core/omg4-v2-motion';
-import type { Omg4V2Data } from '../parsers/omg4';
+import { bindSogstModifier, setSogstParams } from '../core/sogst-motion';
+import type { SogstData } from '../parsers/sogst';
 import type { Global } from '../types';
 
-// Animation driver for .omg4 v2 content. Unlike the per-frame formats there
+// Animation driver for .sogst v2 content. Unlike the per-frame formats there
 // is nothing to upload per frame: playback is a pair of uniforms (time and
 // entity rotation) evaluated by the GPU in the unified work-buffer pass, so
 // time is continuous and never gated on fetches or texture uploads. Depth
 // sorting picks up the motion-displaced centers automatically because the
 // modifier runs before the work buffer is sorted.
-class Omg4V2SplatAnimation {
-    private data: Omg4V2Data;
+class SogstSplatAnimation {
+    private data: SogstData;
 
     private entity: Entity | null = null;
 
@@ -28,7 +28,7 @@ class Omg4V2SplatAnimation {
 
     private lastCamPosition = new Vec3(NaN, NaN, NaN);
 
-    constructor(data: Omg4V2Data) {
+    constructor(data: SogstData) {
         this.data = data;
     }
 
@@ -45,7 +45,7 @@ class Omg4V2SplatAnimation {
     bind(entity: Entity, cov2dScale: [number, number] | null = null) {
         this.entity = entity;
         this.cov2dScale = cov2dScale;
-        bindOmg4V2Modifier(entity, cov2dScale, !!this.data.segments, !!this.data.accelX);
+        bindSogstModifier(entity, cov2dScale, !!this.data.segments, !!this.data.accelX);
     }
 
     // Active splat-index bounds for segmented (v3) content at an absolute
@@ -95,7 +95,7 @@ class Omg4V2SplatAnimation {
             this.lastCamPosition.copy(camPosition);
         }
         const absTime = this.data.timeMin + animTime;
-        setOmg4V2Params(this.entity, absTime, this.camera ?? undefined, this.cullRanges(absTime));
+        setSogstParams(this.entity, absTime, this.camera ?? undefined, this.cullRanges(absTime));
         return true;
     }
 
@@ -153,4 +153,4 @@ class Omg4V2SplatAnimation {
     }
 }
 
-export { Omg4V2SplatAnimation };
+export { SogstSplatAnimation };

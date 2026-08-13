@@ -1,6 +1,6 @@
-// Durable IndexedDB cache for OMG4 payloads, shared by the v1 chunk streamer
+// Durable IndexedDB cache for SOGST payloads, shared by the v1 chunk streamer
 // (byte-range entries) and the v2 full-file loader. Everything lives in one
-// database/store so the debug UI's "Clear OMG4 Cache" wipes both.
+// database/store so the debug UI's "Clear SOGST Cache" wipes both.
 //
 // Large payloads are split across multiple entries: structured-cloning a
 // single multi-hundred-MB ArrayBuffer into IndexedDB spikes memory hard
@@ -8,42 +8,42 @@
 // base key describes the pieces, stored at `<key>#<i>`; each piece is written
 // in its own transaction so peak overhead stays around one piece.
 
-const OMG4_IDB_NAME = 'supersplat-omg4-chunks';
-const OMG4_IDB_STORE = 'ranges';
+const SOGST_IDB_NAME = 'supersplat-sogst-chunks';
+const SOGST_IDB_STORE = 'ranges';
 
 // 32MB pieces: small enough to clone without memory pressure, large enough
 // that a 300MB file is only ~10 transactions.
 const PIECE_BYTES = 32 * 1024 * 1024;
 
 type PieceManifest = {
-    omg4Pieces: number;
+    sogstPieces: number;
     totalBytes: number;
 };
 
 const isManifest = (value: unknown): value is PieceManifest => {
     return !!value && typeof value === 'object' &&
-        typeof (value as PieceManifest).omg4Pieces === 'number' &&
+        typeof (value as PieceManifest).sogstPieces === 'number' &&
         typeof (value as PieceManifest).totalBytes === 'number';
 };
 
-let omg4DbPromise: Promise<IDBDatabase | null> | null = null;
+let sogstDbPromise: Promise<IDBDatabase | null> | null = null;
 
-const openOmg4Db = (): Promise<IDBDatabase | null> => {
+const openSogstDb = (): Promise<IDBDatabase | null> => {
     if (typeof indexedDB === 'undefined') {
         return Promise.resolve(null);
     }
 
-    if (omg4DbPromise) {
-        return omg4DbPromise;
+    if (sogstDbPromise) {
+        return sogstDbPromise;
     }
 
-    omg4DbPromise = new Promise((resolve) => {
-        const request = indexedDB.open(OMG4_IDB_NAME, 1);
+    sogstDbPromise = new Promise((resolve) => {
+        const request = indexedDB.open(SOGST_IDB_NAME, 1);
 
         request.onupgradeneeded = () => {
             const db = request.result;
-            if (!db.objectStoreNames.contains(OMG4_IDB_STORE)) {
-                db.createObjectStore(OMG4_IDB_STORE);
+            if (!db.objectStoreNames.contains(SOGST_IDB_STORE)) {
+                db.createObjectStore(SOGST_IDB_STORE);
             }
         };
 
@@ -51,13 +51,13 @@ const openOmg4Db = (): Promise<IDBDatabase | null> => {
         request.onerror = () => resolve(null);
     });
 
-    return omg4DbPromise;
+    return sogstDbPromise;
 };
 
 const idbGetValue = (db: IDBDatabase, key: string): Promise<unknown> => {
     return new Promise((resolve) => {
-        const tx = db.transaction(OMG4_IDB_STORE, 'readonly');
-        const store = tx.objectStore(OMG4_IDB_STORE);
+        const tx = db.transaction(SOGST_IDB_STORE, 'readonly');
+        const store = tx.objectStore(SOGST_IDB_STORE);
         const request = store.get(key);
 
         request.onsuccess = () => resolve(request.result);
@@ -69,8 +69,8 @@ const idbPutValue = (db: IDBDatabase, key: string, value: unknown): Promise<bool
     return new Promise((resolve) => {
         let ok = false;
         try {
-            const tx = db.transaction(OMG4_IDB_STORE, 'readwrite');
-            const store = tx.objectStore(OMG4_IDB_STORE);
+            const tx = db.transaction(SOGST_IDB_STORE, 'readwrite');
+            const store = tx.objectStore(SOGST_IDB_STORE);
             const request = store.put(value, key);
             request.onsuccess = () => {
                 ok = true;
@@ -85,7 +85,7 @@ const idbPutValue = (db: IDBDatabase, key: string, value: unknown): Promise<bool
 };
 
 const idbGetBuffer = async (key: string): Promise<ArrayBuffer | null> => {
-    const db = await openOmg4Db();
+    const db = await openSogstDb();
     if (!db) {
         return null;
     }
@@ -105,7 +105,7 @@ const idbGetBuffer = async (key: string): Promise<ArrayBuffer | null> => {
     // Reassemble a pieced payload, one transaction per piece.
     const result = new Uint8Array(value.totalBytes);
     let offset = 0;
-    for (let i = 0; i < value.omg4Pieces; i++) {
+    for (let i = 0; i < value.sogstPieces; i++) {
         // eslint-disable-next-line no-await-in-loop
         const piece = await idbGetValue(db, `${key}#${i}`);
         if (!(piece instanceof ArrayBuffer) || offset + piece.byteLength > value.totalBytes) {
@@ -119,7 +119,7 @@ const idbGetBuffer = async (key: string): Promise<ArrayBuffer | null> => {
 };
 
 const idbSetBuffer = async (key: string, buffer: ArrayBuffer): Promise<void> => {
-    const db = await openOmg4Db();
+    const db = await openSogstDb();
     if (!db) {
         return;
     }
@@ -142,21 +142,21 @@ const idbSetBuffer = async (key: string, buffer: ArrayBuffer): Promise<void> => 
         }
     }
 
-    await idbPutValue(db, key, { omg4Pieces: pieces, totalBytes: buffer.byteLength } satisfies PieceManifest);
+    await idbPutValue(db, key, { sogstPieces: pieces, totalBytes: buffer.byteLength } satisfies PieceManifest);
 };
 
 // Delete every entry whose key starts with the prefix except `keep` (and its
 // piece entries) — used to drop stale copies of a file when its validator
 // changes.
 const idbDeleteByPrefix = async (prefix: string, keep?: string): Promise<void> => {
-    const db = await openOmg4Db();
+    const db = await openSogstDb();
     if (!db) {
         return;
     }
 
     await new Promise<void>((resolve) => {
-        const tx = db.transaction(OMG4_IDB_STORE, 'readwrite');
-        const store = tx.objectStore(OMG4_IDB_STORE);
+        const tx = db.transaction(SOGST_IDB_STORE, 'readwrite');
+        const store = tx.objectStore(SOGST_IDB_STORE);
         const request = store.getAllKeys();
 
         request.onsuccess = () => {

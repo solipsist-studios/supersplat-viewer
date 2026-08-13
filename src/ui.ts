@@ -2,6 +2,7 @@ import { EventHandler } from 'playcanvas';
 
 import { version as appVersion } from '../package.json';
 import { localize } from './localization';
+import { isSogstFilename } from './parsers/sogst';
 import type { Annotation } from './settings';
 import { Tooltip } from './tooltip';
 import { Global, LoopMode } from './types';
@@ -230,7 +231,7 @@ const initPoster = (events: EventHandler) => {
 
 const initUI = (global: Global) => {
     const { config, events, state } = global;
-    const defaultOmg4Rotation: [number, number, number] = config.omg4RotationDeg ?? [270, 0, 0];
+    const defaultSogstRotation: [number, number, number] = config.sogstRotationDeg ?? [270, 0, 0];
 
     // Acquire Elements
     const docRoot = document.documentElement;
@@ -246,11 +247,11 @@ const initUI = (global: Global) => {
         'loopMode', 'loopRepeatSvg', 'loopPingpongSvg', 'loopNoneSvg',
         'playbackSpeedControl', 'playbackSpeed', 'playbackSpeedMenu', 'playbackSpeedCustom',
         'settings', 'settingsPanel',
-        'omg4RotationBlock', 'omg4RotationValue',
-        'omg4RotateXNeg', 'omg4RotateXPos',
-        'omg4RotateYNeg', 'omg4RotateYPos',
-        'omg4RotateZNeg', 'omg4RotateZPos',
-        'omg4RotateReset', 'omg4ClearCache',
+        'sogstRotationBlock', 'sogstRotationValue',
+        'sogstRotateXNeg', 'sogstRotateXPos',
+        'sogstRotateYNeg', 'sogstRotateYPos',
+        'sogstRotateZNeg', 'sogstRotateZPos',
+        'sogstRotateReset', 'sogstClearCache',
         'annotationsRow', 'annotationsOption', 'annotationsCheck',
         'orbitCamera', 'flyCamera', 'fpsCamera',
         'performanceModeRow', 'performanceModeCheck', 'performanceModeOption',
@@ -285,9 +286,9 @@ const initUI = (global: Global) => {
     // populate the info-panel title with the app version
     dom.appVersionLabel.textContent = appVersion;
 
-    const isOmg4Content = () => {
+    const isSogstContent = () => {
         const filename = config.contentFilename ?? config.contentUrl ?? '';
-        return filename.toLowerCase().endsWith('.omg4');
+        return isSogstFilename(filename);
     };
 
     const normalizeDegrees = (value: number) => {
@@ -295,68 +296,72 @@ const initUI = (global: Global) => {
         return normalized < 0 ? normalized + 360 : normalized;
     };
 
-    const currentOmg4Rotation: [number, number, number] = [...defaultOmg4Rotation];
+    const currentSogstRotation: [number, number, number] = [...defaultSogstRotation];
 
     const getGsplatEntity = () => global.app.root.findByName('gsplat');
 
-    const syncOmg4RotationUrl = () => {
+    const syncSogstRotationUrl = () => {
         const url = new URL(window.location.href);
-        url.searchParams.set('omg4rot', currentOmg4Rotation.join(','));
+        url.searchParams.set('sogstrot', currentSogstRotation.join(','));
         window.history.replaceState({}, '', url);
     };
 
-    const applyOmg4Rotation = () => {
+    const applySogstRotation = () => {
         const entity = getGsplatEntity();
         if (!entity) {
             return;
         }
 
-        entity.setLocalEulerAngles(currentOmg4Rotation[0], currentOmg4Rotation[1], currentOmg4Rotation[2]);
-        dom.omg4RotationValue.textContent = `OMG4 Rotation: ${currentOmg4Rotation.join(', ')}`;
-        syncOmg4RotationUrl();
+        entity.setLocalEulerAngles(currentSogstRotation[0], currentSogstRotation[1], currentSogstRotation[2]);
+        dom.sogstRotationValue.textContent = `SOGST Rotation: ${currentSogstRotation.join(', ')}`;
+        syncSogstRotationUrl();
         global.app.renderNextFrame = true;
     };
 
-    const updateOmg4RotationVisibility = () => {
-        dom.omg4RotationBlock.classList.toggle('hidden', !isOmg4Content());
+    const updateSogstRotationVisibility = () => {
+        dom.sogstRotationBlock.classList.toggle('hidden', !isSogstContent());
     };
 
-    const rotateOmg4 = (axis: 0 | 1 | 2, delta: number) => {
-        currentOmg4Rotation[axis] = normalizeDegrees(currentOmg4Rotation[axis] + delta);
-        applyOmg4Rotation();
+    const rotateSogst = (axis: 0 | 1 | 2, delta: number) => {
+        currentSogstRotation[axis] = normalizeDegrees(currentSogstRotation[axis] + delta);
+        applySogstRotation();
     };
 
-    dom.omg4RotateXNeg.addEventListener('click', () => rotateOmg4(0, -90));
-    dom.omg4RotateXPos.addEventListener('click', () => rotateOmg4(0, 90));
-    dom.omg4RotateYNeg.addEventListener('click', () => rotateOmg4(1, -90));
-    dom.omg4RotateYPos.addEventListener('click', () => rotateOmg4(1, 90));
-    dom.omg4RotateZNeg.addEventListener('click', () => rotateOmg4(2, -90));
-    dom.omg4RotateZPos.addEventListener('click', () => rotateOmg4(2, 90));
-    dom.omg4RotateReset.addEventListener('click', () => {
-        currentOmg4Rotation[0] = defaultOmg4Rotation[0];
-        currentOmg4Rotation[1] = defaultOmg4Rotation[1];
-        currentOmg4Rotation[2] = defaultOmg4Rotation[2];
-        applyOmg4Rotation();
+    dom.sogstRotateXNeg.addEventListener('click', () => rotateSogst(0, -90));
+    dom.sogstRotateXPos.addEventListener('click', () => rotateSogst(0, 90));
+    dom.sogstRotateYNeg.addEventListener('click', () => rotateSogst(1, -90));
+    dom.sogstRotateYPos.addEventListener('click', () => rotateSogst(1, 90));
+    dom.sogstRotateZNeg.addEventListener('click', () => rotateSogst(2, -90));
+    dom.sogstRotateZPos.addEventListener('click', () => rotateSogst(2, 90));
+    dom.sogstRotateReset.addEventListener('click', () => {
+        currentSogstRotation[0] = defaultSogstRotation[0];
+        currentSogstRotation[1] = defaultSogstRotation[1];
+        currentSogstRotation[2] = defaultSogstRotation[2];
+        applySogstRotation();
     });
 
-    dom.omg4ClearCache.addEventListener('click', async () => {
-        if (typeof caches === 'undefined') {
-            // continue to IndexedDB clear below
-        } else {
+    dom.sogstClearCache.addEventListener('click', async () => {
+        // The `-omg4-` names are what this cache was called before the format
+        // was renamed. A browser that visited an older build still holds them,
+        // and nothing else would ever reclaim that quota — so clear both.
+        if (typeof caches !== 'undefined') {
+            await caches.delete('supersplat-sogst-v1');
             await caches.delete('supersplat-omg4-v1');
         }
 
         if (typeof indexedDB !== 'undefined') {
-            await new Promise<void>((resolve) => {
-                const request = indexedDB.deleteDatabase('supersplat-omg4-chunks');
+            const deleteDb = (name: string) => new Promise<void>((resolve) => {
+                const request = indexedDB.deleteDatabase(name);
                 request.onsuccess = () => resolve();
                 request.onerror = () => resolve();
                 request.onblocked = () => resolve();
             });
+            await deleteDb('supersplat-sogst-chunks');
+            await deleteDb('supersplat-omg4-chunks');
         }
     });
 
-    updateOmg4RotationVisibility();
+    updateSogstRotationVisibility();
 
     // Remove focus from buttons after click so keyboard input isn't captured by the UI.
     // Skip actual text inputs (e.g. the custom playback speed field) — blurring those
@@ -656,8 +661,8 @@ const initUI = (global: Global) => {
     // Show controls once loaded
     events.on('loaded:changed', () => {
         dom.controlsWrap.classList.remove('hidden');
-        if (isOmg4Content()) {
-            applyOmg4Rotation();
+        if (isSogstContent()) {
+            applySogstRotation();
         }
         showUI();
     });

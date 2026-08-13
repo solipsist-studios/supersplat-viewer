@@ -9,9 +9,9 @@ import {
     type AppBase
 } from 'playcanvas';
 
-import type { Omg4Segments } from '../parsers/omg4';
+import type { SogstSegments } from '../parsers/sogst';
 
-// .omg4 version 3: SOG-compressed temporal splats.
+// .sogst version 3: SOG-compressed temporal splats.
 //
 // The file is a ZIP archive (identified by the leading "PK\x03\x04" magic
 // instead of the OMG4 magic word) holding a meta.json plus lossless-webp
@@ -27,7 +27,7 @@ import type { Omg4Segments } from '../parsers/omg4';
 //   trbf              : R = index into trbf.center codebook (t_center, s),
 //                       G = index into trbf.sigma codebook (t_sigma, s)
 //
-// The decoded result is structurally identical to Omg4V2Data, so the whole
+// The decoded result is structurally identical to SogstData, so the whole
 // v2 playback path (motion textures, work-buffer modifier, animation
 // driver) is reused as-is.
 
@@ -59,7 +59,7 @@ const parseZipEntries = (buffer: ArrayBuffer): ZipEntry[] => {
         }
     }
     if (eocd < 0) {
-        throw new Error('omg4 v3: invalid zip (no end-of-central-directory)');
+        throw new Error('sogst v3: invalid zip (no end-of-central-directory)');
     }
 
     const numFiles = u16(eocd + 8);
@@ -67,7 +67,7 @@ const parseZipEntries = (buffer: ArrayBuffer): ZipEntry[] => {
     const entries: ZipEntry[] = [];
     for (let i = 0; i < numFiles; i++) {
         if (u32(offset) !== ZIP_CDR_MAGIC) {
-            throw new Error('omg4 v3: invalid zip (bad central-directory record)');
+            throw new Error('sogst v3: invalid zip (bad central-directory record)');
         }
         const compression = u16(offset + 10);
         const compressedSize = u32(offset + 20);
@@ -78,12 +78,12 @@ const parseZipEntries = (buffer: ArrayBuffer): ZipEntry[] => {
         const filename = new TextDecoder().decode(new Uint8Array(buffer, offset + 46, filenameLength));
 
         if (u32(lfhOffset) !== ZIP_LOCAL_MAGIC) {
-            throw new Error('omg4 v3: invalid zip (bad local file header)');
+            throw new Error('sogst v3: invalid zip (bad local file header)');
         }
         const dataOffset = lfhOffset + 30 + u16(lfhOffset + 26) + u16(lfhOffset + 28);
 
         if (compression !== 0 && compression !== 8) {
-            throw new Error(`omg4 v3: unsupported zip compression method ${compression}`);
+            throw new Error(`sogst v3: unsupported zip compression method ${compression}`);
         }
         entries.push({
             filename,
@@ -111,7 +111,7 @@ const decodeTexture = async (app: AppBase, bytes: Uint8Array, name: string): Pro
         colorSpaceConversion: 'none'
     });
     const texture = new Texture(app.graphicsDevice, {
-        name: `omg4v3-${name}`,
+        name: `sogstv3-${name}`,
         width: bitmap.width,
         height: bitmap.height,
         format: PIXELFORMAT_RGBA8,
@@ -227,12 +227,12 @@ class WebpTexelWorker {
     }
 }
 
-// Structural twin of Omg4V2Data (parsers/omg4.ts): the v2 setup path —
-// GSplatResource creation, attachOmg4V2Motion, Omg4V2SplatAnimation — is
+// Structural twin of SogstData (parsers/sogst.ts): the v2 setup path —
+// GSplatResource creation, attachSogstMotion, SogstSplatAnimation — is
 // typed against that shape and works on this unchanged.
-class Omg4V3Data {
-    // Temporal segment table for per-segment culling (see parsers/omg4.ts).
-    segments?: Omg4Segments;
+class SogstV3Data {
+    // Temporal segment table for per-segment culling (see parsers/sogst.ts).
+    segments?: SogstSegments;
 
     // Highest absolute clip time that is fully decoded — streaming loads
     // advance this per segment and the animation driver holds the playhead
@@ -264,7 +264,7 @@ class Omg4V3Data {
     readonly tSigma: Float32Array;
 
     // Degree-2 motion: quadratic coefficient arrays (units/sec^2), or null
-    // on degree-1 content. Same contract as Omg4V2Data.
+    // on degree-1 content. Same contract as SogstData.
     accelX: Float32Array | null = null;
 
     accelY: Float32Array | null = null;
@@ -282,7 +282,7 @@ class Omg4V3Data {
         this.fps = meta.time?.fps ?? 30;
         this.cov2dScale = meta.cov2d_scale ? [meta.cov2d_scale[0], meta.cov2d_scale[1]] : null;
         if (meta.segments?.list?.length && meta.segments.persistent) {
-            this.segments = meta.segments as Omg4Segments;
+            this.segments = meta.segments as SogstSegments;
         }
         this.gsplatData = gsplatData;
         [this.velocityX, this.velocityY, this.velocityZ] = velocity;
@@ -299,7 +299,7 @@ class Omg4V3Data {
 }
 
 // True if the buffer starts with the ZIP local-file magic (v3 container).
-const isOmg4V3 = (buffer: ArrayBuffer): boolean => {
+const isSogstV3 = (buffer: ArrayBuffer): boolean => {
     return buffer.byteLength >= 4 && new DataView(buffer).getUint32(0, true) === ZIP_LOCAL_MAGIC;
 };
 
@@ -432,7 +432,7 @@ class V3Decoder {
             try {
                 return await this.texelWorker.decode(bytes);
             } catch (err) {
-                console.warn('omg4 v3: worker texel decode unavailable, using GPU readback:', err);
+                console.warn('sogst v3: worker texel decode unavailable, using GPU readback:', err);
                 this.texelWorkerBroken = true;
             }
         }
@@ -453,7 +453,7 @@ class V3Decoder {
         const texFor = (name: string): Promise<TexelImage | Texture> => {
             const bytes = files.get(name);
             if (!bytes) {
-                throw new Error(`omg4 v3: ${group.prefix ?? ''}/${name} missing from archive`);
+                throw new Error(`sogst v3: ${group.prefix ?? ''}/${name} missing from archive`);
             }
             return this.decodeTexels(bytes, `${group.prefix ?? 'mono'}-${name}`);
         };
@@ -464,7 +464,7 @@ class V3Decoder {
         const useSH = !!this.meta.shN && files.has('shN_labels.webp');
         if (useSH && !this.centroidsTexture) {
             if (!this.centroidsBytes) {
-                throw new Error('omg4 v3: shN_centroids payload not provided before group decode');
+                throw new Error('sogst v3: shN_centroids payload not provided before group decode');
             }
             // decoded once, shared by every group
             this.centroidsTexture = await this.decodeTexels(this.centroidsBytes, 'shN_centroids');
@@ -616,7 +616,7 @@ class V3Decoder {
         }
         if (!this.centroidsTexture) {
             if (!this.centroidsBytes) {
-                throw new Error('omg4 v3: shN_centroids payload must precede deferred labels');
+                throw new Error('sogst v3: shN_centroids payload must precede deferred labels');
             }
             this.centroidsTexture = await this.decodeTexels(this.centroidsBytes, 'shN_centroids');
         }
@@ -657,7 +657,7 @@ class V3Decoder {
         sog.destroy();
     }
 
-    buildData(): Omg4V3Data {
+    buildData(): SogstV3Data {
         const gsplatData = new GSplatData([{
             name: 'vertex',
             count: this.n,
@@ -668,7 +668,7 @@ class V3Decoder {
                 storage: this.arrays[name]
             }))
         }]);
-        return new Omg4V3Data(this.meta, gsplatData, this.velocity, this.tCenter, this.tSigma, this.accel);
+        return new SogstV3Data(this.meta, gsplatData, this.velocity, this.tCenter, this.tSigma, this.accel);
     }
 
     destroy() {
@@ -685,19 +685,24 @@ class V3Decoder {
 
 const parseV3Meta = (bytes: Uint8Array | undefined): any => {
     if (!bytes) {
-        throw new Error('omg4 v3: meta.json not found in archive');
+        throw new Error('sogst v3: meta.json not found in archive');
     }
     const meta = JSON.parse(new TextDecoder().decode(bytes));
     if (meta.version !== 3) {
-        throw new Error(`omg4 v3: expected meta version 3, got ${meta.version}`);
+        throw new Error(`sogst v3: expected meta version 3, got ${meta.version}`);
+    }
+    // `format` was added when the format was renamed to .sogst; v3 archives
+    // baked before that carry no such key, so absence means .sogst too.
+    if (meta.format !== undefined && meta.format !== 'sogst') {
+        throw new Error(`sogst v3: unsupported meta format '${meta.format}'`);
     }
     return meta;
 };
 
 // Decode a complete v3 archive (either layout) into playable data. Used for
 // non-streamed archives and for cache hits on streamed ones.
-const loadOmg4V3 = async (app: AppBase, buffer: ArrayBuffer,
-    onProgress?: (progress: number) => void): Promise<Omg4V3Data> => {
+const loadSogstV3 = async (app: AppBase, buffer: ArrayBuffer,
+    onProgress?: (progress: number) => void): Promise<SogstV3Data> => {
     const report = (value: number) => onProgress?.(Math.min(100, Math.round(value)));
 
     const entries = parseZipEntries(buffer);
@@ -759,7 +764,7 @@ const setAabbFromV3Meta = (meta: any, aabb: any) => {
 };
 
 export {
-    isOmg4V3, loadOmg4V3, Omg4V3Data,
+    isSogstV3, loadSogstV3, SogstV3Data,
     V3Decoder, enumerateV3Groups, groupFileList, groupBaseNames, parseV3Meta, setAabbFromV3Meta,
     GROUP_FILE_NAMES
 };

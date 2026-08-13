@@ -1,12 +1,12 @@
-import { parseOmg4V2, writeOmg4V2StandardHeader, V2_HEADER_SIZE } from '../parsers/omg4';
-import type { Omg4V2Data, Omg4V2Header } from '../parsers/omg4';
+import { parseSogstV2, writeSogstV2StandardHeader, V2_HEADER_SIZE } from '../parsers/sogst';
+import type { SogstData, SogstV2Header } from '../parsers/sogst';
 
-// Progressive loader for streamable (tiled) OMG4 v2 files.
+// Progressive loader for streamable (tiled) .sogst v2 files.
 //
 // The file's tiles are self-contained (all fields for a contiguous group of
 // splats), so a single sequential fetch yields renderable splats
 // continuously. Bytes are de-tiled on the fly into a full-size STANDARD
-// layout buffer: the returned Omg4V2Data's zero-copy views (and therefore
+// layout buffer: the returned SogstData's zero-copy views (and therefore
 // the engine's texture-update methods) always read coherent data for every
 // splat below `readySplats`, and the completed buffer doubles as a regular
 // v2 file for the IndexedDB cache.
@@ -30,9 +30,9 @@ type StreamCallbacks = {
     onReady: (readySplats: number, done: boolean) => void;
 };
 
-type Omg4V2Stream = {
+type SogstV2Stream = {
     /** Views over the (still-filling) standard-layout buffer. */
-    data: Omg4V2Data;
+    data: SogstData;
     /** Resolves once enough splats arrived to start rendering. */
     firstBatch: Promise<void>;
     /** Resolves with the completed standard-layout buffer. */
@@ -47,12 +47,12 @@ const FIRST_BATCH_FRACTION = 0.1;
 const SYNC_MIN_INTERVAL_MS = 500;
 const SYNC_MIN_GROWTH_FRACTION = 0.05;
 
-const streamOmg4V2 = (url: string, header: Omg4V2Header, callbacks: StreamCallbacks): Omg4V2Stream => {
+const streamSogstV2 = (url: string, header: SogstV2Header, callbacks: StreamCallbacks): SogstV2Stream => {
     const { numSplats: N, numFields, tileSize } = header;
 
     // Full-size standard-layout destination buffer.
     const dest = new ArrayBuffer(V2_HEADER_SIZE + numFields * N * 4);
-    writeOmg4V2StandardHeader(dest, header);
+    writeSogstV2StandardHeader(dest, header);
 
     // Prefill unready splats as invisible/inert.
     const fieldView = (i: number) => new Float32Array(dest, V2_HEADER_SIZE + i * N * 4, N);
@@ -63,7 +63,7 @@ const streamOmg4V2 = (url: string, header: Omg4V2Header, callbacks: StreamCallba
     fieldView(10).fill(-20);    // opacity (logit): sigmoid(-20) ≈ 2e-9
     fieldView(18).fill(1);      // t_sigma: keep shader math finite
 
-    const data = parseOmg4V2(dest);
+    const data = parseSogstV2(dest);
 
     const destBytes = new Uint8Array(dest);
     const tileFloats = (splats: number) => splats * numFields;
@@ -183,7 +183,7 @@ const streamOmg4V2 = (url: string, header: Omg4V2Header, callbacks: StreamCallba
         }
 
         if (readySplats < N) {
-            throw new Error(`Truncated .omg4 stream: ${readySplats}/${N} splats received`);
+            throw new Error(`Truncated .sogst stream: ${readySplats}/${N} splats received`);
         }
 
         callbacks.onProgress(100);
@@ -197,5 +197,5 @@ const streamOmg4V2 = (url: string, header: Omg4V2Header, callbacks: StreamCallba
     return { data, firstBatch, complete };
 };
 
-export { streamOmg4V2 };
-export type { Omg4V2Stream };
+export { streamSogstV2 };
+export type { SogstV2Stream };

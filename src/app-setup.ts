@@ -13,23 +13,23 @@ import {
     type AppBase
 } from 'playcanvas';
 
-import { Omg4SplatAnimation } from './animation/omg4-splat-animation';
-import { Omg4V2SplatAnimation } from './animation/omg4-v2-splat-animation';
 import { QueenSplatAnimation } from './animation/queen-splat-animation';
+import { SogstSplatAnimation } from './animation/sogst-splat-animation';
+import { SogstV1SplatAnimation } from './animation/sogst-v1-splat-animation';
 import { App } from './app';
 import { fetchSplatAnimBuffer, fullFileCacheKey, fullFileKeyPrefix } from './core/fetch-splat-anim-buffer';
 import { updateGsplatRangeData, updateGsplatSHRange, uploadGsplatRows } from './core/gsplat-range-sync';
-import { isOmg4V3, loadOmg4V3, setAabbFromV3Meta } from './core/load-omg4-v3';
+import { isSogstV3, loadSogstV3, setAabbFromV3Meta } from './core/load-sogst-v3';
 import { setupSplatAnim } from './core/load-splat-anim';
 import { observe } from './core/observe';
-import { idbDeleteByPrefix, idbGetBuffer, idbSetBuffer } from './core/omg4-cache';
-import { attachOmg4V2Motion, syncOmg4V2Motion, syncOmg4V2MotionRange, uploadOmg4V2MotionRows } from './core/omg4-v2-motion';
-import { streamOmg4Data } from './core/stream-omg4';
-import { streamOmg4V2 } from './core/stream-omg4-v2';
-import { streamOmg4V3 } from './core/stream-omg4-v3';
+import { idbDeleteByPrefix, idbGetBuffer, idbSetBuffer } from './core/sogst-cache';
+import { attachSogstMotion, syncSogstMotion, syncSogstMotionRange, uploadSogstMotionRows } from './core/sogst-motion';
 import { streamQueenData } from './core/stream-queen';
-import { parseOmg4V2, readOmg4Version, readOmg4V2Header } from './parsers/omg4';
-import type { Omg4V2Data } from './parsers/omg4';
+import { streamSogstV1Data } from './core/stream-sogst-v1';
+import { streamSogstV2 } from './core/stream-sogst-v2';
+import { streamSogstV3 } from './core/stream-sogst-v3';
+import { isSogstFilename, parseSogstV2, readSogstVersion, readSogstV2Header } from './parsers/sogst';
+import type { SogstData } from './parsers/sogst';
 import type { Config, Global, State } from './types';
 
 // Shared application bootstrap used by both the standalone web app (index.ts)
@@ -73,10 +73,10 @@ const loadGsplat = async (app: AppBase, config: Config, progressCallback: (progr
     });
 };
 
-// Fetch the first bytes of a .omg4 file (enough for any header variant).
+// Fetch the first bytes of a .sogst file (enough for any header variant).
 // Uses a byte-range request, but reads through the stream reader and cancels
 // so a server that ignores Range headers doesn't trigger a full download.
-const fetchOmg4HeaderBytes = async (url: string, byteCount: number): Promise<ArrayBuffer> => {
+const fetchSogstHeaderBytes = async (url: string, byteCount: number): Promise<ArrayBuffer> => {
     const response = await fetch(url, { headers: { range: `bytes=0-${byteCount - 1}` } });
     if (!response.ok) {
         throw new Error(`Failed to fetch ${url}: ${response.status} ${response.statusText}`);
@@ -103,13 +103,13 @@ const fetchOmg4HeaderBytes = async (url: string, byteCount: number): Promise<Arr
 
 // Create resource + entity + animation for parsed v2 data (shared by the
 // full-buffer and streaming paths).
-const setupOmg4V2 = (app: AppBase, config: Config, global: Global, data: Omg4V2Data) => {
+const setupSogst = (app: AppBase, config: Config, global: Global, data: SogstData) => {
     const resource = new GSplatResource(app.graphicsDevice, data.gsplatData);
-    attachOmg4V2Motion(resource, data);
+    attachSogstMotion(resource, data);
 
-    const animation = new Omg4V2SplatAnimation(data);
+    const animation = new SogstSplatAnimation(data);
     const entity = setupSplatAnim(app, config, global, resource, animation, {
-        rotationEulerDeg: config.omg4RotationDeg ?? [270, 0, 0],
+        rotationEulerDeg: config.sogstRotationDeg ?? [270, 0, 0],
         alphaClip: 1 / 1024
     });
     animation.bind(entity, data.cov2dScale);
@@ -120,16 +120,16 @@ const setupOmg4V2 = (app: AppBase, config: Config, global: Global, data: Omg4V2D
 // a prefilled buffer, start rendering after the first ~10% of splats, and
 // keep refreshing the GPU data as tiles arrive. The completed buffer is
 // cached in standard layout, so revisits take the instant cache path.
-const loadOmg4V2Streaming = async (
+const loadSogstV2Streaming = async (
     app: AppBase,
     config: Config,
     global: Global,
-    header: ReturnType<typeof readOmg4V2Header>,
+    header: ReturnType<typeof readSogstV2Header>,
     cacheKey: string,
     progressCallback: (progress: number) => void
 ) => {
     let resource: GSplatResource | null = null;
-    let data: Omg4V2Data | null = null;
+    let data: SogstData | null = null;
     let syncCount = 0;
 
     // Push everything received so far to the GPU. The engine update methods
@@ -148,7 +148,7 @@ const loadOmg4V2Streaming = async (
         }
         syncCount++;
 
-        syncOmg4V2Motion(resource, data, readySplats);
+        syncSogstMotion(resource, data, readySplats);
 
         // Refresh depth-sorter centers for the splats received so far.
         const centers = r.centers as Float32Array | undefined;
@@ -167,14 +167,14 @@ const loadOmg4V2Streaming = async (
         app.renderNextFrame = true;
     };
 
-    const stream = streamOmg4V2(config.contentUrl, header, {
+    const stream = streamSogstV2(config.contentUrl, header, {
         onProgress: progressCallback,
         onReady: sync
     });
 
     data = stream.data;
     resource = new GSplatResource(app.graphicsDevice, data.gsplatData);
-    attachOmg4V2Motion(resource, data);
+    attachSogstMotion(resource, data);
 
     await stream.firstBatch;
 
@@ -190,12 +190,12 @@ const loadOmg4V2Streaming = async (
         .catch(() => {});
     })
     .catch((err: Error) => {
-        console.warn('OMG4 stream did not complete; partial scene retained:', err);
+        console.warn('SOGST stream did not complete; partial scene retained:', err);
     });
 
-    const animation = new Omg4V2SplatAnimation(data);
+    const animation = new SogstSplatAnimation(data);
     const entity = setupSplatAnim(app, config, global, resource, animation, {
-        rotationEulerDeg: config.omg4RotationDeg ?? [270, 0, 0],
+        rotationEulerDeg: config.sogstRotationDeg ?? [270, 0, 0],
         alphaClip: 1 / 1024
     });
     animation.bind(entity, data.cov2dScale);
@@ -207,7 +207,7 @@ const loadOmg4V2Streaming = async (
 // refreshing GPU data as later segments land (playback holds at the loaded
 // boundary via data.loadedThrough if the network falls behind). The
 // complete archive is cached for instant revisits.
-const loadOmg4V3Streaming = async (
+const loadSogstV3Streaming = async (
     app: AppBase,
     config: Config,
     global: Global,
@@ -215,7 +215,7 @@ const loadOmg4V3Streaming = async (
     progressCallback: (progress: number) => void
 ) => {
     let resource: GSplatResource | null = null;
-    let data: Awaited<ReturnType<typeof loadOmg4V3>> | null = null;
+    let data: Awaited<ReturnType<typeof loadSogstV3>> | null = null;
 
     // GPU repack runs in small chunks against a per-slice time budget —
     // chunk counts alone can't bound task length on weak devices (the SH
@@ -281,7 +281,7 @@ const loadOmg4V3Streaming = async (
                             updateGsplatSHRange(r, data.gsplatData, s, e, false);
                         } else {
                             updateGsplatRangeData(r, data.gsplatData, s, e, false);
-                            syncOmg4V2MotionRange(resource, data, s, e, false);
+                            syncSogstMotionRange(resource, data, s, e, false);
                             if (centers) {
                                 for (let i = s; i < e; i++) {
                                     centers[i * 3 + 0] = x[i];
@@ -302,7 +302,7 @@ const loadOmg4V3Streaming = async (
                     const e = Math.min(b, u + UPLOAD_CHUNK_SPLATS);
                     uploadGsplatRows(r, u, e, item.sh);
                     if (!item.sh) {
-                        uploadOmg4V2MotionRows(resource, u, e);
+                        uploadSogstMotionRows(resource, u, e);
                     }
                     // eslint-disable-next-line no-await-in-loop -- deliberate UI yield
                     await yieldToUi();
@@ -334,14 +334,14 @@ const loadOmg4V3Streaming = async (
         }
     };
 
-    const stream = streamOmg4V3(app, config.contentUrl, {
+    const stream = streamSogstV3(app, config.contentUrl, {
         onProgress: progressCallback,
         onReady: sync,
         onShReady: syncSh
     });
 
     data = await stream.reveal;
-    const setup = setupOmg4V2(app, config, global, data);
+    const setup = setupSogst(app, config, global, data);
     resource = setup.resource;
 
     // exact bounds from the global meta range — the arrays are still
@@ -360,17 +360,17 @@ const loadOmg4V3Streaming = async (
         .catch(() => {});
     })
     .catch((err: Error) => {
-        console.warn('OMG4 v3 stream did not complete; partial scene retained:', err);
+        console.warn('SOGST v3 stream did not complete; partial scene retained:', err);
     });
 
     return setup.entity;
 };
 
-// Load and animate a .omg4 (OMG4-encoded 4D Gaussian Splat) file.
-const loadOmg4Gsplat = async (app: AppBase, config: Config, global: Global, progressCallback: (progress: number) => void) => {
-    const headerBytes = await fetchOmg4HeaderBytes(config.contentUrl, 40);
+// Load and animate a .sogst (SOG spacetime 4DGS) file — either extension.
+const loadSogstGsplat = async (app: AppBase, config: Config, global: Global, progressCallback: (progress: number) => void) => {
+    const headerBytes = await fetchSogstHeaderBytes(config.contentUrl, 40);
 
-    if (isOmg4V3(headerBytes)) {
+    if (isSogstV3(headerBytes)) {
         // v3: SOG-compressed ZIP container (webp textures + codebooks),
         // decoded through the engine's SOG path and played through the
         // whole v2 temporal setup unchanged.
@@ -378,19 +378,19 @@ const loadOmg4Gsplat = async (app: AppBase, config: Config, global: Global, prog
         const cached = await idbGetBuffer(cacheKey);
         if (cached) {
             // complete archive available locally — decode straight through
-            console.debug('OMG4 v3 full-file cache hit (idb)', cacheKey);
-            const data = await loadOmg4V3(app, cached, progressCallback);
-            return setupOmg4V2(app, config, global, data).entity;
+            console.debug('SOGST v3 full-file cache hit (idb)', cacheKey);
+            const data = await loadSogstV3(app, cached, progressCallback);
+            return setupSogst(app, config, global, data).entity;
         }
-        return loadOmg4V3Streaming(app, config, global, cacheKey, progressCallback);
+        return loadSogstV3Streaming(app, config, global, cacheKey, progressCallback);
     }
 
-    const version = readOmg4Version(headerBytes);
+    const version = readSogstVersion(headerBytes);
 
     if (version >= 2) {
         // v2: compact temporal format; motion and temporal fade are evaluated
         // on the GPU from a single time uniform.
-        const header = readOmg4V2Header(headerBytes);
+        const header = readSogstV2Header(headerBytes);
 
         if (header.tiled) {
             // Streamable layout: serve from the durable cache when possible,
@@ -398,24 +398,24 @@ const loadOmg4Gsplat = async (app: AppBase, config: Config, global: Global, prog
             const cacheKey = await fullFileCacheKey(config.contentUrl);
             const cached = await idbGetBuffer(cacheKey);
             if (cached) {
-                console.debug('OMG4 full-file cache hit (idb)', cacheKey);
+                console.debug('SOGST full-file cache hit (idb)', cacheKey);
                 progressCallback(100);
-                return setupOmg4V2(app, config, global, parseOmg4V2(cached)).entity;
+                return setupSogst(app, config, global, parseSogstV2(cached)).entity;
             }
-            return loadOmg4V2Streaming(app, config, global, header, cacheKey, progressCallback);
+            return loadSogstV2Streaming(app, config, global, header, cacheKey, progressCallback);
         }
 
         // Standard layout: full prefetch (with its own cache handling).
         const buffer = await fetchSplatAnimBuffer(config.contentUrl, progressCallback);
-        return setupOmg4V2(app, config, global, parseOmg4V2(buffer)).entity;
+        return setupSogst(app, config, global, parseSogstV2(buffer)).entity;
     }
 
     // v1: legacy baked per-frame format, streamed in chunks.
-    const data = await streamOmg4Data(config.contentUrl, progressCallback);
+    const data = await streamSogstV1Data(config.contentUrl, progressCallback);
     const resource = new GSplatResource(app.graphicsDevice, data.gsplatData);
-    const animation = new Omg4SplatAnimation(data, resource);
+    const animation = new SogstV1SplatAnimation(data, resource);
     return setupSplatAnim(app, config, global, resource, animation, {
-        rotationEulerDeg: config.omg4RotationDeg ?? [270, 0, 0],
+        rotationEulerDeg: config.sogstRotationDeg ?? [270, 0, 0],
         alphaClip: 1 / 1024
     });
 };
@@ -437,7 +437,7 @@ const load3dgs = (app: AppBase, config: Config, progressCallback: (progress: num
 // Load and animate a 4DGS file, dispatching to the correct format handler.
 const load4dgs = (app: AppBase, config: Config, global: Global, progressCallback: (progress: number) => void): Promise<Entity> => {
     const lowerName = (config.contentFilename ?? new URL(config.contentUrl, location.href).pathname.split('/').pop() ?? '').toLowerCase();
-    if (lowerName.endsWith('.omg4'))  return loadOmg4Gsplat(app, config, global, progressCallback);
+    if (isSogstFilename(lowerName))   return loadSogstGsplat(app, config, global, progressCallback);
     if (lowerName.endsWith('.queen')) return loadQueenGsplat(app, config, global, progressCallback);
     return Promise.reject(new Error(`Unsupported 4DGS format: ${lowerName}`));
 };

@@ -1,6 +1,16 @@
 import { GSplatData } from 'playcanvas';
 
-// .omg4 binary format
+// .sogst — SOG spacetime. Versions 1 and 2 are the flat binary container
+// described below; version 3 is a SOG (ZIP) archive handled by load-sogst-v3.
+//
+// The format was originally called .omg4, after the OMG4 training pipeline
+// whose compression stage the encoder first consumed. Nothing in the container
+// comes from that work — the representation is spacetime-shaped, the v3
+// container is PlayCanvas SOG, and the segment streaming is ours — so the name
+// moved to .sogst. The `.omg4` extension and the "OMG4" ASCII magic below are
+// read indefinitely: deployed assets are not re-baked.
+//
+// Version 1 (dense per-frame splat attributes)
 // ─────────────────────────────────────────────────────────────────────────────
 // Header (28 bytes, little-endian):
 //   [0-3]   uint32  magic = 0x34474D4F ("OMG4")
@@ -57,11 +67,24 @@ import { GSplatData } from 'playcanvas';
 // tile storing all of its fields contiguously (field order as above). Every
 // tile is self-contained, so a sequential download yields renderable splats
 // continuously; files are written importance-sorted for progressive
-// densification. Omg4V2Data itself only consumes the standard layout — the
+// densification. SogstData itself only consumes the standard layout — the
 // streaming loader de-tiles into a standard-layout buffer as bytes arrive.
 // ─────────────────────────────────────────────────────────────────────────────
 
+// Retained from the format's .omg4 origin — v1/v2 files in the wild carry it
+// and are read as-is. Do not change; new containers are v3 (SOG/ZIP).
 const MAGIC = 0x34474D4F;   // little-endian uint32 of "OMG4"
+
+// Filename extensions dispatching to the .sogst handlers. `.omg4` is the
+// original extension, kept readable indefinitely for already-deployed assets.
+const SOGST_EXTENSIONS = ['.sogst', '.omg4'];
+
+// True if `filename` names a .sogst container (either extension spelling).
+const isSogstFilename = (filename: string): boolean => {
+    const lower = filename.toLowerCase();
+    return SOGST_EXTENSIONS.some(ext => lower.endsWith(ext));
+};
+
 const HEADER_SIZE = 28;
 const FLOATS_PER_SPLAT = 14;
 
@@ -75,7 +98,7 @@ const V2_FLAG_COV2D = 2;
 const V2_FLAG_TILED = 4;
 const V2_FLAG_ACCEL = 8;
 
-interface Omg4Header {
+interface SogstV1Header {
     version: number;
     numSplats: number;
     numFrames: number;
@@ -84,7 +107,7 @@ interface Omg4Header {
     timeDurationMax: number;
 }
 
-interface Omg4FrameData {
+interface SogstV1FrameData {
     readonly gsplatData: GSplatData;
     readonly numFrames: number;
     readonly duration: number;
@@ -111,10 +134,10 @@ interface WorkArrays {
     fdc2: Float32Array;
 }
 
-class Omg4Data {
+class SogstV1Data {
     private buffer: ArrayBuffer;
 
-    readonly header: Omg4Header;
+    readonly header: SogstV1Header;
 
     private frameByteSize: number;
 
@@ -133,7 +156,7 @@ class Omg4Data {
         // Validate magic bytes
         const magic = view.getUint32(0, true);
         if (magic !== MAGIC) {
-            throw new Error(`Invalid .omg4 file: expected magic 0x${MAGIC.toString(16)}, got 0x${magic.toString(16)}`);
+            throw new Error(`Invalid .sogst file: expected magic 0x${MAGIC.toString(16)}, got 0x${magic.toString(16)}`);
         }
 
         this.header = {
@@ -149,7 +172,7 @@ class Omg4Data {
         this.frameByteSize = 4 + N * FLOATS_PER_SPLAT * 4;
         const expectedSize = HEADER_SIZE + this.header.numFrames * this.frameByteSize;
         if (buffer.byteLength < expectedSize) {
-            throw new Error(`Invalid .omg4 file: expected at least ${expectedSize} bytes, got ${buffer.byteLength}`);
+            throw new Error(`Invalid .sogst file: expected at least ${expectedSize} bytes, got ${buffer.byteLength}`);
         }
 
         this.frameTimestamps = new Float32Array(this.header.numFrames);
@@ -277,14 +300,14 @@ class Omg4Data {
     }
 }
 
-// Parse a .omg4 ArrayBuffer and return an Omg4Data instance.
-const parseOmg4 = (buffer: ArrayBuffer): Omg4Data => new Omg4Data(buffer);
+// Parse a .sogst v1 ArrayBuffer and return an SogstV1Data instance.
+const parseSogstV1 = (buffer: ArrayBuffer): SogstV1Data => new SogstV1Data(buffer);
 
 // Temporal segment table (v3 containers). Splats are ordered
 // [persistent | segment 0 | segment 1 | ...]; at time t a player draws
 // [0, persistent[1]) plus the contiguous index range of segments whose
 // [t0, t1] coverage contains t.
-interface Omg4Segments {
+interface SogstSegments {
     duration: number;
     k_sigma: number;
     persistent: [number, number];
@@ -294,10 +317,10 @@ interface Omg4Segments {
 // Version-2 data: static splat attributes plus per-splat temporal parameters
 // (velocity, temporal centre, temporal std-dev). There is no per-frame data;
 // the viewer evaluates motion and temporal fade on the GPU each frame.
-class Omg4V2Data {
+class SogstData {
     // Temporal segment table — only ever set for v3 (SOG) content, which
     // reuses this class's shape; plain v2 files have no segmentation.
-    segments?: Omg4Segments;
+    segments?: SogstSegments;
 
     // Highest absolute clip time that is fully decoded; the animation
     // driver holds the playhead here during streaming loads. Plain v2
@@ -341,11 +364,11 @@ class Omg4V2Data {
 
         const magic = view.getUint32(0, true);
         if (magic !== MAGIC) {
-            throw new Error(`Invalid .omg4 file: expected magic 0x${MAGIC.toString(16)}, got 0x${magic.toString(16)}`);
+            throw new Error(`Invalid .sogst file: expected magic 0x${MAGIC.toString(16)}, got 0x${magic.toString(16)}`);
         }
         const version = view.getUint32(4, true);
         if (version !== 2) {
-            throw new Error(`Omg4V2Data: expected version 2, got ${version}`);
+            throw new Error(`SogstData: expected version 2, got ${version}`);
         }
 
         const N = view.getUint32(8, true);
@@ -375,7 +398,7 @@ class Omg4V2Data {
         const numFields = V2_NUM_FIELDS + (hasSH ? 45 : 0) + (hasAccel ? 3 : 0);
         const expectedSize = V2_HEADER_SIZE + numFields * N * 4;
         if (buffer.byteLength < expectedSize) {
-            throw new Error(`Invalid .omg4 v2 file: expected at least ${expectedSize} bytes, got ${buffer.byteLength}`);
+            throw new Error(`Invalid .sogst v2 file: expected at least ${expectedSize} bytes, got ${buffer.byteLength}`);
         }
 
         // SoA float32[N] arrays; zero-copy views over the fetched buffer.
@@ -434,10 +457,10 @@ class Omg4V2Data {
     }
 }
 
-const parseOmg4V2 = (buffer: ArrayBuffer): Omg4V2Data => new Omg4V2Data(buffer);
+const parseSogstV2 = (buffer: ArrayBuffer): SogstData => new SogstData(buffer);
 
 // Parsed v2 header, including the streamable (tiled) extension.
-interface Omg4V2Header {
+interface SogstV2Header {
     version: number;
     numSplats: number;
     flags: number;          // raw flags word (bit 2 included)
@@ -456,15 +479,15 @@ interface Omg4V2Header {
 
 // Parse the v2 header from the first bytes of a file (needs 32 bytes, or 40
 // for tiled files; throws if the buffer is too short for the variant found).
-const readOmg4V2Header = (buffer: ArrayBuffer): Omg4V2Header => {
+const readSogstV2Header = (buffer: ArrayBuffer): SogstV2Header => {
     const view = new DataView(buffer);
     const magic = view.getUint32(0, true);
     if (magic !== MAGIC) {
-        throw new Error(`Invalid .omg4 file: expected magic 0x${MAGIC.toString(16)}, got 0x${magic.toString(16)}`);
+        throw new Error(`Invalid .sogst file: expected magic 0x${MAGIC.toString(16)}, got 0x${magic.toString(16)}`);
     }
     const version = view.getUint32(4, true);
     if (version !== 2) {
-        throw new Error(`readOmg4V2Header: expected version 2, got ${version}`);
+        throw new Error(`readSogstV2Header: expected version 2, got ${version}`);
     }
 
     const numSplats = view.getUint32(8, true);
@@ -473,7 +496,7 @@ const readOmg4V2Header = (buffer: ArrayBuffer): Omg4V2Header => {
     const tiled = (flags & V2_FLAG_TILED) !== 0;
     const headerSize = tiled ? V2_TILED_HEADER_SIZE : V2_HEADER_SIZE;
     if (buffer.byteLength < headerSize) {
-        throw new Error(`readOmg4V2Header: need ${headerSize} bytes, got ${buffer.byteLength}`);
+        throw new Error(`readSogstV2Header: need ${headerSize} bytes, got ${buffer.byteLength}`);
     }
     const numFields = V2_NUM_FIELDS + (hasSH ? V2_NUM_SH_FIELDS : 0);
 
@@ -497,8 +520,8 @@ const readOmg4V2Header = (buffer: ArrayBuffer): Omg4V2Header => {
 // Write a standard (non-tiled) 32-byte v2 header into the start of `dest`,
 // preserving all header semantics except the tiled flag. Used by the
 // streaming loader, which de-tiles into a standard-layout buffer so
-// Omg4V2Data (and the IndexedDB cache) see a regular v2 file.
-const writeOmg4V2StandardHeader = (dest: ArrayBuffer, header: Omg4V2Header) => {
+// SogstData (and the IndexedDB cache) see a regular v2 file.
+const writeSogstV2StandardHeader = (dest: ArrayBuffer, header: SogstV2Header) => {
     const view = new DataView(dest);
     view.setUint32(0, MAGIC, true);
     view.setUint32(4, 2, true);
@@ -510,19 +533,20 @@ const writeOmg4V2StandardHeader = (dest: ArrayBuffer, header: Omg4V2Header) => {
     view.setUint32(28, header.reserved, true);
 };
 
-// Read the format version from the first bytes of a .omg4 file (throws on bad magic).
-const readOmg4Version = (buffer: ArrayBuffer): number => {
+// Read the format version from the first bytes of a .sogst v1/v2 file (throws on bad magic).
+const readSogstVersion = (buffer: ArrayBuffer): number => {
     const view = new DataView(buffer);
     const magic = view.getUint32(0, true);
     if (magic !== MAGIC) {
-        throw new Error(`Invalid .omg4 file: expected magic 0x${MAGIC.toString(16)}, got 0x${magic.toString(16)}`);
+        throw new Error(`Invalid .sogst file: expected magic 0x${MAGIC.toString(16)}, got 0x${magic.toString(16)}`);
     }
     return view.getUint32(4, true);
 };
 
 export {
-    Omg4Data, Omg4V2Data, parseOmg4, parseOmg4V2, readOmg4Version,
-    readOmg4V2Header, writeOmg4V2StandardHeader,
+    SogstV1Data, SogstData, parseSogstV1, parseSogstV2, readSogstVersion,
+    readSogstV2Header, writeSogstV2StandardHeader,
+    isSogstFilename, SOGST_EXTENSIONS,
     V2_HEADER_SIZE, V2_TILED_HEADER_SIZE, V2_NUM_FIELDS
 };
-export type { Omg4FrameData, Omg4V2Header, Omg4Segments };
+export type { SogstV1FrameData, SogstV2Header, SogstSegments };

@@ -11,6 +11,7 @@ import { MeshCollision, loadVoxelCollision } from './collision';
 import type { Collision } from './collision';
 import { initEmbed } from './embed';
 import { initLocalization } from './localization';
+import { isSogstFilename } from './parsers/sogst';
 import { importSettings } from './settings';
 import type { Config, Global } from './types';
 import { initPoster, initUI } from './ui';
@@ -63,7 +64,7 @@ const main = async (canvas: HTMLCanvasElement, settingsJson: any, config: Config
     const progressCallback = (progress: number) => {
         state.progress = progress;
     };
-    const is4dgs = lowerFilename.endsWith('.omg4') || lowerFilename.endsWith('.queen');
+    const is4dgs = isSogstFilename(lowerFilename) || lowerFilename.endsWith('.queen');
     const gsplatLoad = is4dgs ?
         load4dgs(app, config, global, progressCallback) :
         load3dgs(app, config, progressCallback);

@@ -8,7 +8,7 @@ type SetupSplatAnimOptions = {
 };
 
 // Structural interface satisfied by SplatAnimationBase subclasses and by
-// Omg4V2SplatAnimation (which drives a GPU time uniform instead of frames).
+// SogstSplatAnimation (which drives a GPU time uniform instead of frames).
 interface SplatAnimation {
     readonly duration: number;
     attach(global: Global): () => void;

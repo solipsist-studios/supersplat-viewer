@@ -1,19 +1,19 @@
 import { GSplatResource } from 'playcanvas';
 
 import { SplatAnimationBase } from './splat-animation-base';
-import type { Omg4FrameData } from '../parsers/omg4';
+import type { SogstV1FrameData } from '../parsers/sogst';
 
-// Drives per-frame GPU texture updates for an OMG4 animated scene.
+// Drives per-frame GPU texture updates for an SOGST animated scene.
 // After calling setFrame(), the GSplatResource's transform and colour textures
 // are updated to reflect the requested frame.
-class Omg4SplatAnimation extends SplatAnimationBase {
-    private data: Omg4FrameData;
+class SogstV1SplatAnimation extends SplatAnimationBase {
+    private data: SogstV1FrameData;
 
     private resource: GSplatResource;
 
     private currentFrame: number = -1;
 
-    constructor(data: Omg4FrameData, resource: GSplatResource) {
+    constructor(data: SogstV1FrameData, resource: GSplatResource) {
         super();
         this.data     = data;
         this.resource = resource;
@@ -54,4 +54,4 @@ class Omg4SplatAnimation extends SplatAnimationBase {
     }
 }
 
-export { Omg4SplatAnimation };
+export { SogstV1SplatAnimation };

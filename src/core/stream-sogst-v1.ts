@@ -1,17 +1,17 @@
 import { GSplatData } from 'playcanvas';
 
-import { idbGetBuffer, idbSetBuffer } from './omg4-cache';
-import type { Omg4FrameData } from '../parsers/omg4';
+import { idbGetBuffer, idbSetBuffer } from './sogst-cache';
+import type { SogstV1FrameData } from '../parsers/sogst';
 
 const MAGIC = 0x34474D4F;
 const HEADER_SIZE = 28;
 const FLOATS_PER_SPLAT = 14;
 const MAX_CACHED_FRAMES = 32;
 const FRAMES_PER_CHUNK = 8;
-const OMG4_CACHE_NAME = 'supersplat-omg4-v1';
-const OMG4_DEBUG_LOG = true;
+const SOGST_CACHE_NAME = 'supersplat-sogst-v1';
+const SOGST_DEBUG_LOG = true;
 
-type Omg4Header = {
+type SogstV1Header = {
     version: number;
     numSplats: number;
     numFrames: number;
@@ -37,7 +37,7 @@ type WorkArrays = {
     fdc2: Float32Array;
 };
 
-const rangeCacheKey = (url: string, start: number, end: number) => `${new URL(url, location.href).toString()}?__omg4_range=${start}-${end}`;
+const rangeCacheKey = (url: string, start: number, end: number) => `${new URL(url, location.href).toString()}?__sogst_range=${start}-${end}`;
 
 const idbGetRange = idbGetBuffer;
 const idbSetRange = idbSetBuffer;
@@ -50,7 +50,7 @@ const fetchRangeNetwork = async (url: string, start: number, end: number): Promi
     });
 
     if (response.status !== 206) {
-        throw new Error(`OMG4 streaming requires byte-range support. ${url} responded with ${response.status}.`);
+        throw new Error(`SOGST streaming requires byte-range support. ${url} responded with ${response.status}.`);
     }
 
     return response.arrayBuffer();
@@ -62,33 +62,33 @@ const fetchRange = async (url: string, start: number, end: number): Promise<Arra
     // First try IndexedDB for durable local chunk cache.
     const idbCached = await idbGetRange(key);
     if (idbCached) {
-        if (OMG4_DEBUG_LOG) console.debug('OMG4 range cache hit (idb)', key);
+        if (SOGST_DEBUG_LOG) console.debug('SOGST range cache hit (idb)', key);
         return idbCached;
     }
 
     // Keep a persistent local cache of fetched byte ranges so playback loops
-    // do not repeatedly hammer the network for the same OMG4 data.
+    // do not repeatedly hammer the network for the same .sogst data.
     const hasCacheApi = typeof caches !== 'undefined';
     if (!hasCacheApi) {
         const networkBuffer = await fetchRangeNetwork(url, start, end);
-        if (OMG4_DEBUG_LOG) console.debug('OMG4 range fetch (network/no-cache-api)', key);
+        if (SOGST_DEBUG_LOG) console.debug('SOGST range fetch (network/no-cache-api)', key);
         await idbSetRange(key, networkBuffer);
         return networkBuffer;
     }
 
-    const cache = await caches.open(OMG4_CACHE_NAME);
+    const cache = await caches.open(SOGST_CACHE_NAME);
     const request = new Request(key);
 
     const cached = await cache.match(request);
     if (cached) {
-        if (OMG4_DEBUG_LOG) console.debug('OMG4 range cache hit (cache storage)', key);
+        if (SOGST_DEBUG_LOG) console.debug('SOGST range cache hit (cache storage)', key);
         const buffer = await cached.arrayBuffer();
         await idbSetRange(key, buffer);
         return buffer;
     }
 
     const buffer = await fetchRangeNetwork(url, start, end);
-    if (OMG4_DEBUG_LOG) console.debug('OMG4 range fetch (network)', key);
+    if (SOGST_DEBUG_LOG) console.debug('SOGST range fetch (network)', key);
     await cache.put(request, new Response(buffer, {
         headers: {
             'Content-Type': 'application/octet-stream'
@@ -99,8 +99,8 @@ const fetchRange = async (url: string, start: number, end: number): Promise<Arra
     return buffer;
 };
 
-class StreamedOmg4Data implements Omg4FrameData {
-    readonly header: Omg4Header;
+class StreamedSogstV1Data implements SogstV1FrameData {
+    readonly header: SogstV1Header;
 
     readonly gsplatData: GSplatData;
 
@@ -122,7 +122,7 @@ class StreamedOmg4Data implements Omg4FrameData {
 
     private maxSequentialReadyFrame: number;
 
-    private constructor(url: string, header: Omg4Header, frame0: Uint8Array) {
+    private constructor(url: string, header: SogstV1Header, frame0: Uint8Array) {
         this.url = url;
         this.header = header;
         this.frameByteSize = 4 + header.numSplats * FLOATS_PER_SPLAT * 4;
@@ -182,17 +182,17 @@ class StreamedOmg4Data implements Omg4FrameData {
         this.copyFrame(frame0);
     }
 
-    static async create(url: string, onProgress: (progress: number) => void): Promise<StreamedOmg4Data> {
+    static async create(url: string, onProgress: (progress: number) => void): Promise<StreamedSogstV1Data> {
         const headerBuffer = await fetchRange(url, 0, HEADER_SIZE - 1);
         onProgress(5);
 
         const headerView = new DataView(headerBuffer);
         const magic = headerView.getUint32(0, true);
         if (magic !== MAGIC) {
-            throw new Error(`Invalid .omg4 file: expected magic 0x${MAGIC.toString(16)}, got 0x${magic.toString(16)}`);
+            throw new Error(`Invalid .sogst file: expected magic 0x${MAGIC.toString(16)}, got 0x${magic.toString(16)}`);
         }
 
-        const header: Omg4Header = {
+        const header: SogstV1Header = {
             version: headerView.getUint32(4, true),
             numSplats: headerView.getUint32(8, true),
             numFrames: headerView.getUint32(12, true),
@@ -205,7 +205,7 @@ class StreamedOmg4Data implements Omg4FrameData {
         const frame0 = new Uint8Array(await fetchRange(url, HEADER_SIZE, HEADER_SIZE + frameByteSize - 1));
         onProgress(100);
 
-        return new StreamedOmg4Data(url, header, frame0);
+        return new StreamedSogstV1Data(url, header, frame0);
     }
 
     get numFrames(): number {
@@ -269,7 +269,7 @@ class StreamedOmg4Data implements Omg4FrameData {
 
         const fetched = this.frameCache.get(frameIndex);
         if (!fetched) {
-            throw new Error(`Failed to load OMG4 frame ${frameIndex}`);
+            throw new Error(`Failed to load SOGST frame ${frameIndex}`);
         }
 
         this.touchFrame(frameIndex);
@@ -374,6 +374,6 @@ class StreamedOmg4Data implements Omg4FrameData {
     }
 }
 
-const streamOmg4Data = (url: string, onProgress: (progress: number) => void) => StreamedOmg4Data.create(url, onProgress);
+const streamSogstV1Data = (url: string, onProgress: (progress: number) => void) => StreamedSogstV1Data.create(url, onProgress);
 
-export { StreamedOmg4Data, streamOmg4Data };
+export { StreamedSogstV1Data, streamSogstV1Data };

@@ -1,12 +1,12 @@
-import { idbDeleteByPrefix, idbGetBuffer, idbSetBuffer } from './omg4-cache';
+import { idbDeleteByPrefix, idbGetBuffer, idbSetBuffer } from './sogst-cache';
 
-const OMG4_DEBUG_LOG = true;
+const SOGST_DEBUG_LOG = true;
 
 // Cache key for a full-file payload: URL plus a cheap validator (ETag /
 // Last-Modified / size from a HEAD request), so edited files re-download
 // while unchanged ones load from IndexedDB. Browsers won't keep responses
 // this large (hundreds of MB) in the regular HTTP cache.
-const fullFileKeyPrefix = (url: string) => `${new URL(url, location.href).toString()}?__omg4_full=`;
+const fullFileKeyPrefix = (url: string) => `${new URL(url, location.href).toString()}?__sogst_full=`;
 
 const fullFileCacheKey = async (url: string): Promise<string> => {
     let validator = '';
@@ -90,7 +90,7 @@ const fetchSplatAnimBuffer = async (url: string, onProgress: (progress: number) 
     const cacheKey = await fullFileCacheKey(url);
     const cached = await idbGetBuffer(cacheKey);
     if (cached) {
-        if (OMG4_DEBUG_LOG) console.debug('OMG4 full-file cache hit (idb)', cacheKey);
+        if (SOGST_DEBUG_LOG) console.debug('SOGST full-file cache hit (idb)', cacheKey);
         onProgress(100);
         return cached;
     }
@@ -103,7 +103,7 @@ const fetchSplatAnimBuffer = async (url: string, onProgress: (progress: number) 
     idbSetBuffer(cacheKey, buffer)
     .then(() => idbDeleteByPrefix(fullFileKeyPrefix(url), cacheKey))
     .catch((err) => {
-        if (OMG4_DEBUG_LOG) console.debug('OMG4 full-file cache write failed', err);
+        if (SOGST_DEBUG_LOG) console.debug('SOGST full-file cache write failed', err);
     });
 
     return buffer;

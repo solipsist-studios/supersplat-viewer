@@ -221,18 +221,33 @@ type ExperienceSettings = {
 
 ---
 
-## 4D Gaussian Splatting — OMG4 format (`.omg4`)
+## 4D Gaussian Splatting — SOG spacetime (`.sogst`)
 
-The viewer supports animated 4D Gaussian Splat scenes produced by the
-[OMG4](https://github.com/MinShirley/OMG4) training pipeline.
+The viewer supports animated 4D Gaussian Splat scenes in the `.sogst` format.
 
-### What is `.omg4`?
+> **Previously `.omg4`.** The format was named after the
+> [OMG4](https://github.com/MinShirley/OMG4) training pipeline whose compression
+> stage the encoder originally consumed, but nothing in the container comes from
+> that work: the representation is spacetime-shaped, the v3 container is
+> PlayCanvas SOG, and the segment streaming is this project's. Hence `.sogst` —
+> SOG + spacetime. **The `.omg4` extension and the `OMG4` file magic are read
+> indefinitely**, so already-deployed assets keep working with no re-baking.
 
-`.omg4` is a web-friendly binary container for OMG4's 4D (space-time)
-Gaussians. The current **version 2** format stores each Gaussian once —
-position, sliced 3D covariance, colour, plus its temporal parameters
-(linear velocity, temporal centre, temporal std-dev) — and the viewer
-evaluates motion and temporal fade **on the GPU** each frame:
+### What is `.sogst`?
+
+`.sogst` is a web-friendly container for 4D (space-time) Gaussians. It has
+three versions:
+
+| Version | Container | Notes |
+|---|---|---|
+| 1 | flat binary | legacy; baked per-frame attributes, still playable |
+| 2 | flat binary | compact temporal splats, GPU-evaluated motion (documented below) |
+| 3 | SOG (ZIP) archive | SOG-compressed temporal splats, segment-streamed |
+
+**Version 2** stores each Gaussian once — position, sliced 3D covariance,
+colour, plus its temporal parameters (linear velocity, temporal centre,
+temporal std-dev) — and the viewer evaluates motion and temporal fade **on the
+GPU** each frame:
 
 ```
 position(t) = position + velocity · (t − t_center)
@@ -241,26 +256,31 @@ alpha(t)    = sigmoid(opacity) · exp(−0.5 · ((t − t_center) / t_sigma)²)
 
 Playback is continuous in time (no baked frames, no per-frame texture
 uploads) and a full 10-second Neural-3D-Video scene fits in ~36 MB
-(~11 MB without view-dependent SH). The legacy version 1 format (baked
-per-frame attributes) is still supported for playback.
+(~11 MB without view-dependent SH).
+
+**Version 3** keeps the same temporal model but packs the static attributes as
+a PlayCanvas SOG (ZIP) archive of lossless-WebP textures, split into time
+segments so playback can begin before the whole clip has arrived. Its
+`meta.json` carries `"version": 3` and `"format": "sogst"`; archives baked
+before the rename omit the `format` key and are read as `.sogst` regardless.
 
 ### Converting an OMG4 `.xz` checkpoint
 
 Use the converter in [playcanvas/splat-transform](https://github.com/playcanvas/splat-transform)
-to produce a `.omg4` file from a trained OMG4 model. A CUDA GPU is required to
+to produce a `.sogst` file from a trained OMG4 model. A CUDA GPU is required to
 evaluate the neural MLPs during conversion.
 
-### Loading a `.omg4` file in the viewer
+### Loading a `.sogst` file in the viewer
 
 Pass the file URL via the `content` query parameter as with any other format:
 
 ```
-https://example.com/viewer/?content=scene.omg4
+https://example.com/viewer/?content=scene.sogst
 ```
 
 The viewer will display a play/pause button and a timeline scrubber, just like
-camera animation.  The user can orbit/fly around the scene while the OMG4
-animation plays. The clip time range comes from the file header
+camera animation.  The user can orbit/fly around the scene while the animation
+plays. The clip time range comes from the file header
 (`--time_min` / `--time_max` at export time).
 
 ### File-size guidance (version 2)
@@ -271,14 +291,14 @@ animation plays. The clip time range comes from the file header
 | 150 000       | ~11 MB     | ~38 MB         |
 
 File size is independent of clip duration. Standard gzip compression
-(e.g. `gzip -k scene.omg4`) and serving with `Content-Encoding: gzip`
+(e.g. `gzip -k scene.sogst`) and serving with `Content-Encoding: gzip`
 reduces the transfer size further.
 
 ### Binary format specification (version 2)
 
 ```
 Header (32 bytes, all values little-endian):
-  uint32  magic = 0x34474D4F  ("OMG4")
+  uint32  magic = 0x34474D4F  ("OMG4" — retained from the format's original name)
   uint32  version = 2
   uint32  numSplats (N)
   uint32  flags               — bit 0: file includes 45 f_rest SH arrays
@@ -304,5 +324,5 @@ the OMG4 view MLP at each splat's temporal centre.
 ```
 
 The legacy version 1 layout (28-byte header, baked per-frame AoS records)
-is documented in `src/parsers/omg4.ts` and remains playable via the
+is documented in `src/parsers/sogst.ts` and remains playable via the
 streaming path.

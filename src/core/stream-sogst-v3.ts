@@ -1,8 +1,8 @@
 import type { AppBase } from 'playcanvas';
 
 import {
-    V3Decoder, enumerateV3Groups, groupFileList, groupBaseNames, loadOmg4V3, parseV3Meta, Omg4V3Data
-} from './load-omg4-v3';
+    V3Decoder, enumerateV3Groups, groupFileList, groupBaseNames, loadSogstV3, parseV3Meta, SogstV3Data
+} from './load-sogst-v3';
 
 // Progressive loader for streamed v3 archives. The encoder writes the ZIP
 // in play order — meta.json, shN_centroids, persistent/*, seg_000/*, ... —
@@ -42,15 +42,15 @@ type V3StreamCallbacks = {
 
 type V3Stream = {
     /** Resolves with playable data once the reveal set is decoded. */
-    reveal: Promise<Omg4V3Data>;
+    reveal: Promise<SogstV3Data>;
     /** Resolves with the complete archive bytes (for caching). */
     complete: Promise<ArrayBuffer>;
 };
 
-const streamOmg4V3 = (app: AppBase, url: string, callbacks: V3StreamCallbacks): V3Stream => {
-    let revealResolve: (data: Omg4V3Data) => void;
+const streamSogstV3 = (app: AppBase, url: string, callbacks: V3StreamCallbacks): V3Stream => {
+    let revealResolve: (data: SogstV3Data) => void;
     let revealReject: (err: Error) => void;
-    const reveal = new Promise<Omg4V3Data>((resolve, reject) => {
+    const reveal = new Promise<SogstV3Data>((resolve, reject) => {
         revealResolve = resolve;
         revealReject = reject;
     });
@@ -116,7 +116,7 @@ const streamOmg4V3 = (app: AppBase, url: string, callbacks: V3StreamCallbacks): 
         let groupIdx = 0;
         let pending = new Map<string, Uint8Array>();
         let revealGroupIdx = 0;      // last group index needed before reveal
-        let data: Omg4V3Data | null = null;
+        let data: SogstV3Data | null = null;
         let revealed = false;
         let revealPending = false;      // reveal set decoded, awaiting buffer
         let progressWatermark = -1;
@@ -269,7 +269,7 @@ const streamOmg4V3 = (app: AppBase, url: string, callbacks: V3StreamCallbacks): 
                 return;
             }
             if (!meta) {
-                throw new Error(`omg4 v3: unexpected entry ${name} before meta.json`);
+                throw new Error(`sogst v3: unexpected entry ${name} before meta.json`);
             }
             if (monolithic) {
                 return;
@@ -365,7 +365,7 @@ const streamOmg4V3 = (app: AppBase, url: string, callbacks: V3StreamCallbacks): 
             const buffer = bytes.byteLength === received ? bytes.buffer : bytes.slice(0, received).buffer;
 
             if (monolithic) {
-                const decoded = await loadOmg4V3(app, buffer,
+                const decoded = await loadSogstV3(app, buffer,
                     p => callbacks.onProgress(Math.min(100, Math.round(70 + p * 0.3))));
                 revealed = true;
                 callbacks.onProgress(100);
@@ -389,7 +389,7 @@ const streamOmg4V3 = (app: AppBase, url: string, callbacks: V3StreamCallbacks): 
                 doReveal();
             }
             if (!revealed) {
-                throw new Error('omg4 v3: stream ended before the reveal set was decoded');
+                throw new Error('sogst v3: stream ended before the reveal set was decoded');
             }
             if (data) {
                 callbacks.onReady(null, Infinity);
@@ -410,4 +410,4 @@ const streamOmg4V3 = (app: AppBase, url: string, callbacks: V3StreamCallbacks): 
     return { reveal, complete };
 };
 
-export { streamOmg4V3 };
+export { streamSogstV3 };

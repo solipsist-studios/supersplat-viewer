@@ -2,6 +2,7 @@ import { EventHandler, type Entity } from 'playcanvas';
 
 import { createApp, createViewerState, initCanvas, load3dgs, load4dgs } from './app-setup';
 import { EmbedInputDevice } from './input/devices/external';
+import { isSogstFilename } from './parsers/sogst';
 import { importSettings } from './settings';
 import type { Config, Global, State } from './types';
 import { Viewer } from './viewer';
@@ -16,7 +17,7 @@ import { initXr } from './xr';
 
 type EmbedViewerOptions = {
     canvas: HTMLCanvasElement;
-    /** URL of the scene file (.ply/.sog/.compressed.ply/.omg4/.queen/meta.json). */
+    /** URL of the scene file (.ply/.sog/.compressed.ply/.sogst/.omg4/.queen/meta.json). */
     contentUrl: string;
     /** Original filename when contentUrl has no extension (e.g. blob URLs). */
     contentFilename?: string;
@@ -28,8 +29,8 @@ type EmbedViewerOptions = {
     transparent?: boolean;
     /** Start with animation paused. */
     noanim?: boolean;
-    /** OMG4 content rotation in degrees (default [270, 0, 0]). */
-    omg4RotationDeg?: [number, number, number];
+    /** SOGST content rotation in degrees (default [270, 0, 0]). */
+    sogstRotationDeg?: [number, number, number];
     /** 4DGS playback loop style (default 'loop'). */
     loopMode?: 'loop' | 'pingpong';
     /**
@@ -88,13 +89,13 @@ const createEmbedViewer = async (options: EmbedViewerOptions): Promise<EmbedView
     // eager `contents` prefetch for them would download the file twice.
     const embedFilename = options.contentFilename ?? new URL(options.contentUrl, location.href).pathname.split('/').pop() ?? '';
     const embedLower = embedFilename.toLowerCase();
-    const embedIs4dgs = embedLower.endsWith('.omg4') || embedLower.endsWith('.queen');
+    const embedIs4dgs = isSogstFilename(embedLower) || embedLower.endsWith('.queen');
 
     const config: Config = {
         contentUrl: options.contentUrl,
         contentFilename: options.contentFilename,
         contents: embedIs4dgs ? undefined : fetch(options.contentUrl),
-        omg4RotationDeg: options.omg4RotationDeg,
+        sogstRotationDeg: options.sogstRotationDeg,
         animLoopMode: options.loopMode,
         noui: true,
         noanim: !!options.noanim,
@@ -136,7 +137,7 @@ const createEmbedViewer = async (options: EmbedViewerOptions): Promise<EmbedView
     const progressCallback = (progress: number) => {
         state.progress = progress;
     };
-    const is4dgs = lowerFilename.endsWith('.omg4') || lowerFilename.endsWith('.queen');
+    const is4dgs = isSogstFilename(lowerFilename) || lowerFilename.endsWith('.queen');
     const gsplatLoad = is4dgs ?
         load4dgs(app, config, global, progressCallback) :
         load3dgs(app, config, progressCallback);
