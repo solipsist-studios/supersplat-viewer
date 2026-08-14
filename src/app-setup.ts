@@ -13,7 +13,6 @@ import {
     type AppBase
 } from 'playcanvas';
 
-import { QueenSplatAnimation } from './animation/queen-splat-animation';
 import { SogstSplatAnimation } from './animation/sogst-splat-animation';
 import { App } from './app';
 import { fullFileCacheKey, fullFileKeyPrefix } from './core/fetch-splat-anim-buffer';
@@ -24,7 +23,6 @@ import { setupSplatAnim } from './core/load-splat-anim';
 import { observe } from './core/observe';
 import { idbDeleteByPrefix, idbGetBuffer, idbSetBuffer } from './core/sogst-cache';
 import { attachSogstMotion, syncSogstMotionRange, uploadSogstMotionRows } from './core/sogst-motion';
-import { streamQueenData } from './core/stream-queen';
 import { streamSogst } from './core/stream-sogst';
 import { isSogstFilename } from './parsers/sogst';
 import type { Config, Global, State } from './types';
@@ -310,26 +308,59 @@ const loadSogstGsplat = async (app: AppBase, config: Config, global: Global, pro
     return loadSogstStreaming(app, config, global, cacheKey, progressCallback);
 };
 
-// Load and animate a .queen (QUEEN-encoded 4D Gaussian Splat) file.
-// Waits until initialFrames have been buffered before resolving, so playback
-// starts immediately without stutter; remaining frames stream in the background.
-const loadQueenGsplat = async (app: AppBase, config: Config, global: Global, progressCallback: (progress: number) => void) => {
-    const data = await streamQueenData(config.contentUrl, progressCallback);
-    data.loadFrame(0);
-    const resource = new GSplatResource(app.graphicsDevice, data.gsplatData);
-    const animation = new QueenSplatAnimation(data, resource);
-    return setupSplatAnim(app, config, global, resource, animation);
-};
-
 // Load a static 3DGS scene (PLY / LOD / meta.json etc.)
 const load3dgs = (app: AppBase, config: Config, progressCallback: (progress: number) => void) => loadGsplat(app, config, progressCallback);
 
-// Load and animate a 4DGS file, dispatching to the correct format handler.
-const load4dgs = (app: AppBase, config: Config, global: Global, progressCallback: (progress: number) => void): Promise<Entity> => {
-    const lowerName = (config.contentFilename ?? new URL(config.contentUrl, location.href).pathname.split('/').pop() ?? '').toLowerCase();
-    if (isSogstFilename(lowerName))   return loadSogstGsplat(app, config, global, progressCallback);
-    if (lowerName.endsWith('.queen')) return loadQueenGsplat(app, config, global, progressCallback);
-    return Promise.reject(new Error(`Unsupported 4DGS format: ${lowerName}`));
+// Extensions the static 3DGS path understands, mirroring the parser table in
+// the engine's GSplatHandler ({ply, sog, json} plus lod-meta.json). Variants
+// need no entries of their own: `.compressed.ply` is a `.ply`, and both
+// `meta.json` and `.lod-meta.json` are `.json`. Anything absent here reaches
+// the handler's `?? ply` fallback, which is the fail-slow path this list
+// exists to close — keep the two in step when bumping the engine.
+const STATIC_3DGS_EXTENSIONS = ['.ply', '.sog', '.json'];
+
+// The scene filename, which is what every format decision is made on.
+// `contentFilename` exists because a blob: URL carries no name of its own.
+const contentFilename = (config: Config) => (
+    config.contentFilename ?? new URL(config.contentUrl, location.href).pathname.split('/').pop() ?? ''
+).toLowerCase();
+
+// True for formats driven by SplatAnimationBase rather than by the engine's
+// gsplat asset handler.
+const is4dgsFilename = (filename: string) => isSogstFilename(filename.toLowerCase());
+
+// True for content the eager `contents` prefetch is actually useful for —
+// only the static 3DGS handler reads it. Deciding this as "not 4DGS" would
+// prefetch unrecognised extensions too, downloading a whole file that
+// loadContent then rejects unread.
+const isStatic3dgsFilename = (filename: string) => {
+    const lower = filename.toLowerCase();
+    const dot = lower.lastIndexOf('.');
+    return dot <= 0 || STATIC_3DGS_EXTENSIONS.includes(lower.slice(dot));
+};
+
+// Dispatch on the filename, rejecting an unrecognised extension here rather
+// than letting it reach the gsplat asset handler. That handler downloads the
+// whole file before the PLY parser rejects its header, so a mistyped or
+// retired extension costs a full transfer — 310MB for one of the retired
+// .omg4 scenes — to reach a conclusion the filename already supported. An
+// extensionless URL carries no evidence either way and keeps the historical
+// 3DGS path rather than being rejected on a guess.
+const loadContent = (app: AppBase, config: Config, global: Global, progressCallback: (progress: number) => void): Promise<Entity> => {
+    const filename = contentFilename(config);
+    if (is4dgsFilename(filename)) {
+        return loadSogstGsplat(app, config, global, progressCallback);
+    }
+    // Same predicate the prefetch uses, so the two cannot disagree about
+    // which files are worth fetching.
+    if (isStatic3dgsFilename(filename)) {
+        return load3dgs(app, config, progressCallback);
+    }
+    const ext = filename.slice(filename.lastIndexOf('.'));
+    return Promise.reject(new Error(
+        `Unsupported content format '${ext}' (${filename}). ` +
+        'Supported: .ply, .compressed.ply, .sog, .json (meta.json / lod-meta.json), .sogst'
+    ));
 };
 
 const loadSkybox = (app: AppBase, url: string) => {
@@ -511,4 +542,4 @@ const createViewerState = (events: EventHandler): State => {
     });
 };
 
-export { createApp, initCanvas, createViewerState, load3dgs, load4dgs, loadSkybox };
+export { createApp, initCanvas, createViewerState, isStatic3dgsFilename, loadContent, loadSkybox };

@@ -24,7 +24,7 @@ The app supports a number of URL parameters (these are subject to change):
 | Parameter | Description | Default |
 | --------- | ----------- | ------- |
 | `settings` | URL of the `settings.json` file | `./settings.json` |
-| `content` | URL of the scene file (`.ply`, `.sog`, `.compressed.ply`, `.meta.json`, `.lod-meta.json`) | `./scene.compressed.ply` |
+| `content` | URL of the scene file (`.ply`, `.compressed.ply`, `.sog`, `.json` incl. `meta.json` / `lod-meta.json`, `.sogst`). An unrecognised extension is rejected before the file is fetched; a URL with no extension is treated as static 3DGS. | `./scene.compressed.ply` |
 | `skybox` | URL of an equirectangular skybox image | |
 | `poster` | URL of an image to show while loading | |
 | `collision` | URL of a collision asset (`.glb` mesh, or voxel data). `voxel` is accepted as an alias. | |
