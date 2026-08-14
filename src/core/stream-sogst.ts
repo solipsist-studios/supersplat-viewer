@@ -1,10 +1,10 @@
 import type { AppBase } from 'playcanvas';
 
 import {
-    V3Decoder, enumerateV3Groups, groupFileList, groupBaseNames, loadSogstV3, parseV3Meta, SogstV3Data
-} from './load-sogst-v3';
+    SogstDecoder, enumerateSogstGroups, groupFileList, groupBaseNames, loadSogst, parseSogstMeta, SogstData
+} from './load-sogst';
 
-// Progressive loader for streamed v3 archives. The encoder writes the ZIP
+// Progressive loader for streamed archives. The encoder writes the ZIP
 // in play order — meta.json, shN_centroids, persistent/*, seg_000/*, ... —
 // with every entry stored (uncompressed), so entries can be parsed straight
 // off the network stream from their local file headers. Groups decode as
@@ -15,7 +15,7 @@ import {
 
 const ZIP_LOCAL_MAGIC = 0x04034b50;
 
-type V3StreamCallbacks = {
+type SogstStreamCallbacks = {
     /**
      * Download progress in [0, 100], measured against the reveal point
      * (meta.streams.reveal_bytes), not the whole file.
@@ -40,17 +40,17 @@ type V3StreamCallbacks = {
     onShReady?: (range: [number, number]) => void;
 };
 
-type V3Stream = {
+type SogstStream = {
     /** Resolves with playable data once the reveal set is decoded. */
-    reveal: Promise<SogstV3Data>;
+    reveal: Promise<SogstData>;
     /** Resolves with the complete archive bytes (for caching). */
     complete: Promise<ArrayBuffer>;
 };
 
-const streamSogstV3 = (app: AppBase, url: string, callbacks: V3StreamCallbacks): V3Stream => {
-    let revealResolve: (data: SogstV3Data) => void;
+const streamSogst = (app: AppBase, url: string, callbacks: SogstStreamCallbacks): SogstStream => {
+    let revealResolve: (data: SogstData) => void;
     let revealReject: (err: Error) => void;
-    const reveal = new Promise<SogstV3Data>((resolve, reject) => {
+    const reveal = new Promise<SogstData>((resolve, reject) => {
         revealResolve = resolve;
         revealReject = reject;
     });
@@ -102,7 +102,7 @@ const streamSogstV3 = (app: AppBase, url: string, callbacks: V3StreamCallbacks):
             // instead: this is a malformed archive, not a stream underrun.
             const flags = view.getUint16(6, true);
             if ((flags & 0x8) !== 0) {
-                throw new Error('sogst v3: archive uses ZIP data descriptors, which the format forbids');
+                throw new Error('sogst: archive uses ZIP data descriptors, which the format forbids');
             }
             const compressedSize = view.getUint32(18, true);
             const nameLength = view.getUint16(26, true);
@@ -120,13 +120,13 @@ const streamSogstV3 = (app: AppBase, url: string, callbacks: V3StreamCallbacks):
         // -- group-decode driver -------------------------------------------
         let meta: any = null;
         let monolithic = false;
-        let decoder: V3Decoder | null = null;
-        let groups: ReturnType<typeof enumerateV3Groups> = [];
+        let decoder: SogstDecoder | null = null;
+        let groups: ReturnType<typeof enumerateSogstGroups> = [];
         let neededNames: string[] = [];
         let groupIdx = 0;
         let pending = new Map<string, Uint8Array>();
         let revealGroupIdx = 0;      // last group index needed before reveal
-        let data: SogstV3Data | null = null;
+        let data: SogstData | null = null;
         let revealed = false;
         let revealPending = false;      // reveal set decoded, awaiting buffer
         let progressWatermark = -1;
@@ -229,7 +229,7 @@ const streamSogstV3 = (app: AppBase, url: string, callbacks: V3StreamCallbacks):
             decodeChain.catch(() => { });
         };
 
-        const processGroup = async (idx: number, group: ReturnType<typeof enumerateV3Groups>[number], files: Map<string, Uint8Array>) => {
+        const processGroup = async (idx: number, group: ReturnType<typeof enumerateSogstGroups>[number], files: Map<string, Uint8Array>) => {
             await decoder!.decodeGroup(group, files);
             if (idx >= revealGroupIdx) {
                 decodedThrough = loadedThroughAfter(idx);
@@ -261,15 +261,15 @@ const streamSogstV3 = (app: AppBase, url: string, callbacks: V3StreamCallbacks):
 
         const handleEntry = (name: string, entryData: Uint8Array) => {
             if (name === 'meta.json') {
-                meta = parseV3Meta(entryData.slice());
+                meta = parseSogstMeta(entryData.slice());
                 if (!meta.streams) {
                     // monolithic archive: keep downloading and decode the
                     // whole buffer once it completes
                     monolithic = true;
                     return;
                 }
-                decoder = new V3Decoder(app, meta);
-                groups = enumerateV3Groups(meta);
+                decoder = new SogstDecoder(app, meta);
+                groups = enumerateSogstGroups(meta);
                 // sh-deferred archives ship labels behind all geometry, so
                 // geometry groups complete on the base texture set alone
                 neededNames = meta.streams.sh_deferred ? [...groupBaseNames(meta)] : groupFileList(meta);
@@ -279,7 +279,7 @@ const streamSogstV3 = (app: AppBase, url: string, callbacks: V3StreamCallbacks):
                 return;
             }
             if (!meta) {
-                throw new Error(`sogst v3: unexpected entry ${name} before meta.json`);
+                throw new Error(`sogst: unexpected entry ${name} before meta.json`);
             }
             if (monolithic) {
                 return;
@@ -375,7 +375,7 @@ const streamSogstV3 = (app: AppBase, url: string, callbacks: V3StreamCallbacks):
             const buffer = bytes.byteLength === received ? bytes.buffer : bytes.slice(0, received).buffer;
 
             if (monolithic) {
-                const decoded = await loadSogstV3(app, buffer,
+                const decoded = await loadSogst(app, buffer,
                     p => callbacks.onProgress(Math.min(100, Math.round(70 + p * 0.3))));
                 revealed = true;
                 callbacks.onProgress(100);
@@ -399,7 +399,7 @@ const streamSogstV3 = (app: AppBase, url: string, callbacks: V3StreamCallbacks):
                 doReveal();
             }
             if (!revealed) {
-                throw new Error('sogst v3: stream ended before the reveal set was decoded');
+                throw new Error('sogst: stream ended before the reveal set was decoded');
             }
             if (data) {
                 callbacks.onReady(null, Infinity);
@@ -420,4 +420,4 @@ const streamSogstV3 = (app: AppBase, url: string, callbacks: V3StreamCallbacks):
     return { reveal, complete };
 };
 
-export { streamSogstV3 };
+export { streamSogst };

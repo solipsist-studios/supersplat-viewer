@@ -17,7 +17,7 @@ import { initXr } from './xr';
 
 type EmbedViewerOptions = {
     canvas: HTMLCanvasElement;
-    /** URL of the scene file (.ply/.sog/.compressed.ply/.sogst/.omg4/.queen/meta.json). */
+    /** URL of the scene file (.ply/.sog/.compressed.ply/.sogst/.queen/meta.json). */
     contentUrl: string;
     /** Original filename when contentUrl has no extension (e.g. blob URLs). */
     contentFilename?: string;

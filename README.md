@@ -228,26 +228,24 @@ The viewer supports animated 4D Gaussian Splat scenes in the `.sogst` format.
 > **Previously `.omg4`.** The format was named after the
 > [OMG4](https://github.com/MinShirley/OMG4) training pipeline whose compression
 > stage the encoder originally consumed, but nothing in the container comes from
-> that work: the representation is spacetime-shaped, the v3 container is
-> PlayCanvas SOG, and the segment streaming is this project's. Hence `.sogst` —
-> SOG + spacetime. **The `.omg4` extension and the `OMG4` file magic are read
-> indefinitely**, so already-deployed assets keep working with no re-baking.
+> that work: the representation is spacetime-shaped, the container is PlayCanvas
+> SOG, and the segment streaming is this project's. Hence `.sogst` — SOG +
+> spacetime. The development-era `.omg4` containers (a flat binary format
+> carrying the ASCII magic `OMG4`) were **never released and are no longer
+> read**; the container was renumbered from 3 to 1 when they were removed.
 
 ### What is `.sogst`?
 
-`.sogst` is a web-friendly container for 4D (space-time) Gaussians. It has
-three versions:
+`.sogst` is a web-friendly container for 4D (space-time) Gaussians: a ZIP
+archive of lossless-WebP attribute textures plus a `meta.json` manifest, which
+must be the first entry. `meta.version` is `1` and `meta.format` is `"sogst"`;
+both are required, and the viewer rejects anything else.
 
-| Version | Container | Notes |
-|---|---|---|
-| 1 | flat binary | legacy; baked per-frame attributes, still playable |
-| 2 | flat binary | compact temporal splats, GPU-evaluated motion (documented below) |
-| 3 | SOG (ZIP) archive | SOG-compressed temporal splats, segment-streamed |
-
-**Version 2** stores each Gaussian once — position, sliced 3D covariance,
-colour, plus its temporal parameters (linear velocity, temporal centre,
-temporal std-dev) — and the viewer evaluates motion and temporal fade **on the
-GPU** each frame:
+Static attributes follow the PlayCanvas **SOG v2** conventions byte for byte, so
+an existing SOG decoder reconstructs them unmodified. The spacetime extension
+stores each Gaussian once — position, sliced 3D covariance, colour, plus its
+temporal parameters (linear velocity, temporal centre, temporal std-dev) — and
+the viewer evaluates motion and temporal fade **on the GPU** each frame:
 
 ```
 position(t) = position + velocity · (t − t_center)
@@ -258,11 +256,15 @@ Playback is continuous in time (no baked frames, no per-frame texture
 uploads) and a full 10-second Neural-3D-Video scene fits in ~36 MB
 (~11 MB without view-dependent SH).
 
-**Version 3** keeps the same temporal model but packs the static attributes as
-a PlayCanvas SOG (ZIP) archive of lossless-WebP textures, split into time
-segments so playback can begin before the whole clip has arrived. Its
-`meta.json` carries `"version": 3` and `"format": "sogst"`; archives baked
-before the rename omit the `format` key and are read as `.sogst` regardless.
+Motion may also carry an optional second-order term (`motion.degree == 2`),
+where `position(t) = position + velocity · dt + accel · dt²`. Note that `accel`
+is the raw `dt²` coefficient, **not** half-acceleration, and that the temporal
+factor above is deliberately **unnormalised** — there is no `1/√(2πσ²)` term.
+
+Splats are ordered `[ persistent | segment 0 | segment 1 | … ]` and bucketed by
+temporal centre, so a player can cull by time and the archive can be streamed:
+playback begins once the persistent group and the first segment have arrived,
+and the playhead holds at the decoded boundary if the network falls behind.
 
 ### Converting an OMG4 `.xz` checkpoint
 
@@ -283,46 +285,18 @@ camera animation.  The user can orbit/fly around the scene while the animation
 plays. The clip time range comes from the file header
 (`--time_min` / `--time_max` at export time).
 
-### File-size guidance (version 2)
+### File-size guidance
 
 | Gaussians (N) | Without SH | With 3-band SH |
 |---------------|------------|----------------|
 | 100 000       | ~7.6 MB    | ~26 MB         |
 | 150 000       | ~11 MB     | ~38 MB         |
 
-File size is independent of clip duration. Standard gzip compression
-(e.g. `gzip -k scene.sogst`) and serving with `Content-Encoding: gzip`
-reduces the transfer size further.
+File size is independent of clip duration. The WebP payloads are already
+compressed, so the archive does not benefit meaningfully from transport gzip.
 
-### Binary format specification (version 2)
+### Format specification
 
-```
-Header (32 bytes, all values little-endian):
-  uint32  magic = 0x34474D4F  ("OMG4" — retained from the format's original name)
-  uint32  version = 2
-  uint32  numSplats (N)
-  uint32  flags               — bit 0: file includes 45 f_rest SH arrays
-  float32 timeMin             — clip start (seconds)
-  float32 timeMax             — clip end (seconds)
-  float32 fps                 — advisory only (UI)
-  uint32  reserved
-
-Data: 19 SoA float32[N] arrays, in order:
-  x  y  z                     — position at t = t_center
-  rot_0  rot_1  rot_2  rot_3  — quaternion (w, x, y, z) of sliced 3D covariance
-  scale_0  scale_1  scale_2   — log-space scales (renderer applies exp)
-  opacity                     — logit-space peak opacity (renderer applies sigmoid)
-  f_dc_0  f_dc_1  f_dc_2      — raw SH DC coefficients
-                                (renderer computes 0.5 + val × SH_C0)
-  vx  vy  vz                  — linear velocity (scene units / second)
-  t_center                    — temporal centre (seconds)
-  t_sigma                     — temporal std-dev (seconds)
-
-If flags bit 0 is set, 45 further float32[N] arrays follow: f_rest_0..44,
-standard 3-band spherical harmonics (PLY channel-major order), baked from
-the OMG4 view MLP at each splat's temporal centre.
-```
-
-The legacy version 1 layout (28-byte header, baked per-frame AoS records)
-is documented in `src/parsers/sogst.ts` and remains playable via the
-streaming path.
+The container is specified separately and normatively; this README is a
+summary. `src/parsers/sogst.ts` documents what the viewer relies on, and
+`src/core/load-sogst.ts` is the decoder.

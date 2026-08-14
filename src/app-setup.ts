@@ -15,21 +15,18 @@ import {
 
 import { QueenSplatAnimation } from './animation/queen-splat-animation';
 import { SogstSplatAnimation } from './animation/sogst-splat-animation';
-import { SogstV1SplatAnimation } from './animation/sogst-v1-splat-animation';
 import { App } from './app';
-import { fetchSplatAnimBuffer, fullFileCacheKey, fullFileKeyPrefix } from './core/fetch-splat-anim-buffer';
+import { fullFileCacheKey, fullFileKeyPrefix } from './core/fetch-splat-anim-buffer';
 import { updateGsplatRangeData, updateGsplatSHRange, uploadGsplatRows } from './core/gsplat-range-sync';
-import { isSogstV3, loadSogstV3, setAabbFromV3Meta } from './core/load-sogst-v3';
+import { loadSogst, setAabbFromMeta } from './core/load-sogst';
+import type { SogstData } from './core/load-sogst';
 import { setupSplatAnim } from './core/load-splat-anim';
 import { observe } from './core/observe';
 import { idbDeleteByPrefix, idbGetBuffer, idbSetBuffer } from './core/sogst-cache';
-import { attachSogstMotion, syncSogstMotion, syncSogstMotionRange, uploadSogstMotionRows } from './core/sogst-motion';
+import { attachSogstMotion, syncSogstMotionRange, uploadSogstMotionRows } from './core/sogst-motion';
 import { streamQueenData } from './core/stream-queen';
-import { streamSogstV1Data } from './core/stream-sogst-v1';
-import { streamSogstV2 } from './core/stream-sogst-v2';
-import { streamSogstV3 } from './core/stream-sogst-v3';
-import { isSogstFilename, parseSogstV2, readSogstVersion, readSogstV2Header } from './parsers/sogst';
-import type { SogstData } from './parsers/sogst';
+import { streamSogst } from './core/stream-sogst';
+import { isSogstFilename } from './parsers/sogst';
 import type { Config, Global, State } from './types';
 
 // Shared application bootstrap used by both the standalone web app (index.ts)
@@ -73,35 +70,7 @@ const loadGsplat = async (app: AppBase, config: Config, progressCallback: (progr
     });
 };
 
-// Fetch the first bytes of a .sogst file (enough for any header variant).
-// Uses a byte-range request, but reads through the stream reader and cancels
-// so a server that ignores Range headers doesn't trigger a full download.
-const fetchSogstHeaderBytes = async (url: string, byteCount: number): Promise<ArrayBuffer> => {
-    const response = await fetch(url, { headers: { range: `bytes=0-${byteCount - 1}` } });
-    if (!response.ok) {
-        throw new Error(`Failed to fetch ${url}: ${response.status} ${response.statusText}`);
-    }
-    const reader = response.body?.getReader();
-    if (!reader) {
-        return response.arrayBuffer();
-    }
-    const out = new Uint8Array(byteCount);
-    let filled = 0;
-    while (filled < byteCount) {
-        // eslint-disable-next-line no-await-in-loop
-        const { done, value } = await reader.read();
-        if (done) {
-            break;
-        }
-        const take = Math.min(byteCount - filled, value.length);
-        out.set(value.subarray(0, take), filled);
-        filled += take;
-    }
-    reader.cancel().catch(() => {});
-    return out.buffer;
-};
-
-// Create resource + entity + animation for parsed v2 data (shared by the
+// Create resource + entity + animation for decoded archive data (shared by
 // full-buffer and streaming paths).
 const setupSogst = (app: AppBase, config: Config, global: Global, data: SogstData) => {
     const resource = new GSplatResource(app.graphicsDevice, data.gsplatData);
@@ -116,98 +85,12 @@ const setupSogst = (app: AppBase, config: Config, global: Global, data: SogstDat
     return { resource, entity };
 };
 
-// Progressive load of a streamable (tiled) v2 file: create the resource over
-// a prefilled buffer, start rendering after the first ~10% of splats, and
-// keep refreshing the GPU data as tiles arrive. The completed buffer is
-// cached in standard layout, so revisits take the instant cache path.
-const loadSogstV2Streaming = async (
-    app: AppBase,
-    config: Config,
-    global: Global,
-    header: ReturnType<typeof readSogstV2Header>,
-    cacheKey: string,
-    progressCallback: (progress: number) => void
-) => {
-    let resource: GSplatResource | null = null;
-    let data: SogstData | null = null;
-    let syncCount = 0;
-
-    // Push everything received so far to the GPU. The engine update methods
-    // read straight through the gsplatData views over the streaming buffer;
-    // unready splats hold prefilled invisible values.
-    const sync = (readySplats: number, done: boolean) => {
-        if (!resource || !data) {
-            return;
-        }
-        const r = resource as any;
-        r.updateColorData(data.gsplatData);
-        r.updateTransformData(data.gsplatData);
-        // SH repack is the most expensive — half cadence, but always at the end
-        if (header.hasSH && (done || syncCount % 2 === 0)) {
-            r.updateSHData(data.gsplatData);
-        }
-        syncCount++;
-
-        syncSogstMotion(resource, data, readySplats);
-
-        // Refresh depth-sorter centers for the splats received so far.
-        const centers = r.centers as Float32Array | undefined;
-        if (centers) {
-            const x = data.gsplatData.getProp('x') as Float32Array;
-            const y = data.gsplatData.getProp('y') as Float32Array;
-            const z = data.gsplatData.getProp('z') as Float32Array;
-            for (let i = 0; i < readySplats; i++) {
-                centers[i * 3 + 0] = x[i];
-                centers[i * 3 + 1] = y[i];
-                centers[i * 3 + 2] = z[i];
-            }
-            r.centersVersion++;
-        }
-
-        app.renderNextFrame = true;
-    };
-
-    const stream = streamSogstV2(config.contentUrl, header, {
-        onProgress: progressCallback,
-        onReady: sync
-    });
-
-    data = stream.data;
-    resource = new GSplatResource(app.graphicsDevice, data.gsplatData);
-    attachSogstMotion(resource, data);
-
-    await stream.firstBatch;
-
-    // Importance-ordered tiles span the scene early, so bounds computed from
-    // the first batch are representative (prefilled splats add the origin).
-    data.gsplatData.calcAabb((resource as any).aabb);
-
-    // Cache the completed standard-layout buffer in the background.
-    stream.complete
-    .then((buffer) => {
-        idbSetBuffer(cacheKey, buffer)
-        .then(() => idbDeleteByPrefix(fullFileKeyPrefix(config.contentUrl), cacheKey))
-        .catch(() => {});
-    })
-    .catch((err: Error) => {
-        console.warn('SOGST stream did not complete; partial scene retained:', err);
-    });
-
-    const animation = new SogstSplatAnimation(data);
-    const entity = setupSplatAnim(app, config, global, resource, animation, {
-        rotationEulerDeg: config.sogstRotationDeg ?? [270, 0, 0],
-        alphaClip: 1 / 1024
-    });
-    animation.bind(entity, data.cov2dScale);
-    return entity;
-};
-
-// Progressive load of a streamed v3 archive: reveal the scene once the
+// Progressive load of a streamed archive: reveal the scene once the
 // persistent group and the first temporal segment are decoded, then keep
 // refreshing GPU data as later segments land (playback holds at the loaded
 // boundary via data.loadedThrough if the network falls behind). The
 // complete archive is cached for instant revisits.
-const loadSogstV3Streaming = async (
+const loadSogstStreaming = async (
     app: AppBase,
     config: Config,
     global: Global,
@@ -215,7 +98,7 @@ const loadSogstV3Streaming = async (
     progressCallback: (progress: number) => void
 ) => {
     let resource: GSplatResource | null = null;
-    let data: Awaited<ReturnType<typeof loadSogstV3>> | null = null;
+    let data: Awaited<ReturnType<typeof loadSogst>> | null = null;
 
     // GPU repack runs in small chunks against a per-slice time budget —
     // chunk counts alone can't bound task length on weak devices (the SH
@@ -334,7 +217,7 @@ const loadSogstV3Streaming = async (
         }
     };
 
-    const stream = streamSogstV3(app, config.contentUrl, {
+    const stream = streamSogst(app, config.contentUrl, {
         onProgress: progressCallback,
         onReady: sync,
         onShReady: syncSh
@@ -346,7 +229,7 @@ const loadSogstV3Streaming = async (
 
     // exact bounds from the global meta range — the arrays are still
     // partially filled, so computed bounds would understate the scene
-    setAabbFromV3Meta(data.meta, (resource as any).aabb);
+    setAabbFromMeta(data.meta, (resource as any).aabb);
 
     // catch up on any groups that decoded while the entity was being set up
     // (the reveal set itself was picked up at resource creation)
@@ -360,64 +243,23 @@ const loadSogstV3Streaming = async (
         .catch(() => {});
     })
     .catch((err: Error) => {
-        console.warn('SOGST v3 stream did not complete; partial scene retained:', err);
+        console.warn('SOGST stream did not complete; partial scene retained:', err);
     });
 
     return setup.entity;
 };
 
-// Load and animate a .sogst (SOG spacetime 4DGS) file — either extension.
+// Load and animate a .sogst (SOG spacetime 4DGS) archive.
 const loadSogstGsplat = async (app: AppBase, config: Config, global: Global, progressCallback: (progress: number) => void) => {
-    const headerBytes = await fetchSogstHeaderBytes(config.contentUrl, 40);
-
-    if (isSogstV3(headerBytes)) {
-        // v3: SOG-compressed ZIP container (webp textures + codebooks),
-        // decoded through the engine's SOG path and played through the
-        // whole v2 temporal setup unchanged.
-        const cacheKey = await fullFileCacheKey(config.contentUrl);
-        const cached = await idbGetBuffer(cacheKey);
-        if (cached) {
-            // complete archive available locally — decode straight through
-            console.debug('SOGST v3 full-file cache hit (idb)', cacheKey);
-            const data = await loadSogstV3(app, cached, progressCallback);
-            return setupSogst(app, config, global, data).entity;
-        }
-        return loadSogstV3Streaming(app, config, global, cacheKey, progressCallback);
+    const cacheKey = await fullFileCacheKey(config.contentUrl);
+    const cached = await idbGetBuffer(cacheKey);
+    if (cached) {
+        // complete archive available locally — decode straight through
+        console.debug('SOGST full-file cache hit (idb)', cacheKey);
+        const data = await loadSogst(app, cached, progressCallback);
+        return setupSogst(app, config, global, data).entity;
     }
-
-    const version = readSogstVersion(headerBytes);
-
-    if (version >= 2) {
-        // v2: compact temporal format; motion and temporal fade are evaluated
-        // on the GPU from a single time uniform.
-        const header = readSogstV2Header(headerBytes);
-
-        if (header.tiled) {
-            // Streamable layout: serve from the durable cache when possible,
-            // otherwise render progressively while downloading.
-            const cacheKey = await fullFileCacheKey(config.contentUrl);
-            const cached = await idbGetBuffer(cacheKey);
-            if (cached) {
-                console.debug('SOGST full-file cache hit (idb)', cacheKey);
-                progressCallback(100);
-                return setupSogst(app, config, global, parseSogstV2(cached)).entity;
-            }
-            return loadSogstV2Streaming(app, config, global, header, cacheKey, progressCallback);
-        }
-
-        // Standard layout: full prefetch (with its own cache handling).
-        const buffer = await fetchSplatAnimBuffer(config.contentUrl, progressCallback);
-        return setupSogst(app, config, global, parseSogstV2(buffer)).entity;
-    }
-
-    // v1: legacy baked per-frame format, streamed in chunks.
-    const data = await streamSogstV1Data(config.contentUrl, progressCallback);
-    const resource = new GSplatResource(app.graphicsDevice, data.gsplatData);
-    const animation = new SogstV1SplatAnimation(data, resource);
-    return setupSplatAnim(app, config, global, resource, animation, {
-        rotationEulerDeg: config.sogstRotationDeg ?? [270, 0, 0],
-        alphaClip: 1 / 1024
-    });
+    return loadSogstStreaming(app, config, global, cacheKey, progressCallback);
 };
 
 // Load and animate a .queen (QUEEN-encoded 4D Gaussian Splat) file.

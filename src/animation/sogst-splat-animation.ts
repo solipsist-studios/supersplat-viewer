@@ -1,8 +1,8 @@
 import { Quat, Vec3, type Entity } from 'playcanvas';
 
 import { Playhead } from './playhead';
+import type { SogstData } from '../core/load-sogst';
 import { bindSogstModifier, setSogstParams } from '../core/sogst-motion';
-import type { SogstData } from '../parsers/sogst';
 import type { Global } from '../types';
 
 // Animation driver for .sogst v2 content. Unlike the per-frame formats there

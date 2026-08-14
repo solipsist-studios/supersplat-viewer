@@ -341,9 +341,11 @@ const initUI = (global: Global) => {
     });
 
     dom.sogstClearCache.addEventListener('click', async () => {
-        // The `-omg4-` names are what this cache was called before the format
-        // was renamed. A browser that visited an older build still holds them,
-        // and nothing else would ever reclaim that quota — so clear both.
+        // Only `supersplat-sogst-chunks` is still written. The rest are
+        // retired names — the Cache API store belonged to the deleted chunk
+        // streamer, and the `-omg4-` pair predates the rename. A browser that
+        // visited an older build still holds them and nothing else would ever
+        // reclaim that quota, so clear them all.
         if (typeof caches !== 'undefined') {
             await caches.delete('supersplat-sogst-v1');
             await caches.delete('supersplat-omg4-v1');

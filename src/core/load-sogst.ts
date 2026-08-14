@@ -9,27 +9,28 @@ import {
     type AppBase
 } from 'playcanvas';
 
+import { SOGST_META_FORMAT, SOGST_META_VERSION } from '../parsers/sogst';
 import type { SogstSegments } from '../parsers/sogst';
 
-// .sogst version 3: SOG-compressed temporal splats.
+// .sogst decoder: SOG-compressed temporal splats. See parsers/sogst.ts for
+// what the container is; this is how one is turned into playable data.
 //
-// The file is a ZIP archive (identified by the leading "PK\x03\x04" magic
-// instead of the OMG4 magic word) holding a meta.json plus lossless-webp
-// attribute textures. Static attributes follow the PlayCanvas SOG v2
-// conventions exactly — means_l/u (16-bit split, log-transformed), quats
-// (smallest-three), scales/sh0 (256-entry codebook indices, opacity in
-// sh0's alpha), optional VQ'd higher-order SH (shN_centroids/shN_labels) —
-// so the engine's own GSplatSogData decoder reconstructs them unmodified.
-// Two additional textures carry the temporal model:
+// The file is a ZIP archive (identified by the leading "PK\x03\x04" magic)
+// holding a meta.json plus lossless-webp attribute textures. Static
+// attributes follow the PlayCanvas SOG v2 conventions exactly — means_l/u
+// (16-bit split, log-transformed), quats (smallest-three), scales/sh0
+// (256-entry codebook indices, opacity in sh0's alpha), optional VQ'd
+// higher-order SH (shN_centroids/shN_labels) — so the engine's own
+// GSplatSogData decoder reconstructs them unmodified. Two additional
+// textures carry the temporal model:
 //
 //   motion_l/motion_u : per-axis 16-bit split of velocity, same
 //                       sign(x)*ln(1+|x|) transform + mins/maxs as means
 //   trbf              : R = index into trbf.center codebook (t_center, s),
 //                       G = index into trbf.sigma codebook (t_sigma, s)
 //
-// The decoded result is structurally identical to SogstData, so the whole
-// v2 playback path (motion textures, work-buffer modifier, animation
-// driver) is reused as-is.
+// `SogstData` below is the decoded result, and is what the whole playback
+// path (motion textures, work-buffer modifier, animation driver) consumes.
 
 const ZIP_LOCAL_MAGIC = 0x04034b50;      // "PK\x03\x04"
 const ZIP_EOCD_MAGIC = 0x06054b50;
@@ -59,7 +60,7 @@ const parseZipEntries = (buffer: ArrayBuffer): ZipEntry[] => {
         }
     }
     if (eocd < 0) {
-        throw new Error('sogst v3: invalid zip (no end-of-central-directory)');
+        throw new Error('sogst: invalid zip (no end-of-central-directory)');
     }
 
     const numFiles = u16(eocd + 8);
@@ -67,7 +68,7 @@ const parseZipEntries = (buffer: ArrayBuffer): ZipEntry[] => {
     const entries: ZipEntry[] = [];
     for (let i = 0; i < numFiles; i++) {
         if (u32(offset) !== ZIP_CDR_MAGIC) {
-            throw new Error('sogst v3: invalid zip (bad central-directory record)');
+            throw new Error('sogst: invalid zip (bad central-directory record)');
         }
         const compression = u16(offset + 10);
         const compressedSize = u32(offset + 20);
@@ -78,12 +79,12 @@ const parseZipEntries = (buffer: ArrayBuffer): ZipEntry[] => {
         const filename = new TextDecoder().decode(new Uint8Array(buffer, offset + 46, filenameLength));
 
         if (u32(lfhOffset) !== ZIP_LOCAL_MAGIC) {
-            throw new Error('sogst v3: invalid zip (bad local file header)');
+            throw new Error('sogst: invalid zip (bad local file header)');
         }
         const dataOffset = lfhOffset + 30 + u16(lfhOffset + 26) + u16(lfhOffset + 28);
 
         if (compression !== 0 && compression !== 8) {
-            throw new Error(`sogst v3: unsupported zip compression method ${compression}`);
+            throw new Error(`sogst: unsupported zip compression method ${compression}`);
         }
         entries.push({
             filename,
@@ -111,7 +112,7 @@ const decodeTexture = async (app: AppBase, bytes: Uint8Array, name: string): Pro
         colorSpaceConversion: 'none'
     });
     const texture = new Texture(app.graphicsDevice, {
-        name: `sogstv3-${name}`,
+        name: `sogst-${name}`,
         width: bitmap.width,
         height: bitmap.height,
         format: PIXELFORMAT_RGBA8,
@@ -230,7 +231,7 @@ class WebpTexelWorker {
 // Structural twin of SogstData (parsers/sogst.ts): the v2 setup path —
 // GSplatResource creation, attachSogstMotion, SogstSplatAnimation — is
 // typed against that shape and works on this unchanged.
-class SogstV3Data {
+class SogstData {
     // Temporal segment table for per-segment culling (see parsers/sogst.ts).
     segments?: SogstSegments;
 
@@ -298,8 +299,8 @@ class SogstV3Data {
     }
 }
 
-// True if the buffer starts with the ZIP local-file magic (v3 container).
-const isSogstV3 = (buffer: ArrayBuffer): boolean => {
+// True if the buffer starts with the ZIP local-file magic (the container is a ZIP).
+const isSogstArchive = (buffer: ArrayBuffer): boolean => {
     return buffer.byteLength >= 4 && new DataView(buffer).getUint32(0, true) === ZIP_LOCAL_MAGIC;
 };
 
@@ -329,7 +330,7 @@ const groupBaseNames = (meta: any): string[] => {
     return meta.accel ? [...GROUP_FILE_NAMES, 'accel_l.webp', 'accel_u.webp'] : GROUP_FILE_NAMES;
 };
 
-interface V3Group {
+interface SogstGroup {
     prefix: string | null;          // null => monolithic (bare names)
     range: [number, number];
     segIndex: number;               // index into meta.segments.list; -1 otherwise
@@ -337,11 +338,11 @@ interface V3Group {
 
 // Decode groups in play order: [whole file] for monolithic archives, or
 // [persistent, seg_000, seg_001, ...] (empty groups omitted) for streamed.
-const enumerateV3Groups = (meta: any): V3Group[] => {
+const enumerateSogstGroups = (meta: any): SogstGroup[] => {
     if (!meta.streams) {
         return [{ prefix: null, range: [0, meta.count], segIndex: -1 }];
     }
-    const groups: V3Group[] = [];
+    const groups: SogstGroup[] = [];
     if (meta.streams.persistent) {
         groups.push({ prefix: meta.streams.persistent, range: meta.segments.persistent, segIndex: -1 });
     }
@@ -363,7 +364,7 @@ const groupFileList = (meta: any): string[] => {
 // available — the same arrays back the GSplatData, so a streaming caller
 // can create the GPU resource after the first groups and refresh it as
 // later groups land. Also used for complete buffers (all groups at once).
-class V3Decoder {
+class SogstDecoder {
     private app: AppBase;
 
     readonly meta: any;
@@ -432,7 +433,7 @@ class V3Decoder {
             try {
                 return await this.texelWorker.decode(bytes);
             } catch (err) {
-                console.warn('sogst v3: worker texel decode unavailable, using GPU readback:', err);
+                console.warn('sogst: worker texel decode unavailable, using GPU readback:', err);
                 this.texelWorkerBroken = true;
             }
         }
@@ -443,7 +444,7 @@ class V3Decoder {
 
     // Decode one group's texture payloads (keyed by bare canonical name)
     // into [range[0], range[1]) of the full arrays.
-    async decodeGroup(group: V3Group, files: Map<string, Uint8Array>,
+    async decodeGroup(group: SogstGroup, files: Map<string, Uint8Array>,
         onProgress?: (frac: number) => void) {
         const [a, b] = group.range;
         const m = b - a;
@@ -453,7 +454,7 @@ class V3Decoder {
         const texFor = (name: string): Promise<TexelImage | Texture> => {
             const bytes = files.get(name);
             if (!bytes) {
-                throw new Error(`sogst v3: ${group.prefix ?? ''}/${name} missing from archive`);
+                throw new Error(`sogst: ${group.prefix ?? ''}/${name} missing from archive`);
             }
             return this.decodeTexels(bytes, `${group.prefix ?? 'mono'}-${name}`);
         };
@@ -464,7 +465,7 @@ class V3Decoder {
         const useSH = !!this.meta.shN && files.has('shN_labels.webp');
         if (useSH && !this.centroidsTexture) {
             if (!this.centroidsBytes) {
-                throw new Error('sogst v3: shN_centroids payload not provided before group decode');
+                throw new Error('sogst: shN_centroids payload not provided before group decode');
             }
             // decoded once, shared by every group
             this.centroidsTexture = await this.decodeTexels(this.centroidsBytes, 'shN_centroids');
@@ -617,7 +618,7 @@ class V3Decoder {
     // Decode a deferred SH labels payload for one group into the f_rest
     // arrays (sh-deferred archives ship all labels behind the geometry so
     // the scene can reveal DC-only and layer view dependence in later).
-    async decodeGroupSH(group: V3Group, labelsBytes: Uint8Array) {
+    async decodeGroupSH(group: SogstGroup, labelsBytes: Uint8Array) {
         const [a, b] = group.range;
         const m = b - a;
         if (m <= 0 || !this.meta.shN) {
@@ -625,7 +626,7 @@ class V3Decoder {
         }
         if (!this.centroidsTexture) {
             if (!this.centroidsBytes) {
-                throw new Error('sogst v3: shN_centroids payload must precede deferred labels');
+                throw new Error('sogst: shN_centroids payload must precede deferred labels');
             }
             this.centroidsTexture = await this.decodeTexels(this.centroidsBytes, 'shN_centroids');
         }
@@ -666,7 +667,7 @@ class V3Decoder {
         sog.destroy();
     }
 
-    buildData(): SogstV3Data {
+    buildData(): SogstData {
         const gsplatData = new GSplatData([{
             name: 'vertex',
             count: this.n,
@@ -677,7 +678,7 @@ class V3Decoder {
                 storage: this.arrays[name]
             }))
         }]);
-        return new SogstV3Data(this.meta, gsplatData, this.velocity, this.tCenter, this.tSigma, this.accel);
+        return new SogstData(this.meta, gsplatData, this.velocity, this.tCenter, this.tSigma, this.accel);
     }
 
     destroy() {
@@ -692,26 +693,26 @@ class V3Decoder {
     }
 }
 
-const parseV3Meta = (bytes: Uint8Array | undefined): any => {
+const parseSogstMeta = (bytes: Uint8Array | undefined): any => {
     if (!bytes) {
-        throw new Error('sogst v3: meta.json not found in archive');
+        throw new Error('sogst: meta.json not found in archive');
     }
     const meta = JSON.parse(new TextDecoder().decode(bytes));
-    if (meta.version !== 3) {
-        throw new Error(`sogst v3: expected meta version 3, got ${meta.version}`);
+    // Both keys are REQUIRED and anything else is rejected — including a
+    // missing `format`, which earlier development-era archives omitted.
+    if (meta.version !== SOGST_META_VERSION) {
+        throw new Error(`sogst: expected meta version ${SOGST_META_VERSION}, got ${meta.version}`);
     }
-    // `format` was added when the format was renamed to .sogst; v3 archives
-    // baked before that carry no such key, so absence means .sogst too.
-    if (meta.format !== undefined && meta.format !== 'sogst') {
-        throw new Error(`sogst v3: unsupported meta format '${meta.format}'`);
+    if (meta.format !== SOGST_META_FORMAT) {
+        throw new Error(`sogst: expected meta format '${SOGST_META_FORMAT}', got ${JSON.stringify(meta.format)}`);
     }
     return meta;
 };
 
-// Decode a complete v3 archive (either layout) into playable data. Used for
+// Decode a complete archive (either layout) into playable data. Used for
 // non-streamed archives and for cache hits on streamed ones.
-const loadSogstV3 = async (app: AppBase, buffer: ArrayBuffer,
-    onProgress?: (progress: number) => void): Promise<SogstV3Data> => {
+const loadSogst = async (app: AppBase, buffer: ArrayBuffer,
+    onProgress?: (progress: number) => void): Promise<SogstData> => {
     const report = (value: number) => onProgress?.(Math.min(100, Math.round(value)));
 
     const entries = parseZipEntries(buffer);
@@ -721,14 +722,14 @@ const loadSogstV3 = async (app: AppBase, buffer: ArrayBuffer,
         files.set(entry.filename, entry.deflated ? await inflateRaw(entry.data) : entry.data);
     }
 
-    const meta = parseV3Meta(files.get('meta.json'));
-    const decoder = new V3Decoder(app, meta);
+    const meta = parseSogstMeta(files.get('meta.json'));
+    const decoder = new SogstDecoder(app, meta);
     if (meta.shN) {
         const centroidsName = meta.streams ? 'shN_centroids.webp' : meta.shN.files[0];
         decoder.setCentroids(files.get(centroidsName)!);
     }
 
-    const groups = enumerateV3Groups(meta);
+    const groups = enumerateSogstGroups(meta);
     const names = groupFileList(meta);
     let done = 0;
     for (const group of groups) {
@@ -756,7 +757,7 @@ const loadSogstV3 = async (app: AppBase, buffer: ArrayBuffer,
 // streaming load the attribute arrays are only partially filled, so bounds
 // computed from them would understate the scene. The mins/maxs live in the
 // SOG log-transformed space; invert with sign(v) * (e^|v| - 1).
-const setAabbFromV3Meta = (meta: any, aabb: any) => {
+const setAabbFromMeta = (meta: any, aabb: any) => {
     const mins = meta.means.mins as number[];
     const maxs = meta.means.maxs as number[];
     const map = (v: number) => Math.sign(v) * (Math.exp(Math.abs(v)) - 1);
@@ -773,7 +774,7 @@ const setAabbFromV3Meta = (meta: any, aabb: any) => {
 };
 
 export {
-    isSogstV3, loadSogstV3, SogstV3Data,
-    V3Decoder, enumerateV3Groups, groupFileList, groupBaseNames, parseV3Meta, setAabbFromV3Meta,
+    isSogstArchive, loadSogst, SogstData,
+    SogstDecoder, enumerateSogstGroups, groupFileList, groupBaseNames, parseSogstMeta, setAabbFromMeta,
     GROUP_FILE_NAMES
 };

@@ -75,7 +75,7 @@
             const skyboxUrl = url.searchParams.get('skybox');
             const collisionUrl = url.searchParams.get('collision') ?? url.searchParams.get('voxel');
             const settingsUrl = url.searchParams.get('settings');
-            const contentUrl = url.searchParams.has('content') ? url.searchParams.get('content') : './coffee_martini.omg4';
+            const contentUrl = url.searchParams.has('content') ? url.searchParams.get('content') : './coffee_martini.sogst';
             const sogstRotationDeg = parseRotationParam(url.searchParams.get('sogstrot'), [270, 0, 0]);
 
             const renderer = url.searchParams.has('webgl') ? 'webgl' : 'webgpu';
@@ -86,10 +86,8 @@
             // 4DGS formats manage their own (streaming/cached) fetches — the
             // eager `contents` prefetch would download the file twice.
             const contentPath = new URL(contentUrl, location.href).pathname.toLowerCase();
-            // `.omg4` is the original spelling of `.sogst`, still served by
-            // deployed assets — see SOGST_EXTENSIONS in src/parsers/sogst.ts.
-            const contentIs4dgs = contentPath.endsWith('.sogst') || contentPath.endsWith('.omg4') ||
-                contentPath.endsWith('.queen');
+            // keep in step with SOGST_EXTENSIONS in src/parsers/sogst.ts
+            const contentIs4dgs = contentPath.endsWith('.sogst') || contentPath.endsWith('.queen');
 
             const sseConfig = {
                 poster: posterUrl && createImage(posterUrl),
@@ -348,7 +346,7 @@
 
             <!-- Hidden file inputs for 3DGS and 4DGS loading -->
             <input type="file" id="load3dgsInput" accept=".ply,.splat,.zip,.json" style="display:none">
-            <input type="file" id="load4dgsInput" accept=".sogst,.omg4,.queen" style="display:none">
+            <input type="file" id="load4dgsInput" accept=".sogst,.queen" style="display:none">
 
             <!-- Info Panel -->
             <div id="infoPanel" class="hidden">

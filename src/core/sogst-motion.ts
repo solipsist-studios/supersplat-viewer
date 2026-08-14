@@ -6,7 +6,7 @@ import {
 } from 'playcanvas';
 
 import { uploadTextureRows } from './gsplat-range-sync';
-import type { SogstData } from '../parsers/sogst';
+import type { SogstData } from './load-sogst';
 
 
 // GPU evaluation of the .sogst v2 temporal model on the engine's unified
@@ -343,40 +343,6 @@ const attachSogstMotion = (resource: GSplatResource, data: SogstData) => {
     }
 };
 
-// Rewrite rows [0, count) of the motion/temporal textures from the data
-// arrays and re-upload. Used by the streaming loader as splats arrive.
-const syncSogstMotion = (resource: GSplatResource, data: SogstData, count: number) => {
-    const streams = (resource as any).streams;
-    const motionTex = streams.textures.get('splatMotion');
-    const temporalTex = streams.textures.get('splatTemporal');
-    if (!motionTex || !temporalTex) {
-        return;
-    }
-
-    const motion = motionTex.lock() as Float32Array;
-    const temporal = temporalTex.lock() as Float32Array;
-    const n = Math.min(count, data.numSplats);
-    for (let i = 0; i < n; i++) {
-        motion[i * 4 + 0] = data.velocityX[i];
-        motion[i * 4 + 1] = data.velocityY[i];
-        motion[i * 4 + 2] = data.velocityZ[i];
-        motion[i * 4 + 3] = data.tCenter[i];
-        temporal[i] = data.tSigma[i];
-    }
-    motionTex.unlock();
-    temporalTex.unlock();
-
-    const accelTex = streams.textures.get('splatAccel');
-    if (accelTex && data.accelX && data.accelY && data.accelZ) {
-        const accel = accelTex.lock() as Float32Array;
-        for (let i = 0; i < n; i++) {
-            accel[i * 4 + 0] = data.accelX[i];
-            accel[i * 4 + 1] = data.accelY[i];
-            accel[i * 4 + 2] = data.accelZ[i];
-        }
-        accelTex.unlock();
-    }
-};
 
 // Upload the motion/temporal texture rows covering [a, b).
 const uploadSogstMotionRows = (resource: GSplatResource, a: number, b: number) => {
@@ -389,7 +355,7 @@ const uploadSogstMotionRows = (resource: GSplatResource, a: number, b: number) =
     }
 };
 
-// Ranged variant of syncSogstMotion: rewrite only splats [a, b) in the
+// Rewrite only splats [a, b) of the motion/temporal textures from the
 // textures' persistent CPU copies and upload just the covering rows. Used
 // by the v3 segment streamer, where a full O(numSplats) rewrite per 0.1s
 // segment would stall weak devices.
@@ -482,4 +448,4 @@ const setSogstParams = (entity: Entity, time: number, camera?: Entity,
     }
 };
 
-export { attachSogstMotion, syncSogstMotion, syncSogstMotionRange, uploadSogstMotionRows, bindSogstModifier, setSogstParams };
+export { attachSogstMotion, syncSogstMotionRange, uploadSogstMotionRows, bindSogstModifier, setSogstParams };
