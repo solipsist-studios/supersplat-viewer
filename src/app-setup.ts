@@ -135,16 +135,35 @@ const loadSogstStreaming = async (
     const queue: { range: [number, number] | null, loadedThrough: number | null, sh: boolean }[] = [];
     let pumping = false;
 
+    // Teardown guard. The pump yields to the UI between slices, so an
+    // app.destroy() — an embed host switching scenes while this one is
+    // still streaming — lands mid-loop and the continuation runs against a
+    // destroyed device. AppBase fires 'destroy' before tearing the device
+    // down, so the flag is set while the loop can still observe it. Every
+    // resumption point below must re-check it: passing the entry check
+    // proves nothing about the state after the next await.
+    //
+    // The upload half of that is currently absorbed by accident —
+    // app.destroy() tears down the gsplat resource first, so the textures
+    // are gone and uploadTextureRows() bails on its `!level` check before
+    // touching GL. Don't rely on that: it is incidental ordering, not a
+    // guard, and removing the `!level` early-return would expose a null-GL
+    // write (reported from an embed host as a TypeError on activeTexture).
+    let destroyed = false;
+    app.on('destroy', () => {
+        destroyed = true;
+        queue.length = 0;
+    });
+
     const yieldToUi = () => new Promise((resolve) => {
         setTimeout(resolve, 0);
     });
 
-    const pump = async () => {
-        if (pumping) {
-            return;
-        }
-        pumping = true;
+    const drain = async () => {
         while (queue.length > 0) {
+            if (destroyed) {
+                return;
+            }
             const item = queue.shift()!;
             if (item.range && resource && data) {
                 const r = resource as any;
@@ -180,6 +199,9 @@ const loadSogstStreaming = async (
                     }
                     // eslint-disable-next-line no-await-in-loop -- deliberate UI yield
                     await yieldToUi();
+                    if (destroyed) {
+                        return;
+                    }
                 }
                 for (let u = a; u < b; u += UPLOAD_CHUNK_SPLATS) {
                     const e = Math.min(b, u + UPLOAD_CHUNK_SPLATS);
@@ -189,6 +211,9 @@ const loadSogstStreaming = async (
                     }
                     // eslint-disable-next-line no-await-in-loop -- deliberate UI yield
                     await yieldToUi();
+                    if (destroyed) {
+                        return;
+                    }
                 }
             }
             if (data && item.loadedThrough !== null) {
@@ -200,7 +225,19 @@ const loadSogstStreaming = async (
             }
             app.renderNextFrame = true;
         }
-        pumping = false;
+    };
+
+    // Sync wrapper: callers fire and forget. `pumping` is released in a
+    // finally so an early bail-out on teardown cannot strand it set, which
+    // would silently wedge a later pump.
+    const pump = () => {
+        if (pumping || destroyed) {
+            return;
+        }
+        pumping = true;
+        drain().finally(() => {
+            pumping = false;
+        });
     };
 
     const sync = (range: [number, number] | null, loadedThrough: number) => {
@@ -224,6 +261,17 @@ const loadSogstStreaming = async (
     });
 
     data = await stream.reveal;
+
+    // Same teardown race as the pump, but on the reveal continuation and
+    // with a louder failure: setupSogst builds a GSplatResource against
+    // app.graphicsDevice, which app.destroy() has already set to null
+    // (TypeError reading 'isWebGPU'). Nothing downstream of a destroyed app
+    // can do anything useful, so leave the load promise unsettled rather
+    // than handing the caller a scene that belongs to a dead device.
+    if (destroyed) {
+        return new Promise<Entity>(() => {});
+    }
+
     const setup = setupSogst(app, config, global, data);
     resource = setup.resource;
 
