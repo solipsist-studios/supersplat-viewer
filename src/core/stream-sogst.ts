@@ -306,9 +306,22 @@ const streamSogst = (app: AppBase, url: string, callbacks: SogstStreamCallbacks)
             if (!group || !name.startsWith(`${group.prefix}/`)) {
                 return;     // stray entry (or all groups already decoded)
             }
+            const bare = name.slice(group.prefix!.length + 1);
+            // An entry backing a group member this build doesn't know must be
+            // ignored, not treated as the group's data (spec §3.1 — additive
+            // groups ship under version 1 and have to degrade like shN/accel).
+            // Filtering here is also what keeps the size test below sound: it
+            // counts entries, so an unrecognised one would push the count to
+            // neededNames.length while a required name was still outstanding,
+            // firing the decode a file short — which then throws "missing from
+            // archive". Whether that happened depended on the order the
+            // encoder wrote the entries in.
+            if (!neededNames.includes(bare)) {
+                return;
+            }
             // copy out of the shared download buffer: it may be grown
             // (reallocated) while the group is still pending
-            pending.set(name.slice(group.prefix!.length + 1), entryData.slice());
+            pending.set(bare, entryData.slice());
             if (pending.size === neededNames.length) {
                 const idx = groupIdx;
                 const files = pending;
