@@ -10,6 +10,8 @@ interface Window {
 
     firstFrame?: () => void;
 
+    app?: import('playcanvas').AppBase;
+
     scrubTo?: (time: number) => Promise<void>;
 
     captureFrame?: (options?: { time?: number; width?: number; height?: number; supersample?: number }) => Promise<{ width: number; height: number; data: string }>;
@@ -39,13 +41,13 @@ interface Window {
     }) => void;
 }
 
-declare module 'playcanvas/scripts/esm/xr-controllers.mjs' {
-    const XrControllers: any;
+declare module 'playcanvas/scripts/esm/xr/xr-controllers.mjs' {
+    const XrControllers: typeof pc.Script;
     export { XrControllers };
 }
 
-declare module 'playcanvas/scripts/esm/xr-navigation.mjs' {
-    const XrNavigation: any;
+declare module 'playcanvas/scripts/esm/xr/xr-navigation.mjs' {
+    const XrNavigation: typeof pc.Script;
     export { XrNavigation };
 }
 

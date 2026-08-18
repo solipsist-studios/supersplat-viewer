@@ -1,10 +1,7 @@
 import {
     BoundingBox,
     CameraFrame,
-    type CameraComponent,
     Color,
-    type Entity,
-    type Layer,
     RenderTarget,
     Mat4,
     MiniStats,
@@ -23,13 +20,13 @@ import {
     GSPLAT_DEBUG_NONE,
     GSPLAT_RENDERER_RASTER_CPU_SORT,
     GSPLAT_RENDERER_RASTER_GPU_SORT,
-    GSplatComponent,
     platform
 } from 'playcanvas';
+import type { CameraComponent, Entity, GSplatComponent, Layer } from 'playcanvas';
 
 import { Annotations } from './annotations';
 import { CameraManager, isWalkAllowed } from './camera-manager';
-import { Camera } from './cameras/camera';
+import type { Camera } from './cameras/camera';
 import { Capture } from './capture';
 import type { Collision } from './collision';
 import { MeshCollision, VoxelCollision } from './collision';
@@ -48,7 +45,9 @@ import { VoxelDebugOverlay } from './voxel-debug-overlay';
 // producing the original chunk.
 const patchChunk = (source: string, search: string, replacement: string, name: string): string => {
     if (!source.includes(search)) {
-        console.warn(`patchChunk: substring not found in '${name}', shader chunk patch may be out of sync with the engine.`);
+        console.warn(
+            `patchChunk: substring not found in '${name}', shader chunk patch may be out of sync with the engine.`
+        );
     }
     return source.replace(search, replacement);
 };
@@ -66,8 +65,8 @@ fn prepareOutputFromGamma(gammaColor: vec3f, depth: f32) -> vec3f {
 `;
 
 const rendererTable: Record<Config['renderer'], number> = {
-    'webgl': GSPLAT_RENDERER_RASTER_CPU_SORT,
-    'webgpu': GSPLAT_RENDERER_RASTER_GPU_SORT
+    webgl: GSPLAT_RENDERER_RASTER_CPU_SORT,
+    webgpu: GSPLAT_RENDERER_RASTER_GPU_SORT
 };
 
 type GSplatOctreeResourceLike = {
@@ -131,11 +130,13 @@ const applyPostEffectSettings = (cameraFrame: CameraFrame, settings: PostEffectS
 };
 
 const anyPostEffectEnabled = (settings: PostEffectSettings): boolean => {
-    return (settings.sharpness.enabled && settings.sharpness.amount > 0) ||
+    return (
+        (settings.sharpness.enabled && settings.sharpness.amount > 0) ||
         (settings.bloom.enabled && settings.bloom.intensity > 0) ||
-        (settings.grading.enabled) ||
+        settings.grading.enabled ||
         (settings.vignette.enabled && settings.vignette.intensity > 0) ||
-        (settings.fringing.enabled && settings.fringing.intensity > 0);
+        (settings.fringing.enabled && settings.fringing.intensity > 0)
+    );
 };
 
 const vec = new Vec3();
@@ -166,16 +167,21 @@ class Viewer {
 
     origChunks: {
         glsl: {
-            gsplatOutputVS: string,
-            skyboxPS: string
-        },
+            gsplatOutputVS: string;
+            skyboxPS: string;
+        };
         wgsl: {
-            gsplatOutputVS: string,
-            skyboxPS: string
-        }
+            gsplatOutputVS: string;
+            skyboxPS: string;
+        };
     };
 
-    constructor(global: Global, gsplatLoad: Promise<Entity>, skyboxLoad: Promise<void> | undefined, collisionLoad: Promise<Collision> | undefined) {
+    constructor(
+        global: Global,
+        gsplatLoad: Promise<Entity>,
+        skyboxLoad: Promise<void> | undefined,
+        collisionLoad: Promise<Collision> | undefined
+    ) {
         this.global = global;
 
         const { app, settings, config, events, state, camera, renderer } = global;
@@ -186,7 +192,10 @@ class Viewer {
         glsl.set('skyboxPS', patchChunk(glsl.get('skyboxPS'), 'mapRoughnessUv(uv, mipLevel)', 'uv', 'glsl skyboxPS'));
 
         const wgsl = ShaderChunks.get(graphicsDevice, 'wgsl');
-        wgsl.set('skyboxPS', patchChunk(wgsl.get('skyboxPS'), 'mapRoughnessUv(uv, uniform.mipLevel)', 'uv', 'wgsl skyboxPS'));
+        wgsl.set(
+            'skyboxPS',
+            patchChunk(wgsl.get('skyboxPS'), 'mapRoughnessUv(uv, uniform.mipLevel)', 'uv', 'wgsl skyboxPS')
+        );
 
         // Optional screen-space 2D-covariance scale for gsplat rendering,
         // used by .omg4 v2 files that carry a cov2dScale header field (it
@@ -221,26 +230,28 @@ class Viewer {
 
         // construct debug ministats
         if (config.ministats) {
-            const options = MiniStats.getDefaultOptions() as any;
+            const options = MiniStats.getDefaultOptions() as NonNullable<ConstructorParameters<typeof MiniStats>[1]>;
             options.cpu.enabled = false;
-            options.stats = options.stats.filter((s: any) => s.name !== 'DrawCalls');
-            options.stats.push({
-                name: 'VRAM',
-                stats: ['vram.tex'],
-                decimalPlaces: 1,
-                multiplier: 1 / (1024 * 1024),
-                unitsName: 'MB',
-                watermark: 1024
-            }, {
-                name: 'Splats',
-                stats: ['frame.gsplats'],
-                decimalPlaces: 3,
-                multiplier: 1 / 1000000,
-                unitsName: 'M',
-                watermark: 5
-            });
+            options.stats = options.stats.filter((s) => s.name !== 'DrawCalls');
+            options.stats.push(
+                {
+                    name: 'VRAM',
+                    stats: ['vram.tex'],
+                    decimalPlaces: 1,
+                    multiplier: 1 / (1024 * 1024),
+                    unitsName: 'MB',
+                    watermark: 1024
+                } as (typeof options.stats)[number],
+                {
+                    name: 'Splats',
+                    stats: ['frame.gsplats'],
+                    decimalPlaces: 3,
+                    multiplier: 1 / 1000000,
+                    unitsName: 'M',
+                    watermark: 5
+                } as (typeof options.stats)[number]
+            );
 
-            // eslint-disable-next-line no-new
             new MiniStats(app, options);
         }
 
@@ -254,9 +265,11 @@ class Viewer {
             const proj = camera.camera.projectionMatrix;
 
             if (!app.renderNextFrame) {
-                if (config.ministats ||
+                if (
+                    config.ministats ||
                     !nearlyEquals(world.data, prevWorld.data) ||
-                    !nearlyEquals(proj.data, prevProj.data)) {
+                    !nearlyEquals(proj.data, prevProj.data)
+                ) {
                     app.renderNextFrame = true;
                 }
             }
@@ -307,7 +320,6 @@ class Viewer {
                 // apply to the camera entity
                 applyCamera(this.cameraManager.camera);
             }
-
         });
 
         // Render voxel debug overlay
@@ -351,6 +363,9 @@ class Viewer {
                 configurable: true
             });
 
+            // expose the app for console-driven debugging (e.g. scene.gsplat tuning)
+            window.app = app;
+
             // Capture hook for the thumbnail pipeline. Renders the scene (with post
             // effects) into an offscreen supersampled target, GPU box-downsamples it to
             // the requested size and returns just that small buffer. Lazily created on
@@ -379,10 +394,55 @@ class Viewer {
                 // serialize calls: they share the viewer camera, so concurrent captures
                 // would interleave the redirect/restore and could leave it mis-targeted
                 const result = captureQueue.then(run, run);
-                captureQueue = result.then(() => {}, () => {});
+                captureQueue = result.then(
+                    () => {
+                        // intentionally ignored
+                    },
+                    () => {
+                        // intentionally ignored
+                    }
+                );
                 return result;
             };
         });
+
+        const { gsplat } = app.scene;
+
+        // Scene-level gsplat params. Set before any load resolves: streaming starts on the first
+        // frame after the gsplat component is created, and lodUpdateAngle / lodBehindPenalty shape
+        // which nodes that first pass pulls in.
+
+        // these two allow LOD behind camera to drop, saves lots of splats
+        gsplat.lodUpdateAngle = 90;
+        gsplat.lodBehindPenalty = 5;
+        gsplat.minContribution = 1;
+        gsplat.alphaClip = 1 / 255;
+        gsplat.antiAlias = config.aa;
+
+        // same performance, but rotating on slow devices does not give us unsorted splats on sides
+        gsplat.radialSorting = true;
+
+        // apply before streaming starts: this bakes into the work-buffer copies as
+        // persistent per-splat data, so the first loaded splats must already carry
+        // it (later changes only apply on a full rebuild)
+        gsplat.debug = config.colorize ? GSPLAT_DEBUG_LOD : GSPLAT_DEBUG_NONE;
+
+        // Clamp to the coarsest LOD for the fastest possible reveal. This chains off gsplatLoad
+        // alone (not the Promise.all below): the octree starts streaming on the first frame after
+        // the component is created, and already-requested files are never cancelled — so waiting
+        // on skybox/collision here would let a full-detail burst queue up and block the reveal
+        // until it has all downloaded. The handler runs as a microtask of the asset's load event,
+        // so no frame renders unclamped.
+        if (!config.fullload) {
+            gsplatLoad.then((entity) => {
+                const gsplatComponent = entity.gsplat as GSplatComponent;
+                const resource = gsplatComponent.resource as GSplatOctreeResourceLike | null;
+                const lodLevels = resource?.octree?.lodLevels;
+                if (lodLevels) {
+                    gsplatComponent.lodRangeMax = gsplatComponent.lodRangeMin = lodLevels - 1;
+                }
+            });
+        }
 
         // wait for the model to load
         Promise.all([gsplatLoad, skyboxLoad, collisionLoad]).then((results) => {
@@ -440,8 +500,6 @@ class Viewer {
 
             this.debugPanel = new DebugPanel(global, this.cameraManager);
 
-            const { gsplat } = app.scene;
-
             // quality budget
             const budgets = {
                 mobile: {
@@ -464,12 +522,13 @@ class Viewer {
                 };
 
                 gsplat.splatBudget = budget() * 1000000;
-                gsplat.lodRangeMin = 0;
-                gsplat.lodRangeMax = 1000;
-                gsplat.colorUpdateAngle = state.performanceMode ? 4 : 2;
-                gsplat.minContribution = 1;
-                gsplat.alphaClip = 1 / 255;
-                gsplat.antiAlias = config.aa;
+                gsplat.colorUpdateAngle = state.performanceMode ? 1 : 0.2;
+                gsplatComponent.lodRangeMin = 0;
+                gsplatComponent.lodRangeMax = 1000;
+
+                // request a frame so the param changes are processed (full work-buffer
+                // rebuild) even when on-demand rendering is active and the camera is idle
+                app.renderNextFrame = true;
             };
 
             if (config.fullload) {
@@ -477,19 +536,12 @@ class Viewer {
                 applyPerfSettings();
             } else {
                 // reveal once low lod has loaded for fastest possible reveal
-                const resource = results[0].gsplat.resource as GSplatOctreeResourceLike | null;
+                const resource = gsplatComponent.resource as GSplatOctreeResourceLike | null;
                 const lodLevels = resource?.octree?.lodLevels;
                 if (lodLevels) {
-                    gsplat.lodRangeMax = gsplat.lodRangeMin = lodLevels - 1;
+                    gsplatComponent.lodRangeMax = gsplatComponent.lodRangeMin = lodLevels - 1;
                 }
             }
-
-            // these two allow LOD behind camera to drop, saves lots of splats
-            gsplat.lodUpdateAngle = 90;
-            gsplat.lodBehindPenalty = 5;
-
-            // same performance, but rotating on slow devices does not give us unsorted splats on sides
-            gsplat.radialSorting = true;
 
             const eventHandler = app.systems.gsplat;
 
@@ -514,8 +566,6 @@ class Viewer {
                     events.on('performanceMode:changed', applyPerfSettings);
                     applyPerfSettings();
 
-                    // debug colorize lods
-                    gsplat.debug = config.colorize ? GSPLAT_DEBUG_LOD : GSPLAT_DEBUG_NONE;
                     gsplat.renderer = rendererTable[renderer];
 
                     // wait for the first valid frame to complete rendering
@@ -531,7 +581,7 @@ class Viewer {
                 if (loading !== current) {
                     watermark = Math.max(watermark, loading);
                     current = watermark - loading;
-                    state.progress = Math.trunc(current / watermark * 100);
+                    state.progress = Math.trunc((current / watermark) * 100);
                 }
             };
 
@@ -553,8 +603,7 @@ class Viewer {
         // hpr override takes precedence over settings.highPrecisionRendering
         const highPrecisionRendering = config.hpr ?? settings.highPrecisionRendering;
 
-        const postFxRequested = !config.nofx &&
-            (anyPostEffectEnabled(postEffectSettings) || highPrecisionRendering);
+        const postFxRequested = !config.nofx && (anyPostEffectEnabled(postEffectSettings) || highPrecisionRendering);
 
         const enableCameraFrame = !app.xr.active && postFxRequested;
 
@@ -567,7 +616,9 @@ class Viewer {
             const { cameraFrame } = this;
             cameraFrame.enabled = true;
             cameraFrame.rendering.toneMapping = tonemapTable[settings.tonemapping];
-            cameraFrame.rendering.renderFormats = highPrecisionRendering ? [PIXELFORMAT_RGBA16F, PIXELFORMAT_RGBA32F] : [];
+            cameraFrame.rendering.renderFormats = highPrecisionRendering
+                ? [PIXELFORMAT_RGBA16F, PIXELFORMAT_RGBA32F]
+                : [];
             applyPostEffectSettings(cameraFrame, postEffectSettings);
             cameraFrame.update();
 
@@ -577,7 +628,8 @@ class Viewer {
 
             // force skybox shader to write gamma-space colors (inline pow replaces the
             // gammaCorrectOutput call which is a no-op under CameraFrame's GAMMA_NONE)
-            ShaderChunks.get(app.graphicsDevice, 'glsl').set('skyboxPS',
+            ShaderChunks.get(app.graphicsDevice, 'glsl').set(
+                'skyboxPS',
                 patchChunk(
                     this.origChunks.glsl.skyboxPS,
                     'gammaCorrectOutput(toneMap(processEnvironment(linear)))',
@@ -585,7 +637,8 @@ class Viewer {
                     'glsl skyboxPS gamma override'
                 )
             );
-            ShaderChunks.get(app.graphicsDevice, 'wgsl').set('skyboxPS',
+            ShaderChunks.get(app.graphicsDevice, 'wgsl').set(
+                'skyboxPS',
                 patchChunk(
                     this.origChunks.wgsl.skyboxPS,
                     'gammaCorrectOutput(toneMap(processEnvironment(linear)))',
