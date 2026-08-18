@@ -394,14 +394,7 @@ const initUI = (global: Global) => {
     });
 
     dom.sogstClearCache.addEventListener('click', async () => {
-        // Only `supersplat-sogst-chunks` is still written. The Cache API
-        // store belonged to the deleted chunk streamer; a browser that
-        // visited an older build still holds it and nothing else would ever
-        // reclaim that quota, so clear it too.
-        if (typeof caches !== 'undefined') {
-            await caches.delete('supersplat-sogst-v1');
-        }
-
+        // `supersplat-sogst-chunks` is the only store the viewer writes.
         if (typeof indexedDB !== 'undefined') {
             const deleteDb = (name: string) =>
                 new Promise<void>((resolve) => {
