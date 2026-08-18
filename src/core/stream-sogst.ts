@@ -1,8 +1,13 @@
 import type { AppBase } from 'playcanvas';
 
-import {
-    SogstDecoder, enumerateSogstGroups, groupFileList, groupBaseNames, loadSogst, parseSogstMeta, SogstData
+import type { SogstMeta } from '../parsers/sogst';
+
+import type { SogstData
 } from './load-sogst';
+import {
+    SogstDecoder, enumerateSogstGroups, groupFileList, groupBaseNames, loadSogst, parseSogstMeta
+} from './load-sogst';
+
 
 // Progressive loader for streamed archives. The encoder writes the ZIP
 // in play order — meta.json, shN_centroids, persistent/*, seg_000/*, ... —
@@ -118,7 +123,7 @@ const streamSogst = (app: AppBase, url: string, callbacks: SogstStreamCallbacks)
         };
 
         // -- group-decode driver -------------------------------------------
-        let meta: any = null;
+        let meta: SogstMeta | null = null;
         let monolithic = false;
         let decoder: SogstDecoder | null = null;
         let groups: ReturnType<typeof enumerateSogstGroups> = [];
@@ -226,7 +231,7 @@ const streamSogst = (app: AppBase, url: string, callbacks: SogstStreamCallbacks)
             // rejection is delivered where the chain is awaited (stream
             // tail) — this handler only silences the interim unhandled-
             // rejection warning
-            decodeChain.catch(() => { });
+            decodeChain.catch(() => { /* surfaced via the reveal promise */ });
         };
 
         const processGroup = async (idx: number, group: ReturnType<typeof enumerateSogstGroups>[number], files: Map<string, Uint8Array>) => {
@@ -333,7 +338,7 @@ const streamSogst = (app: AppBase, url: string, callbacks: SogstStreamCallbacks)
 
         try {
             for (;;) {
-                // eslint-disable-next-line no-await-in-loop -- sequential network reads
+                 
                 const { done, value } = await reader.read();
                 if (done) {
                     break;
@@ -428,7 +433,7 @@ const streamSogst = (app: AppBase, url: string, callbacks: SogstStreamCallbacks)
     })();
 
     // the reveal consumer handles errors via the complete promise
-    complete.catch(() => {});
+    complete.catch(() => { /* caller handles it on the returned promise */ });
 
     return { reveal, complete };
 };

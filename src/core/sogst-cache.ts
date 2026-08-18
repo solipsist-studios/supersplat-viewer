@@ -106,7 +106,7 @@ const idbGetBuffer = async (key: string): Promise<ArrayBuffer | null> => {
     const result = new Uint8Array(value.totalBytes);
     let offset = 0;
     for (let i = 0; i < value.sogstPieces; i++) {
-        // eslint-disable-next-line no-await-in-loop
+         
         const piece = await idbGetValue(db, `${key}#${i}`);
         if (!(piece instanceof ArrayBuffer) || offset + piece.byteLength > value.totalBytes) {
             return null;
@@ -135,7 +135,7 @@ const idbSetBuffer = async (key: string, buffer: ArrayBuffer): Promise<void> => 
     const pieces = Math.ceil(buffer.byteLength / PIECE_BYTES);
     for (let i = 0; i < pieces; i++) {
         const piece = buffer.slice(i * PIECE_BYTES, Math.min((i + 1) * PIECE_BYTES, buffer.byteLength));
-        // eslint-disable-next-line no-await-in-loop
+         
         const ok = await idbPutValue(db, `${key}#${i}`, piece);
         if (!ok) {
             return;

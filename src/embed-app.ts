@@ -1,4 +1,5 @@
-import { EventHandler, type Entity } from 'playcanvas';
+import { EventHandler } from 'playcanvas';
+import type { Entity } from 'playcanvas';
 
 import { createApp, createViewerState, initCanvas, isStatic3dgsFilename, loadContent } from './app-setup';
 import { EmbedInputDevice } from './input/devices/external';
@@ -172,7 +173,7 @@ const createEmbedViewer = async (options: EmbedViewerOptions): Promise<EmbedView
         gsplatLoad.then((entity) => {
             contentEntity = entity;
             applyTransform(entity);
-        }).catch(() => {});
+        }).catch(() => { /* load failure is reported through state */ });
 
         // Re-apply on session end so the page view always returns to the
         // configured transform, whatever happened during the XR session.

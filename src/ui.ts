@@ -6,7 +6,7 @@ import { localize } from './localization';
 import { isSogstFilename } from './parsers/sogst';
 import type { Annotation } from './settings';
 import { Tooltip } from './tooltip';
-import { Global, LoopMode } from './types';
+import type { Global, LoopMode } from './types';
 
 // Initialize the touch joystick for fly mode camera control
 const initJoystick = (

@@ -3,15 +3,13 @@ import {
     Color,
     createGraphicsDevice,
     Entity,
-    EventHandler,
     GSplatResource,
     Keyboard,
     Mouse,
     platform,
-    TouchDevice,
-    type TextureHandler,
-    type AppBase
+    TouchDevice
 } from 'playcanvas';
+import type { AppBase, EventHandler, TextureHandler } from 'playcanvas';
 
 import { SogstSplatAnimation } from './animation/sogst-splat-animation';
 import { App } from './app';
@@ -119,7 +117,7 @@ const loadSogstStreaming = async (
     // at their correct positions but blend in slightly stale depth order.
     const bumpCenters = () => {
         if (resource) {
-            (resource as any).centersVersion++;
+            resource.centersVersion++;
             app.renderNextFrame = true;
         }
     };
@@ -164,9 +162,8 @@ const loadSogstStreaming = async (
             }
             const item = queue.shift()!;
             if (item.range && resource && data) {
-                const r = resource as any;
                 const [a, b] = item.range;
-                const centers = r.centers as Float32Array | undefined;
+                const centers = resource.centers as Float32Array | undefined;
                 const x = data.gsplatData.getProp('x') as Float32Array;
                 const y = data.gsplatData.getProp('y') as Float32Array;
                 const z = data.gsplatData.getProp('z') as Float32Array;
@@ -178,9 +175,9 @@ const loadSogstStreaming = async (
                         if (item.sh) {
                             // deferred SH arrival: geometry for this range
                             // is already live, only the SH textures change
-                            updateGsplatSHRange(r, data.gsplatData, s, e, false);
+                            updateGsplatSHRange(resource, data.gsplatData, s, e, false);
                         } else {
-                            updateGsplatRangeData(r, data.gsplatData, s, e, false);
+                            updateGsplatRangeData(resource, data.gsplatData, s, e, false);
                             syncSogstMotionRange(resource, data, s, e, false);
                             if (centers) {
                                 for (let i = s; i < e; i++) {
@@ -195,7 +192,7 @@ const loadSogstStreaming = async (
                             break;
                         }
                     }
-                    // eslint-disable-next-line no-await-in-loop -- deliberate UI yield
+                     
                     await yieldToUi();
                     if (destroyed) {
                         return;
@@ -203,11 +200,11 @@ const loadSogstStreaming = async (
                 }
                 for (let u = a; u < b; u += UPLOAD_CHUNK_SPLATS) {
                     const e = Math.min(b, u + UPLOAD_CHUNK_SPLATS);
-                    uploadGsplatRows(r, u, e, item.sh);
+                    uploadGsplatRows(resource, u, e, item.sh);
                     if (!item.sh) {
                         uploadSogstMotionRows(resource, u, e);
                     }
-                    // eslint-disable-next-line no-await-in-loop -- deliberate UI yield
+                     
                     await yieldToUi();
                     if (destroyed) {
                         return;
@@ -267,7 +264,7 @@ const loadSogstStreaming = async (
     // can do anything useful, so leave the load promise unsettled rather
     // than handing the caller a scene that belongs to a dead device.
     if (destroyed) {
-        return new Promise<Entity>(() => {});
+        return new Promise<Entity>(() => { /* never settles: the app is gone */ });
     }
 
     const setup = setupSogst(app, config, global, data);
@@ -275,7 +272,7 @@ const loadSogstStreaming = async (
 
     // exact bounds from the global meta range — the arrays are still
     // partially filled, so computed bounds would understate the scene
-    setAabbFromMeta(data.meta, (resource as any).aabb);
+    setAabbFromMeta(data.meta, resource.aabb);
 
     // catch up on any groups that decoded while the entity was being set up
     // (the reveal set itself was picked up at resource creation)
@@ -286,7 +283,7 @@ const loadSogstStreaming = async (
     .then((buffer) => {
         idbSetBuffer(cacheKey, buffer)
         .then(() => idbDeleteByPrefix(fullFileKeyPrefix(config.contentUrl), cacheKey))
-        .catch(() => {});
+        .catch(() => { /* cache write is best-effort */ });
     })
     .catch((err: Error) => {
         console.warn('SOGST stream did not complete; partial scene retained:', err);
@@ -500,8 +497,7 @@ const initCanvas = (global: Global) => {
     app.on('framerender', apply);
 
     // Disable the engine's built-in canvas resize — we handle it via ResizeObserver
-    // @ts-ignore
-    app._allowResize = false;
+    (app as unknown as { _allowResize: boolean })._allowResize = false;
     set(canvas.clientWidth, canvas.clientHeight);
     apply();
 };

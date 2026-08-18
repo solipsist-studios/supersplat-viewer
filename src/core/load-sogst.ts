@@ -5,12 +5,24 @@ import {
     Quat,
     Texture,
     Vec3,
-    Vec4,
-    type AppBase
+    Vec4
 } from 'playcanvas';
+import type { AppBase, BoundingBox } from 'playcanvas';
 
 import { SOGST_META_FORMAT, SOGST_META_VERSION } from '../parsers/sogst';
-import type { SogstSegments } from '../parsers/sogst';
+import type { SogstMeta, SogstSegments } from '../parsers/sogst';
+
+// Reads a decoded group payload's texel array. Both holders expose _levels[0]:
+// TexelImage by construction, and Texture publicly — though declared there as a
+// union wide enough to include image sources, while everything decoded here is
+// filled from a typed array.
+const texelsOf = (image: TexelImage | Texture | undefined): Uint8Array => image!._levels[0] as Uint8Array;
+
+// GSplatSogData._patchCodebooks is private to the engine. It is the one member
+// here with no public equivalent, so the dependency is spelled out rather than
+// hidden behind a blanket `as any` — if the engine drops it, this is the line
+// to look at.
+type SogCodebookPatch = { _patchCodebooks?: () => void };
 
 // .sogst decoder: SOG-compressed temporal splats. See parsers/sogst.ts for
 // what the container is; this is how one is turned into playable data.
@@ -36,7 +48,7 @@ const ZIP_LOCAL_MAGIC = 0x04034b50;      // "PK\x03\x04"
 const ZIP_EOCD_MAGIC = 0x06054b50;
 const ZIP_CDR_MAGIC = 0x02014b50;
 
-interface ZipEntry {
+type ZipEntry = {
     filename: string;
     deflated: boolean;
     data: Uint8Array;
@@ -132,7 +144,7 @@ const readTexels = async (texture: Texture): Promise<Uint8Array> => {
 
 // The SOG iterator only reads texel arrays (_levels[0]) plus dimensions,
 // so decode feeds it these plain holders instead of real GPU textures.
-interface TexelImage {
+type TexelImage = {
     width: number;
     height: number;
     _levels: [Uint8Array];
@@ -204,7 +216,7 @@ class WebpTexelWorker {
                     entry.reject(new Error(error));
                 } else {
                     entry.resolve({
-                        width, height, _levels: [data], destroy: () => { }
+                        width, height, _levels: [data], destroy: () => { /* plain holder: no GPU resource to free */ }
                     });
                 }
             };
@@ -240,7 +252,7 @@ class SogstData {
     // at it. Infinity once (or when) everything is loaded.
     loadedThrough = Infinity;
 
-    readonly meta: any;
+    readonly meta: SogstMeta;
 
     readonly numSplats: number;
 
@@ -272,7 +284,7 @@ class SogstData {
 
     accelZ: Float32Array | null = null;
 
-    constructor(meta: any, gsplatData: GSplatData,
+    constructor(meta: SogstMeta, gsplatData: GSplatData,
         velocity: [Float32Array, Float32Array, Float32Array],
         tCenter: Float32Array, tSigma: Float32Array,
         accel: [Float32Array, Float32Array, Float32Array] | null = null) {
@@ -326,11 +338,11 @@ const GROUP_FILE_NAMES = [
 
 // Per-group texture names for this archive: degree-2 (accel) content adds
 // the accel split pair to every group.
-const groupBaseNames = (meta: any): string[] => {
+const groupBaseNames = (meta: SogstMeta): string[] => {
     return meta.accel ? [...GROUP_FILE_NAMES, 'accel_l.webp', 'accel_u.webp'] : GROUP_FILE_NAMES;
 };
 
-interface SogstGroup {
+type SogstGroup = {
     prefix: string | null;          // null => monolithic (bare names)
     range: [number, number];
     segIndex: number;               // index into meta.segments.list; -1 otherwise
@@ -338,7 +350,7 @@ interface SogstGroup {
 
 // Decode groups in play order: [whole file] for monolithic archives, or
 // [persistent, seg_000, seg_001, ...] (empty groups omitted) for streamed.
-const enumerateSogstGroups = (meta: any): SogstGroup[] => {
+const enumerateSogstGroups = (meta: SogstMeta): SogstGroup[] => {
     if (!meta.streams) {
         return [{ prefix: null, range: [0, meta.count], segIndex: -1 }];
     }
@@ -354,7 +366,7 @@ const enumerateSogstGroups = (meta: any): SogstGroup[] => {
     return groups;
 };
 
-const groupFileList = (meta: any): string[] => {
+const groupFileList = (meta: SogstMeta): string[] => {
     const base = groupBaseNames(meta);
     return meta.shN ? [...base, 'shN_labels.webp'] : base;
 };
@@ -367,7 +379,7 @@ const groupFileList = (meta: any): string[] => {
 class SogstDecoder {
     private app: AppBase;
 
-    readonly meta: any;
+    readonly meta: SogstMeta;
 
     readonly n: number;
 
@@ -391,7 +403,7 @@ class SogstDecoder {
 
     private texelWorkerBroken = false;
 
-    constructor(app: AppBase, meta: any) {
+    constructor(app: AppBase, meta: SogstMeta) {
         this.app = app;
         this.meta = meta;
         this.n = meta.count;
@@ -438,7 +450,7 @@ class SogstDecoder {
             }
         }
         const texture = await decodeTexture(this.app, bytes, name);
-        (texture as any)._levels[0] = await readTexels(texture);
+        texture._levels[0] = await readTexels(texture);
         return texture;
     }
 
@@ -486,7 +498,7 @@ class SogstDecoder {
         // per-group shim presents the group textures with the global
         // codebooks/mins (GSplatSogData keys off meta.version === 2, and
         // v3's static conventions are exactly SOG v2).
-        const sog = new GSplatSogData() as any;
+        const sog = new GSplatSogData();
         sog.meta = { ...this.meta, version: 2, count: m };
         sog.numSplats = m;
         sog.means_l = tex.get('means_l.webp');
@@ -501,7 +513,7 @@ class SogstDecoder {
         } else {
             sog.shBands = 0;
         }
-        sog._patchCodebooks?.();
+        (sog as unknown as SogCodebookPatch)._patchCodebooks?.();
 
         const p = new Vec3();
         const r = new Quat();
@@ -556,7 +568,7 @@ class SogstDecoder {
                 }
             }
             onProgress?.(i / m);
-            // eslint-disable-next-line no-await-in-loop -- deliberate UI yield
+             
             await yieldToUi();
         }
 
@@ -567,9 +579,9 @@ class SogstDecoder {
 
         // Temporal attributes (not part of the engine's SOG model) — texels
         // were read back in the batch above; only the textures remain to free.
-        const motionL = (tex.get('motion_l.webp') as any)._levels[0] as Uint8Array;
-        const motionU = (tex.get('motion_u.webp') as any)._levels[0] as Uint8Array;
-        const trbf = (tex.get('trbf.webp') as any)._levels[0] as Uint8Array;
+        const motionL = texelsOf(tex.get('motion_l.webp'));
+        const motionU = texelsOf(tex.get('motion_u.webp'));
+        const trbf = texelsOf(tex.get('trbf.webp'));
         tex.get('motion_l.webp')!.destroy();
         tex.get('motion_u.webp')!.destroy();
         tex.get('trbf.webp')!.destroy();
@@ -579,8 +591,8 @@ class SogstDecoder {
         const aMins = this.meta.accel?.mins as number[] | undefined;
         const aMaxs = this.meta.accel?.maxs as number[] | undefined;
         if (this.accel) {
-            accelL = (tex.get('accel_l.webp') as any)._levels[0] as Uint8Array;
-            accelU = (tex.get('accel_u.webp') as any)._levels[0] as Uint8Array;
+            accelL = texelsOf(tex.get('accel_l.webp'));
+            accelU = texelsOf(tex.get('accel_u.webp'));
             tex.get('accel_l.webp')!.destroy();
             tex.get('accel_u.webp')!.destroy();
         }
@@ -610,7 +622,7 @@ class SogstDecoder {
                     break;
                 }
             }
-            // eslint-disable-next-line no-await-in-loop -- deliberate UI yield
+             
             await yieldToUi();
         }
     }
@@ -634,13 +646,13 @@ class SogstDecoder {
 
         // SH-only iterator: null attribute targets skip every texture but
         // sh_labels/sh_centroids
-        const sog = new GSplatSogData() as any;
+        const sog = new GSplatSogData();
         sog.meta = { ...this.meta, version: 2, count: m };
         sog.numSplats = m;
         sog.sh_labels = labels;
         sog.sh_centroids = this.centroidsTexture;
         sog.shBands = this.meta.shN.bands;
-        sog._patchCodebooks?.();
+        (sog as unknown as SogCodebookPatch)._patchCodebooks?.();
 
         const sh = new Float32Array(45);
         const iter = sog.createIter(null, null, null, null, sh);
@@ -659,7 +671,7 @@ class SogstDecoder {
                     break;
                 }
             }
-            // eslint-disable-next-line no-await-in-loop -- deliberate UI yield
+             
             await yieldToUi();
         }
 
@@ -693,7 +705,7 @@ class SogstDecoder {
     }
 }
 
-const parseSogstMeta = (bytes: Uint8Array | undefined): any => {
+const parseSogstMeta = (bytes: Uint8Array | undefined): SogstMeta => {
     if (!bytes) {
         throw new Error('sogst: meta.json not found in archive');
     }
@@ -718,7 +730,7 @@ const loadSogst = async (app: AppBase, buffer: ArrayBuffer,
     const entries = parseZipEntries(buffer);
     const files = new Map<string, Uint8Array>();
     for (const entry of entries) {
-        // eslint-disable-next-line no-await-in-loop -- deflate entries are a rare fallback; our encoder stores
+         
         files.set(entry.filename, entry.deflated ? await inflateRaw(entry.data) : entry.data);
     }
 
@@ -742,7 +754,7 @@ const loadSogst = async (app: AppBase, buffer: ArrayBuffer,
         }
         const m = group.range[1] - group.range[0];
         const base = done;
-        // eslint-disable-next-line no-await-in-loop -- groups decode sequentially
+         
         await decoder.decodeGroup(group, groupBytes, frac => report(((base + frac * m) / meta.count) * 100));
         done += m;
     }
@@ -757,7 +769,7 @@ const loadSogst = async (app: AppBase, buffer: ArrayBuffer,
 // streaming load the attribute arrays are only partially filled, so bounds
 // computed from them would understate the scene. The mins/maxs live in the
 // SOG log-transformed space; invert with sign(v) * (e^|v| - 1).
-const setAabbFromMeta = (meta: any, aabb: any) => {
+const setAabbFromMeta = (meta: SogstMeta, aabb: BoundingBox) => {
     const mins = meta.means.mins as number[];
     const maxs = meta.means.maxs as number[];
     const map = (v: number) => Math.sign(v) * (Math.exp(Math.abs(v)) - 1);

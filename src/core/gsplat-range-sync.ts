@@ -1,4 +1,7 @@
-import { FloatPacking, Quat, Vec3, type GSplatData } from 'playcanvas';
+import { FloatPacking, Quat, Vec3 } from 'playcanvas';
+import type { GSplatData, GSplatResource, Texture } from 'playcanvas';
+
+type TypedArray = Uint8Array | Uint16Array | Uint32Array | Float32Array;
 
 // Ranged variants of the engine's GSplatResource GPU-data updates
 // (updateColorData / updateTransformData / updateSHData). The engine
@@ -14,23 +17,25 @@ const SH_C0 = 0.28209479177387814;
 // Upload the texture rows covering splat texel indices [a, b). The CPU
 // level copy is already updated in place, so devices without a partial
 // write path (WebGPU) fall back to a full upload of that copy.
-const uploadTextureRows = (texture: any, elemsPerTexel: number, a: number, b: number) => {
-    const level = texture?._levels?.[0];
+const uploadTextureRows = (texture: Texture, elemsPerTexel: number, a: number, b: number) => {
+    // Texture._levels is typed as a union covering image sources too; every
+    // gsplat stream texture is created from a typed array, so narrow to that.
+    const level = texture?._levels?.[0] as TypedArray | undefined;
     if (!level) {
         return;
     }
-    const w = texture.width as number;
+    const w = texture.width;
     if (texture.impl?.write) {
         const rowA = Math.floor(a / w);
-        const rowB = Math.min(texture.height as number, Math.ceil(b / w));
+        const rowB = Math.min(texture.height, Math.ceil(b / w));
         const rows = level.subarray(rowA * w * elemsPerTexel, rowB * w * elemsPerTexel);
-        (texture.write(0, rowA, w, rowB - rowA, rows) as Promise<unknown>)?.catch(() => { });
+        (texture.write(0, rowA, w, rowB - rowA, rows) as Promise<unknown>)?.catch(() => { /* upload races teardown; nothing to recover */ });
     } else {
         texture.upload();
     }
 };
 
-const updateColorRange = (resource: any, gsplatData: GSplatData, a: number, b: number, upload: boolean) => {
+const updateColorRange = (resource: GSplatResource, gsplatData: GSplatData, a: number, b: number, upload: boolean) => {
     const texture = resource.streams.getTexture('splatColor');
     const level = texture?._levels?.[0] as Uint16Array | undefined;
     if (!level) {
@@ -53,7 +58,7 @@ const updateColorRange = (resource: any, gsplatData: GSplatData, a: number, b: n
     }
 };
 
-const updateTransformRange = (resource: any, gsplatData: GSplatData, a: number, b: number, upload: boolean) => {
+const updateTransformRange = (resource: GSplatResource, gsplatData: GSplatData, a: number, b: number, upload: boolean) => {
     const transformA = resource.streams.getTexture('transformA');
     const transformB = resource.streams.getTexture('transformB');
     const dataA = transformA?._levels?.[0] as Uint32Array | undefined;
@@ -67,7 +72,7 @@ const updateTransformRange = (resource: any, gsplatData: GSplatData, a: number, 
     const p = new Vec3();
     const r = new Quat();
     const s = new Vec3();
-    const iter = (gsplatData as any).createIter(p, r, s);
+    const iter = gsplatData.createIter(p, r, s);
     for (let i = a; i < b; i++) {
         iter.read(i);
         r.normalize();
@@ -89,8 +94,8 @@ const updateTransformRange = (resource: any, gsplatData: GSplatData, a: number, 
     }
 };
 
-const uploadSHRows = (resource: any, a: number, b: number) => {
-    const shBands = resource.shBands as number;
+const uploadSHRows = (resource: GSplatResource, a: number, b: number) => {
+    const shBands = resource.shBands;
     if (shBands <= 0) {
         return;
     }
@@ -104,8 +109,8 @@ const uploadSHRows = (resource: any, a: number, b: number) => {
     }
 };
 
-const updateSHRange = (resource: any, gsplatData: GSplatData, a: number, b: number, upload: boolean) => {
-    const shBands = resource.shBands as number;
+const updateSHRange = (resource: GSplatResource, gsplatData: GSplatData, a: number, b: number, upload: boolean) => {
+    const shBands = resource.shBands;
     const sh1to3Texture = resource.streams.getTexture('splatSH_1to3');
     const sh4to7Texture = resource.streams.getTexture('splatSH_4to7');
     const sh8to11Texture = resource.streams.getTexture('splatSH_8to11');
@@ -179,7 +184,7 @@ const updateSHRange = (resource: any, gsplatData: GSplatData, a: number, b: numb
 // level copies are written — callers slicing a large range into many small
 // repack chunks should pass false and finish with one uploadGsplatRows
 // call over the whole range, so upload overhead isn't paid per chunk.
-const updateGsplatRangeData = (resource: any, gsplatData: GSplatData, a: number, b: number, upload = true) => {
+const updateGsplatRangeData = (resource: GSplatResource, gsplatData: GSplatData, a: number, b: number, upload = true) => {
     if (b <= a) {
         return;
     }
@@ -192,7 +197,7 @@ const updateGsplatRangeData = (resource: any, gsplatData: GSplatData, a: number,
 
 // SH-only repack for splats [a, b) — used when deferred SH coefficients
 // arrive after a range's geometry is already live.
-const updateGsplatSHRange = (resource: any, gsplatData: GSplatData, a: number, b: number, upload = true) => {
+const updateGsplatSHRange = (resource: GSplatResource, gsplatData: GSplatData, a: number, b: number, upload = true) => {
     if (b <= a || resource.shBands <= 0) {
         return;
     }
@@ -200,7 +205,7 @@ const updateGsplatSHRange = (resource: any, gsplatData: GSplatData, a: number, b
 };
 
 // Upload the texture rows covering [a, b) for the streams repacked above.
-const uploadGsplatRows = (resource: any, a: number, b: number, shOnly = false) => {
+const uploadGsplatRows = (resource: GSplatResource, a: number, b: number, shOnly = false) => {
     if (b <= a) {
         return;
     }

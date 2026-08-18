@@ -54,11 +54,47 @@ const isSogstFilename = (filename: string): boolean => {
 // [t0, t1] contains t — the single span [ min(range[0]), max(range[1]) ).
 // Segments are time-ordered and their coverage overlaps, so the active set is
 // contiguous and this is two ranges, never a scatter.
-interface SogstSegments {
+type SogstSegments = {
     duration: number;
     persistent: [number, number];
     list: { t0: number, t1: number, range: [number, number] }[];
 }
 
+// The `meta.json` manifest, as far as this player reads it.
+//
+// Deliberately a description of what we consume, not of the whole format: the
+// spec requires a player to **ignore** manifest keys it does not recognise
+// rather than reject them, so an archive carrying more than this is conforming
+// and must still load. TypeScript agrees — extra properties are structurally
+// fine on a parsed value — so adding a field here is only ever about letting
+// this code read it, never about tightening what we accept.
+//
+// Quantised attributes follow SOG v2: `mins`/`maxs` are split-plane endpoints
+// stored in log space (T = sign(x)*ln(1+|x|)), so a reader comparing them
+// against real-world values has to invert that first.
+type SogstMeta = {
+    version: number;
+    format: string;
+    count: number;
+    means: { mins: number[], maxs: number[] };
+    motion: { mins: number[], maxs: number[], degree?: number, files?: string[] };
+    trbf: { center: { codebook: number[] }, sigma: { codebook: number[] } };
+    /** Present only when motion.degree == 2. */
+    accel?: { mins: number[], maxs: number[], files?: string[] };
+    /** Absent on a still; defaults are 0 / 0 / 30. */
+    time?: { min: number, max: number, fps: number };
+    cov2d_scale?: number[];
+    shN?: { bands: number, files: string[] };
+    segments?: SogstSegments;
+    /** Present only on streamable archives; absent means one monolithic group. */
+    streams?: {
+        persistent: string;
+        segments: (string | null)[];
+        reveal_bytes: number;
+        geometry_bytes: number;
+        sh_deferred?: boolean;
+    };
+}
+
 export { isSogstFilename, SOGST_EXTENSIONS, SOGST_META_VERSION, SOGST_META_FORMAT };
-export type { SogstSegments };
+export type { SogstSegments, SogstMeta };

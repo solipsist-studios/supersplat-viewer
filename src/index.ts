@@ -12,7 +12,7 @@ import type { Collision } from './collision';
 import { initEmbed } from './embed';
 import { initLocalization } from './localization';
 import { importSettings } from './settings';
-import type { Config, Global, State } from './types';
+import type { Config, Global } from './types';
 import { initPoster, initUI } from './ui';
 import { Viewer } from './viewer';
 import { initXr } from './xr';

@@ -32,9 +32,9 @@ class EmbedInputDevice implements InputDevice {
         this._zoom += dz;
     }
 
-    attach(): void {}
+    attach(): void { /* host-fed device: nothing to bind */ }
 
-    detach(): void {}
+    detach(): void { /* host-fed device: nothing to unbind */ }
 
     update(ctx: UpdateContext, frame: CameraInputFrame): void {
         const { deltas } = frame;

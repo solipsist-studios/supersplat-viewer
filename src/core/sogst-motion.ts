@@ -1,9 +1,10 @@
 import {
     PIXELFORMAT_R32F,
-    PIXELFORMAT_RGBA32F,
-    type Entity,
-    type GSplatResource
+    PIXELFORMAT_RGBA32F
+    
+    
 } from 'playcanvas';
+import type { Entity, GSplatResource } from 'playcanvas';
 
 import { uploadTextureRows } from './gsplat-range-sync';
 import type { SogstData } from './load-sogst';
@@ -306,7 +307,7 @@ fn modifySplatColor(center: vec3f, color: ptr<function, vec4f>) {
 // resource's stream collection so they are bound to the work-buffer material.
 // Must be called before the entity's gsplat component receives the resource.
 const attachSogstMotion = (resource: GSplatResource, data: SogstData) => {
-    const streams = (resource as any).streams;
+    const streams = resource.streams;
     const dims = streams.textureDimensions;
     const w = dims.x;
     const h = dims.y;
@@ -346,7 +347,7 @@ const attachSogstMotion = (resource: GSplatResource, data: SogstData) => {
 
 // Upload the motion/temporal texture rows covering [a, b).
 const uploadSogstMotionRows = (resource: GSplatResource, a: number, b: number) => {
-    const streams = (resource as any).streams;
+    const streams = resource.streams;
     uploadTextureRows(streams.textures.get('splatMotion'), 4, a, b);
     uploadTextureRows(streams.textures.get('splatTemporal'), 1, a, b);
     const accelTex = streams.textures.get('splatAccel');
@@ -360,7 +361,7 @@ const uploadSogstMotionRows = (resource: GSplatResource, a: number, b: number) =
 // by the v3 segment streamer, where a full O(numSplats) rewrite per 0.1s
 // segment would stall weak devices.
 const syncSogstMotionRange = (resource: GSplatResource, data: SogstData, a: number, b: number, upload = true) => {
-    const streams = (resource as any).streams;
+    const streams = resource.streams;
     const motionTex = streams.textures.get('splatMotion');
     const temporalTex = streams.textures.get('splatTemporal');
     const motion = motionTex?._levels?.[0] as Float32Array | undefined;
@@ -416,7 +417,7 @@ const buildModifyChunk = (src: string, cov2dScale: [number, number] | null, segm
 
 // Install the temporal-evaluation modifier on the gsplat component.
 const bindSogstModifier = (entity: Entity, cov2dScale: [number, number] | null = null, segmented = false, accel = false) => {
-    const component = entity.gsplat as any;
+    const component = entity.gsplat;
     if (!component) {
         throw new Error('sogst v2: entity has no gsplat component');
     }
@@ -432,7 +433,7 @@ const bindSogstModifier = (entity: Entity, cov2dScale: [number, number] | null =
 // bounds for segmented content (see the chunk comment above).
 const setSogstParams = (entity: Entity, time: number, camera?: Entity,
     cullRanges?: [number, number, number] | null) => {
-    const component = entity.gsplat as any;
+    const component = entity.gsplat;
     if (!component) {
         return;
     }
