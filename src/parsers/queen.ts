@@ -37,20 +37,20 @@ import { GSplatData } from 'playcanvas';
 //   latent_res(2): same as latent, then output += previous frame's decoded output
 // ─────────────────────────────────────────────────────────────────────────────
 
-const MAGIC = 0x4E455551;   // little-endian uint32 for "QUEN"
+const MAGIC = 0x4e455551; // little-endian uint32 for "QUEN"
 const HEADER_SIZE = 32;
 
-const DECODER_IDENTITY  = 0;
-const DECODER_LATENT    = 1;
+const DECODER_IDENTITY = 0;
+const DECODER_LATENT = 1;
 const DECODER_LATENT_RES = 2;
 
 // Fixed attribute group indices.
-const ATTR_XYZ   = 0;   // featureDim = 3
-const ATTR_FDC   = 1;   // featureDim = 3
-const ATTR_FREST = 2;   // featureDim = shRestCount (0 when shDegree = 0)
-const ATTR_SC    = 3;   // featureDim = 3
-const ATTR_ROT   = 4;   // featureDim = 4
-const ATTR_OP    = 5;   // featureDim = 1
+const ATTR_XYZ = 0; // featureDim = 3
+const ATTR_FDC = 1; // featureDim = 3
+const ATTR_FREST = 2; // featureDim = shRestCount (0 when shDegree = 0)
+const ATTR_SC = 3; // featureDim = 3
+const ATTR_ROT = 4; // featureDim = 4
+const ATTR_OP = 5; // featureDim = 1
 
 const NUM_ATTRS = 6;
 
@@ -68,8 +68,8 @@ interface AttributeDecoder {
     type: number;
     latentDim: number;
     featureDim: number;
-    weight: Float32Array | null;    // [latentDim × featureDim], null for identity / empty attr
-    bias: Float32Array | null;      // [featureDim] or null
+    weight: Float32Array | null; // [latentDim × featureDim], null for identity / empty attr
+    bias: Float32Array | null; // [featureDim] or null
 }
 
 // Number of f_rest SH channels for a given shDegree.
@@ -87,7 +87,7 @@ const computeFrame0MinBytes = (buf: ArrayBuffer, available: number): number => {
     if (magic !== MAGIC) return -1;
 
     const numSplats = dv.getUint32(8, true);
-    const shDegree  = dv.getUint32(28, true);
+    const shDegree = dv.getUint32(28, true);
     const frestCount = computeShRestCount(shDegree);
 
     // Walk the decoder block to find where it ends.
@@ -98,9 +98,12 @@ const computeFrame0MinBytes = (buf: ArrayBuffer, available: number): number => {
         // type(1) + latentDim(4) + featureDim(4) = 9 bytes minimum
         if (cursor + 9 > available) return -1;
 
-        const type       = dv.getUint8(cursor); cursor += 1;
-        const latentDim  = dv.getUint32(cursor, true); cursor += 4;
-        const featureDim = dv.getUint32(cursor, true); cursor += 4;
+        const type = dv.getUint8(cursor);
+        cursor += 1;
+        const latentDim = dv.getUint32(cursor, true);
+        cursor += 4;
+        const featureDim = dv.getUint32(cursor, true);
+        cursor += 4;
         stride += featureDim;
 
         if (type !== DECODER_IDENTITY && featureDim > 0) {
@@ -109,7 +112,8 @@ const computeFrame0MinBytes = (buf: ArrayBuffer, available: number): number => {
             cursor += weightBytes;
 
             if (cursor + 1 > available) return -1;
-            const hasBias = dv.getUint8(cursor); cursor += 1;
+            const hasBias = dv.getUint8(cursor);
+            cursor += 1;
 
             if (hasBias) {
                 const biasBytes = featureDim * 4;
@@ -227,9 +231,12 @@ class QueenData {
         let cursor = HEADER_SIZE;
         const decoders: AttributeDecoder[] = [];
         for (let a = 0; a < NUM_ATTRS; a++) {
-            const type       = dv.getUint8(cursor); cursor += 1;
-            const latentDim  = dv.getUint32(cursor, true); cursor += 4;
-            const featureDim = dv.getUint32(cursor, true); cursor += 4;
+            const type = dv.getUint8(cursor);
+            cursor += 1;
+            const latentDim = dv.getUint32(cursor, true);
+            cursor += 4;
+            const featureDim = dv.getUint32(cursor, true);
+            cursor += 4;
 
             let weight: Float32Array | null = null;
             let bias: Float32Array | null = null;
@@ -238,7 +245,8 @@ class QueenData {
                 weight = QueenData._readFloat32(this._buffer, cursor, latentDim * featureDim);
                 cursor += latentDim * featureDim * 4;
 
-                const hasBias = dv.getUint8(cursor); cursor += 1;
+                const hasBias = dv.getUint8(cursor);
+                cursor += 1;
                 if (hasBias) {
                     bias = QueenData._readFloat32(this._buffer, cursor, featureDim);
                     cursor += featureDim * 4;
@@ -267,7 +275,7 @@ class QueenData {
         this.residualFramesStartOffset = cursor;
         this.residualFrameByteSize = decoders.reduce((s, d) => {
             if (d.featureDim === 0) return s;
-            return s + N * d.latentDim * 2 + 4;   // int16 data + float32 quantScale
+            return s + N * d.latentDim * 2 + 4; // int16 data + float32 quantScale
         }, 0);
 
         // Allocate per-splat work arrays.
@@ -294,10 +302,11 @@ class QueenData {
         }
 
         // Pre-allocate decode buffers, the dequantised-latents scratch buffer, and temporal state.
-        this.decodeBufs      = decoders.map(d => new Float32Array(Math.max(1, N * d.featureDim)));
-        const maxLatentN      = decoders.reduce((m, d) => Math.max(m, N * d.latentDim), 0);
-        this.floatLatentsBuf  = new Float32Array(Math.max(1, maxLatentN));
-        this.prevDecoded = decoders.map(d => ((d.type === DECODER_LATENT_RES && d.featureDim > 0) ? new Float32Array(N * d.featureDim) : null)
+        this.decodeBufs = decoders.map((d) => new Float32Array(Math.max(1, N * d.featureDim)));
+        const maxLatentN = decoders.reduce((m, d) => Math.max(m, N * d.latentDim), 0);
+        this.floatLatentsBuf = new Float32Array(Math.max(1, maxLatentN));
+        this.prevDecoded = decoders.map((d) =>
+            d.type === DECODER_LATENT_RES && d.featureDim > 0 ? new Float32Array(N * d.featureDim) : null
         );
 
         // Build GSplatData backed by the work arrays.
@@ -329,11 +338,13 @@ class QueenData {
             properties.push(prop(`f_rest_${k}`, this.frestArrays[k]));
         }
 
-        this._gsplatData = new GSplatData([{
-            name: 'vertex',
-            count: N,
-            properties
-        }]);
+        this._gsplatData = new GSplatData([
+            {
+                name: 'vertex',
+                count: N,
+                properties
+            }
+        ]);
     }
 
     // Append a newly received chunk to the internal buffer.
@@ -347,7 +358,7 @@ class QueenData {
             const newBytes = new Uint8Array(newSize);
             newBytes.set(this.rawBytes.subarray(0, this.bytesAvailable));
             this.rawBytes = newBytes;
-            this._buffer  = newBytes.buffer as ArrayBuffer;
+            this._buffer = newBytes.buffer as ArrayBuffer;
         }
         this.rawBytes.set(chunk, this.bytesAvailable);
         this.bytesAvailable += chunk.length;
@@ -393,7 +404,7 @@ class QueenData {
         // For latent_res decoders the output of frame f depends on frame f-1, so frames
         // must be decoded sequentially. For purely identity/latent decoders every frame
         // can be decoded independently.
-        const needsSequential = this.decoders.some(d => d.type === DECODER_LATENT_RES);
+        const needsSequential = this.decoders.some((d) => d.type === DECODER_LATENT_RES);
 
         if (!needsSequential) {
             // Independent frames: jump directly to the requested frame.
@@ -432,7 +443,7 @@ class QueenData {
             if (featureDim === 0) continue;
 
             const buf = this.decodeBufs[a];
-            const ao  = attrOffset[a];
+            const ao = attrOffset[a];
             for (let i = 0; i < N; i++) {
                 for (let j = 0; j < featureDim; j++) {
                     buf[i * featureDim + j] = baseData[i * stride + ao + j];
@@ -519,23 +530,23 @@ class QueenData {
     // Copy decodeBufs[a] into the appropriate typed work arrays.
     private _writeAttr(a: number, N: number): void {
         const buf = this.decodeBufs[a];
-        const fd  = this.decoders[a].featureDim;
+        const fd = this.decoders[a].featureDim;
         const { work } = this;
 
         switch (a) {
             case ATTR_XYZ:
                 for (let i = 0; i < N; i++) {
-                    work.x[i]     = buf[i * fd + 0];
-                    work.y[i]     = buf[i * fd + 1];
-                    work.z[i]     = buf[i * fd + 2];
+                    work.x[i] = buf[i * fd + 0];
+                    work.y[i] = buf[i * fd + 1];
+                    work.z[i] = buf[i * fd + 2];
                 }
                 break;
 
             case ATTR_FDC:
                 for (let i = 0; i < N; i++) {
-                    work.fdc0[i]  = buf[i * fd + 0];
-                    work.fdc1[i]  = buf[i * fd + 1];
-                    work.fdc2[i]  = buf[i * fd + 2];
+                    work.fdc0[i] = buf[i * fd + 0];
+                    work.fdc1[i] = buf[i * fd + 1];
+                    work.fdc2[i] = buf[i * fd + 2];
                 }
                 break;
 
@@ -560,10 +571,10 @@ class QueenData {
 
             case ATTR_ROT:
                 for (let i = 0; i < N; i++) {
-                    work.rot0[i]  = buf[i * fd + 0];
-                    work.rot1[i]  = buf[i * fd + 1];
-                    work.rot2[i]  = buf[i * fd + 2];
-                    work.rot3[i]  = buf[i * fd + 3];
+                    work.rot0[i] = buf[i * fd + 0];
+                    work.rot1[i] = buf[i * fd + 1];
+                    work.rot2[i] = buf[i * fd + 2];
+                    work.rot3[i] = buf[i * fd + 3];
                 }
                 break;
 

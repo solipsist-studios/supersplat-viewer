@@ -149,7 +149,7 @@ class CameraManager {
         // initialize camera mode and initial camera position. 4DGS content
         // starts in an interactive mode — playback is driven by the timeline,
         // not a camera track.
-        state.cameraMode = hasCameraAnim ? 'anim' : (isObjectExperience ? 'orbit' : (walkAllowed ? 'walk' : 'fly'));
+        state.cameraMode = hasCameraAnim ? 'anim' : isObjectExperience ? 'orbit' : walkAllowed ? 'walk' : 'fly';
         this.camera.copy(resetCamera);
 
         const target = new Camera(this.camera); // the active controller updates this
@@ -183,13 +183,15 @@ class CameraManager {
 
         // application update
         this.update = (deltaTime: number, frame: CameraFrame) => {
-
             // use dt of 0 if animation is paused; apply the transport speed
             // multiplier while a camera track is playing (sources are unused
             // in anim mode, so the scaled dt only reaches the anim controller)
-            const dt = state.cameraMode === 'anim' ?
-                (state.animationPaused ? 0 : deltaTime * state.animationSpeed) :
-                deltaTime;
+            const dt =
+                state.cameraMode === 'anim'
+                    ? state.animationPaused
+                        ? 0
+                        : deltaTime * state.animationSpeed
+                    : deltaTime;
 
             // update transition timer
             const prevTransitionTimer = transitionTimer;
@@ -214,8 +216,12 @@ class CameraManager {
                 state.animationTime = cursor.value;
 
                 // play-once mode: hold on the final pose and stop the transport
-                if (!state.animationPaused && state.animationLoopMode === 'none' &&
-                    cursor.duration > 0 && cursor.value >= cursor.duration) {
+                if (
+                    !state.animationPaused &&
+                    state.animationLoopMode === 'none' &&
+                    cursor.duration > 0 &&
+                    cursor.value >= cursor.duration
+                ) {
                     state.animationPaused = true;
                 }
             }

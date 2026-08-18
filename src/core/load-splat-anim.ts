@@ -33,7 +33,7 @@ const setupSplatAnim = (
     options: SetupSplatAnimOptions = {}
 ): Entity => {
     const rotationEulerDeg = options.rotationEulerDeg ?? [0, 0, 180];
-    const alphaClip = options.alphaClip ?? (1 / 255);
+    const alphaClip = options.alphaClip ?? 1 / 255;
 
     const entity = new Entity('gsplat');
     entity.setLocalEulerAngles(rotationEulerDeg[0], rotationEulerDeg[1], rotationEulerDeg[2]);

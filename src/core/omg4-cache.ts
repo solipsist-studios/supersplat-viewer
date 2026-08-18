@@ -21,9 +21,12 @@ type PieceManifest = {
 };
 
 const isManifest = (value: unknown): value is PieceManifest => {
-    return !!value && typeof value === 'object' &&
+    return (
+        !!value &&
+        typeof value === 'object' &&
         typeof (value as PieceManifest).omg4Pieces === 'number' &&
-        typeof (value as PieceManifest).totalBytes === 'number';
+        typeof (value as PieceManifest).totalBytes === 'number'
+    );
 };
 
 let omg4DbPromise: Promise<IDBDatabase | null> | null = null;

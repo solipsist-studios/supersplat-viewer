@@ -11,7 +11,11 @@ const INITIAL_ACCUM_BUF_SIZE = 65536;
 // availableFrames grows over time.  Callers on slower networks can raise initialFrames to
 // pre-buffer more frames before playback begins.
 // The onProgress callback receives integer values in [0, 100].
-const streamQueenData = async (url: string, onProgress: (progress: number) => void, initialFrames = 1): Promise<QueenData> => {
+const streamQueenData = async (
+    url: string,
+    onProgress: (progress: number) => void,
+    initialFrames = 1
+): Promise<QueenData> => {
     const response = await fetch(url);
     if (!response.ok) {
         throw new Error(`Failed to fetch ${url}: ${response.status} ${response.statusText}`);
@@ -25,7 +29,7 @@ const streamQueenData = async (url: string, onProgress: (progress: number) => vo
     const updateProgress = (size: number) => {
         bytesReceived += size;
         if (contentLength > 0) {
-            const p = Math.min(100, Math.trunc(bytesReceived / contentLength * 100));
+            const p = Math.min(100, Math.trunc((bytesReceived / contentLength) * 100));
             if (p > watermark) {
                 watermark = p;
                 onProgress(watermark);

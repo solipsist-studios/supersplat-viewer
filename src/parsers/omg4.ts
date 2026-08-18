@@ -61,7 +61,7 @@ import { GSplatData } from 'playcanvas';
 // streaming loader de-tiles into a standard-layout buffer as bytes arrive.
 // ─────────────────────────────────────────────────────────────────────────────
 
-const MAGIC = 0x34474D4F;   // little-endian uint32 of "OMG4"
+const MAGIC = 0x34474d4f; // little-endian uint32 of "OMG4"
 const HEADER_SIZE = 28;
 const FLOATS_PER_SPLAT = 14;
 
@@ -97,10 +97,10 @@ interface WorkArrays {
     x: Float32Array;
     y: Float32Array;
     z: Float32Array;
-    rot0: Float32Array;  // w
-    rot1: Float32Array;  // x
-    rot2: Float32Array;  // y
-    rot3: Float32Array;  // z
+    rot0: Float32Array; // w
+    rot1: Float32Array; // x
+    rot2: Float32Array; // y
+    rot3: Float32Array; // z
     scale0: Float32Array;
     scale1: Float32Array;
     scale2: Float32Array;
@@ -215,7 +215,7 @@ class Omg4Data {
         if (numFrames <= 1) return 0;
 
         const timestampDuration = this.frameTimestamps[numFrames - 1] - this.frameTimestamps[0];
-        return timestampDuration > 0 ? timestampDuration : (fps > 0 ? (numFrames - 1) / fps : 0);
+        return timestampDuration > 0 ? timestampDuration : fps > 0 ? (numFrames - 1) / fps : 0;
     }
 
     // Map a playback time [0..duration] to the nearest baked frame timestamp.
@@ -244,7 +244,10 @@ class Omg4Data {
 
         const upper = lo;
         const lower = Math.max(0, upper - 1);
-        return Math.abs(this.frameTimestamps[upper] - targetTimestamp) < Math.abs(targetTimestamp - this.frameTimestamps[lower]) ? upper : lower;
+        return Math.abs(this.frameTimestamps[upper] - targetTimestamp) <
+            Math.abs(targetTimestamp - this.frameTimestamps[lower])
+            ? upper
+            : lower;
     }
 
     // Unpack the given frame's data into the mutable working arrays.
@@ -258,20 +261,20 @@ class Omg4Data {
         const { x, y, z, rot0, rot1, rot2, rot3, scale0, scale1, scale2, opacity, fdc0, fdc1, fdc2 } = this.work;
         for (let i = 0; i < N; i++) {
             const b = i * FLOATS_PER_SPLAT;
-            x[i]       = floats[b];
-            y[i]       = floats[b + 1];
-            z[i]       = floats[b + 2];
-            rot0[i]    = floats[b + 3];   // w
-            rot1[i]    = floats[b + 4];   // x
-            rot2[i]    = floats[b + 5];   // y
-            rot3[i]    = floats[b + 6];   // z
-            scale0[i]  = floats[b + 7];
-            scale1[i]  = floats[b + 8];
-            scale2[i]  = floats[b + 9];
+            x[i] = floats[b];
+            y[i] = floats[b + 1];
+            z[i] = floats[b + 2];
+            rot0[i] = floats[b + 3]; // w
+            rot1[i] = floats[b + 4]; // x
+            rot2[i] = floats[b + 5]; // y
+            rot3[i] = floats[b + 6]; // z
+            scale0[i] = floats[b + 7];
+            scale1[i] = floats[b + 8];
+            scale2[i] = floats[b + 9];
             opacity[i] = floats[b + 10];
-            fdc0[i]    = floats[b + 11];
-            fdc1[i]    = floats[b + 12];
-            fdc2[i]    = floats[b + 13];
+            fdc0[i] = floats[b + 11];
+            fdc1[i] = floats[b + 12];
+            fdc2[i] = floats[b + 13];
         }
     }
 }
@@ -331,7 +334,7 @@ class Omg4V2Data {
         // scale (kx, ky as 2 x float16) that the renderer must apply.
         if ((flags & V2_FLAG_COV2D) !== 0) {
             const halfToFloat = (h: number) => {
-                const s = (h & 0x8000) ? -1 : 1;
+                const s = h & 0x8000 ? -1 : 1;
                 const e = (h >> 10) & 0x1f;
                 const m = h & 0x3ff;
                 if (e === 0) return s * m * 2 ** -24;
@@ -380,11 +383,13 @@ class Omg4V2Data {
             }
         }
 
-        this.gsplatData = new GSplatData([{
-            name: 'vertex',
-            count: N,
-            properties
-        }]);
+        this.gsplatData = new GSplatData([
+            {
+                name: 'vertex',
+                count: N,
+                properties
+            }
+        ]);
 
         this.velocityX = field(14);
         this.velocityY = field(15);
@@ -404,16 +409,16 @@ const parseOmg4V2 = (buffer: ArrayBuffer): Omg4V2Data => new Omg4V2Data(buffer);
 interface Omg4V2Header {
     version: number;
     numSplats: number;
-    flags: number;          // raw flags word (bit 2 included)
-    reserved: number;       // raw reserved word (cov2d packing preserved)
+    flags: number; // raw flags word (bit 2 included)
+    reserved: number; // raw reserved word (cov2d packing preserved)
     hasSH: boolean;
     tiled: boolean;
-    tileSize: number;       // splats per tile; 0 when not tiled
+    tileSize: number; // splats per tile; 0 when not tiled
     timeMin: number;
     timeMax: number;
     fps: number;
-    headerSize: number;     // 32 (standard) or 40 (tiled)
-    numFields: number;      // 19, or 64 with SH
+    headerSize: number; // 32 (standard) or 40 (tiled)
+    numFields: number; // 19, or 64 with SH
     /** Total file size implied by the header. */
     totalBytes: number;
 }
@@ -485,8 +490,15 @@ const readOmg4Version = (buffer: ArrayBuffer): number => {
 };
 
 export {
-    Omg4Data, Omg4V2Data, parseOmg4, parseOmg4V2, readOmg4Version,
-    readOmg4V2Header, writeOmg4V2StandardHeader,
-    V2_HEADER_SIZE, V2_TILED_HEADER_SIZE, V2_NUM_FIELDS
+    Omg4Data,
+    Omg4V2Data,
+    parseOmg4,
+    parseOmg4V2,
+    readOmg4Version,
+    readOmg4V2Header,
+    writeOmg4V2StandardHeader,
+    V2_HEADER_SIZE,
+    V2_TILED_HEADER_SIZE,
+    V2_NUM_FIELDS
 };
 export type { Omg4FrameData, Omg4V2Header };

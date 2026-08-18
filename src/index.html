@@ -2,11 +2,17 @@
 <html lang="en">
     <head>
         <title>SuperSplat Viewer</title>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-        <base href="">
-        <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Ccircle cx='32' cy='32' r='30' fill='%23111111'/%3E%3Ccircle cx='32' cy='32' r='12' fill='%23ffffff'/%3E%3C/svg%3E">
-        <link rel="stylesheet" href="./index.css">
+        <meta charset="UTF-8" />
+        <meta
+            name="viewport"
+            content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"
+        />
+        <base href="" />
+        <link
+            rel="icon"
+            href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Ccircle cx='32' cy='32' r='30' fill='%23111111'/%3E%3Ccircle cx='32' cy='32' r='12' fill='%23ffffff'/%3E%3C/svg%3E"
+        />
+        <link rel="stylesheet" href="./index.css" />
         <script type="module">
             const createImage = (url) => {
                 const img = new Image();
@@ -75,7 +81,9 @@
             const skyboxUrl = url.searchParams.get('skybox');
             const collisionUrl = url.searchParams.get('collision') ?? url.searchParams.get('voxel');
             const settingsUrl = url.searchParams.get('settings');
-            const contentUrl = url.searchParams.has('content') ? url.searchParams.get('content') : './coffee_martini.omg4';
+            const contentUrl = url.searchParams.has('content')
+                ? url.searchParams.get('content')
+                : './coffee_martini.omg4';
             const omg4RotationDeg = parseRotationParam(url.searchParams.get('omg4rot'), [270, 0, 0]);
 
             const renderer = url.searchParams.has('webgl') ? 'webgl' : 'webgpu';
@@ -118,11 +126,11 @@
                 config: sseConfig,
                 settings: settingsUrl
                     ? fetch(settingsUrl).then((response) => {
-                        if (!response.ok) {
-                            throw new Error(`Failed to load settings: ${response.status} ${response.statusText}`);
-                        }
-                        return response.json();
-                    })
+                          if (!response.ok) {
+                              throw new Error(`Failed to load settings: ${response.status} ${response.statusText}`);
+                          }
+                          return response.json();
+                      })
                     : Promise.resolve(defaultSettings)
             };
         </script>
@@ -191,16 +199,28 @@
                         </button>
                         <button id="loopMode" class="controlButton">
                             <svg id="loopRepeatSvg" xmlns="http://www.w3.org/2000/svg" width="24" height="24">
-                                <g class='stroke'><use href="#loopRepeatIcon"/></g>
-                                <g class='fill'><use href="#loopRepeatIcon"/></g>
+                                <g class="stroke"><use href="#loopRepeatIcon" /></g>
+                                <g class="fill"><use href="#loopRepeatIcon" /></g>
                             </svg>
-                            <svg id="loopPingpongSvg" xmlns="http://www.w3.org/2000/svg" width="24" height="24" class="hidden">
-                                <g class='stroke'><use href="#loopPingpongIcon"/></g>
-                                <g class='fill'><use href="#loopPingpongIcon"/></g>
+                            <svg
+                                id="loopPingpongSvg"
+                                xmlns="http://www.w3.org/2000/svg"
+                                width="24"
+                                height="24"
+                                class="hidden"
+                            >
+                                <g class="stroke"><use href="#loopPingpongIcon" /></g>
+                                <g class="fill"><use href="#loopPingpongIcon" /></g>
                             </svg>
-                            <svg id="loopNoneSvg" xmlns="http://www.w3.org/2000/svg" width="24" height="24" class="hidden">
-                                <g class='stroke'><use href="#loopNoneIcon"/></g>
-                                <g class='fill'><use href="#loopNoneIcon"/></g>
+                            <svg
+                                id="loopNoneSvg"
+                                xmlns="http://www.w3.org/2000/svg"
+                                width="24"
+                                height="24"
+                                class="hidden"
+                            >
+                                <g class="stroke"><use href="#loopNoneIcon" /></g>
+                                <g class="fill"><use href="#loopNoneIcon" /></g>
                             </svg>
                         </button>
                         <div id="playbackSpeedControl">
@@ -211,7 +231,15 @@
                                 <button class="speedPreset" data-speed="0.5">0.5&times;</button>
                                 <button class="speedPreset" data-speed="0.25">0.25&times;</button>
                                 <div class="speedCustomRow">
-                                    <input id="playbackSpeedCustom" type="number" min="0.1" max="10" step="0.05" inputmode="decimal" aria-label="Custom playback speed">
+                                    <input
+                                        id="playbackSpeedCustom"
+                                        type="number"
+                                        min="0.1"
+                                        max="10"
+                                        step="0.05"
+                                        inputmode="decimal"
+                                        aria-label="Custom playback speed"
+                                    />
                                     <span>&times;</span>
                                 </div>
                             </div>
@@ -351,8 +379,8 @@
             </div>
 
             <!-- Hidden file inputs for 3DGS and 4DGS loading -->
-            <input type="file" id="load3dgsInput" accept=".ply,.splat,.zip,.json" style="display:none">
-            <input type="file" id="load4dgsInput" accept=".omg4,.queen" style="display:none">
+            <input type="file" id="load3dgsInput" accept=".ply,.splat,.zip,.json" style="display: none" />
+            <input type="file" id="load4dgsInput" accept=".omg4,.queen" style="display: none" />
 
             <!-- Info Panel -->
             <div id="infoPanel" class="hidden">
@@ -681,13 +709,13 @@
                 <path d="M5 16V4h3v12H5zm7-12h3v12h-3V4z" />
             </symbol>
             <symbol id="loopRepeatIcon" viewBox="0 0 24 24">
-                <path d="M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4z"/>
+                <path d="M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4z" />
             </symbol>
             <symbol id="loopPingpongIcon" viewBox="0 0 24 24">
-                <path d="M6.99 11L3 15l3.99 4v-3H14v-2H6.99v-3zM21 9l-3.99-4v3H10v2h7.01v3L21 9z"/>
+                <path d="M6.99 11L3 15l3.99 4v-3H14v-2H6.99v-3zM21 9l-3.99-4v3H10v2h7.01v3L21 9z" />
             </symbol>
             <symbol id="loopNoneIcon" viewBox="0 0 24 24">
-                <path d="M3 11h10.17l-3.58-3.59L11 6l6 6-6 6-1.41-1.41L13.17 13H3v-2zm16-5h2v12h-2V6z"/>
+                <path d="M3 11h10.17l-3.58-3.59L11 6l6 6-6 6-1.41-1.41L13.17 13H3v-2zm16-5h2v12h-2V6z" />
             </symbol>
             <symbol id="orbitIcon" viewBox="-2 -2 20 20">
                 <path
@@ -821,7 +849,7 @@
                         ...config,
                         contentUrl: blobUrl,
                         contentFilename: file.name,
-                        contents: fetch(blobUrl),
+                        contents: fetch(blobUrl)
                     };
 
                     const canvas = document.getElementById('application-canvas');

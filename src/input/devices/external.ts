@@ -39,11 +39,7 @@ class EmbedInputDevice implements InputDevice {
     update(ctx: UpdateContext, frame: CameraInputFrame): void {
         const { deltas } = frame;
 
-        deltas.rotate.append([
-            this._rotate.x * this.rotateSpeed,
-            this._rotate.y * this.rotateSpeed,
-            0
-        ]);
+        deltas.rotate.append([this._rotate.x * this.rotateSpeed, this._rotate.y * this.rotateSpeed, 0]);
 
         const v = tmpV1.set(0, 0, -this._zoom * this.zoomSpeed * DISPLACEMENT_SCALE);
         deltas.move.append([v.x, v.y, flipZForOrbit(ctx.mode, v.z)]);

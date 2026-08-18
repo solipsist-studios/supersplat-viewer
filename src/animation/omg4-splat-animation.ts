@@ -15,7 +15,7 @@ class Omg4SplatAnimation extends SplatAnimationBase {
 
     constructor(data: Omg4FrameData, resource: GSplatResource) {
         super();
-        this.data     = data;
+        this.data = data;
         this.resource = resource;
     }
 

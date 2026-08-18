@@ -13,18 +13,18 @@ type Config = {
     poster?: HTMLImageElement;
     skyboxUrl?: string;
     contentUrl?: string;
-    contentFilename?: string;           // original filename when content is a blob URL (no extension in URL)
+    contentFilename?: string; // original filename when content is a blob URL (no extension in URL)
     contents?: Promise<Response>;
     omg4RotationDeg?: [number, number, number];
-    animLoopMode?: 'loop' | 'pingpong';        // 4DGS playback loop style (default 'loop')
+    animLoopMode?: 'loop' | 'pingpong'; // 4DGS playback loop style (default 'loop')
     collisionUrl?: string;
 
     noui: boolean;
     noanim: boolean;
-    embed: boolean;                             // enable the postMessage embed bridge (input, transport, state events)
-    transparent: boolean;                       // render with a transparent background for blending with a host page
-    nofx: boolean;                              // disable post effects
-    hpr?: boolean;                              // override highPrecisionRendering (undefined = use settings)
+    embed: boolean; // enable the postMessage embed bridge (input, transport, state events)
+    transparent: boolean; // render with a transparent background for blending with a host page
+    nofx: boolean; // disable post effects
+    hpr?: boolean; // override highPrecisionRendering (undefined = use settings)
     ministats: boolean;
     colorize: boolean; // render with LOD colorization
     fullload: boolean; // load all streaming LOD data before first frame
@@ -38,18 +38,18 @@ type Config = {
 
 // observable state that can change at runtime
 type State = {
-    loaded: boolean;                            // true once first frame is rendered
-    readyToRender: boolean;                     // don't render till this is set
+    loaded: boolean; // true once first frame is rendered
+    readyToRender: boolean; // don't render till this is set
     performanceMode: boolean;
     progress: number; // content loading progress 0-100
     inputMode: InputMode;
     cameraMode: CameraMode;
-    hasAnimation: boolean;                      // true only for 4DGS content — the timeline drives file playback, not the camera
+    hasAnimation: boolean; // true only for 4DGS content — the timeline drives file playback, not the camera
     animationDuration: number;
     animationTime: number;
     animationPaused: boolean;
-    animationLoopMode: LoopMode;                // transport loop behaviour: play once / loop / bounce
-    animationSpeed: number;                     // playback rate multiplier (1 = realtime)
+    animationLoopMode: LoopMode; // transport loop behaviour: play once / loop / bounce
+    animationSpeed: number; // playback rate multiplier (1 = realtime)
     hasAR: boolean;
     hasVR: boolean;
     hasCollision: boolean;

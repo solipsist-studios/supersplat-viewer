@@ -3,7 +3,7 @@ import { GSplatData } from 'playcanvas';
 import { idbGetBuffer, idbSetBuffer } from './omg4-cache';
 import type { Omg4FrameData } from '../parsers/omg4';
 
-const MAGIC = 0x34474D4F;
+const MAGIC = 0x34474d4f;
 const HEADER_SIZE = 28;
 const FLOATS_PER_SPLAT = 14;
 const MAX_CACHED_FRAMES = 32;
@@ -37,7 +37,8 @@ type WorkArrays = {
     fdc2: Float32Array;
 };
 
-const rangeCacheKey = (url: string, start: number, end: number) => `${new URL(url, location.href).toString()}?__omg4_range=${start}-${end}`;
+const rangeCacheKey = (url: string, start: number, end: number) =>
+    `${new URL(url, location.href).toString()}?__omg4_range=${start}-${end}`;
 
 const idbGetRange = idbGetBuffer;
 const idbSetRange = idbSetBuffer;
@@ -89,11 +90,14 @@ const fetchRange = async (url: string, start: number, end: number): Promise<Arra
 
     const buffer = await fetchRangeNetwork(url, start, end);
     if (OMG4_DEBUG_LOG) console.debug('OMG4 range fetch (network)', key);
-    await cache.put(request, new Response(buffer, {
-        headers: {
-            'Content-Type': 'application/octet-stream'
-        }
-    }));
+    await cache.put(
+        request,
+        new Response(buffer, {
+            headers: {
+                'Content-Type': 'application/octet-stream'
+            }
+        })
+    );
     await idbSetRange(key, buffer);
 
     return buffer;
@@ -158,26 +162,28 @@ class StreamedOmg4Data implements Omg4FrameData {
             byteSize: 4
         });
 
-        this.gsplatData = new GSplatData([{
-            name: 'vertex',
-            count,
-            properties: [
-                prop('x', this.work.x),
-                prop('y', this.work.y),
-                prop('z', this.work.z),
-                prop('rot_0', this.work.rot0),
-                prop('rot_1', this.work.rot1),
-                prop('rot_2', this.work.rot2),
-                prop('rot_3', this.work.rot3),
-                prop('scale_0', this.work.scale0),
-                prop('scale_1', this.work.scale1),
-                prop('scale_2', this.work.scale2),
-                prop('opacity', this.work.opacity),
-                prop('f_dc_0', this.work.fdc0),
-                prop('f_dc_1', this.work.fdc1),
-                prop('f_dc_2', this.work.fdc2)
-            ]
-        }]);
+        this.gsplatData = new GSplatData([
+            {
+                name: 'vertex',
+                count,
+                properties: [
+                    prop('x', this.work.x),
+                    prop('y', this.work.y),
+                    prop('z', this.work.z),
+                    prop('rot_0', this.work.rot0),
+                    prop('rot_1', this.work.rot1),
+                    prop('rot_2', this.work.rot2),
+                    prop('rot_3', this.work.rot3),
+                    prop('scale_0', this.work.scale0),
+                    prop('scale_1', this.work.scale1),
+                    prop('scale_2', this.work.scale2),
+                    prop('opacity', this.work.opacity),
+                    prop('f_dc_0', this.work.fdc0),
+                    prop('f_dc_1', this.work.fdc1),
+                    prop('f_dc_2', this.work.fdc2)
+                ]
+            }
+        ]);
 
         this.copyFrame(frame0);
     }
@@ -217,7 +223,11 @@ class StreamedOmg4Data implements Omg4FrameData {
         if (this.header.numFrames <= 1) {
             return 0;
         }
-        return timestampDuration > 0 ? timestampDuration : (this.header.fps > 0 ? (this.header.numFrames - 1) / this.header.fps : 0);
+        return timestampDuration > 0
+            ? timestampDuration
+            : this.header.fps > 0
+              ? (this.header.numFrames - 1) / this.header.fps
+              : 0;
     }
 
     getFrameIndex(time: number): number {
@@ -227,11 +237,16 @@ class StreamedOmg4Data implements Omg4FrameData {
 
         const duration = this.duration;
         if (duration <= 0) {
-            return this.header.fps > 0 ? Math.max(0, Math.min(this.header.numFrames - 1, Math.round(time * this.header.fps))) : 0;
+            return this.header.fps > 0
+                ? Math.max(0, Math.min(this.header.numFrames - 1, Math.round(time * this.header.fps)))
+                : 0;
         }
 
         const clampedTime = Math.max(0, Math.min(duration, time));
-        const desiredFrame = Math.max(0, Math.min(this.header.numFrames - 1, Math.round(clampedTime / duration * (this.header.numFrames - 1))));
+        const desiredFrame = Math.max(
+            0,
+            Math.min(this.header.numFrames - 1, Math.round((clampedTime / duration) * (this.header.numFrames - 1)))
+        );
         return Math.min(desiredFrame, this.maxSequentialReadyFrame);
     }
 
@@ -322,7 +337,11 @@ class StreamedOmg4Data implements Omg4FrameData {
         for (let frame = startFrame; frame <= endFrame; frame++) {
             if (!this.frameCache.has(frame)) {
                 const byteOffset = (frame - startFrame) * this.frameByteSize;
-                const frameBytes = new Uint8Array(chunkBytes.buffer, chunkBytes.byteOffset + byteOffset, this.frameByteSize);
+                const frameBytes = new Uint8Array(
+                    chunkBytes.buffer,
+                    chunkBytes.byteOffset + byteOffset,
+                    this.frameByteSize
+                );
                 this.frameCache.set(frame, frameBytes);
             }
             this.touchFrame(frame);
@@ -330,7 +349,7 @@ class StreamedOmg4Data implements Omg4FrameData {
     }
 
     private touchFrame(frameIndex: number): void {
-        this.frameOrder = this.frameOrder.filter(index => index !== frameIndex);
+        this.frameOrder = this.frameOrder.filter((index) => index !== frameIndex);
         this.frameOrder.push(frameIndex);
     }
 
@@ -374,6 +393,7 @@ class StreamedOmg4Data implements Omg4FrameData {
     }
 }
 
-const streamOmg4Data = (url: string, onProgress: (progress: number) => void) => StreamedOmg4Data.create(url, onProgress);
+const streamOmg4Data = (url: string, onProgress: (progress: number) => void) =>
+    StreamedOmg4Data.create(url, onProgress);
 
 export { StreamedOmg4Data, streamOmg4Data };

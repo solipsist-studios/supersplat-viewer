@@ -181,14 +181,14 @@ const loadOmg4V2Streaming = async (
 
     // Cache the completed standard-layout buffer in the background.
     stream.complete
-    .then((buffer) => {
-        idbSetBuffer(cacheKey, buffer)
-        .then(() => idbDeleteByPrefix(fullFileKeyPrefix(config.contentUrl), cacheKey))
-        .catch(() => {});
-    })
-    .catch((err: Error) => {
-        console.warn('OMG4 stream did not complete; partial scene retained:', err);
-    });
+        .then((buffer) => {
+            idbSetBuffer(cacheKey, buffer)
+                .then(() => idbDeleteByPrefix(fullFileKeyPrefix(config.contentUrl), cacheKey))
+                .catch(() => {});
+        })
+        .catch((err: Error) => {
+            console.warn('OMG4 stream did not complete; partial scene retained:', err);
+        });
 
     const animation = new Omg4V2SplatAnimation(data);
     const entity = setupSplatAnim(app, config, global, resource, animation, {
@@ -200,7 +200,12 @@ const loadOmg4V2Streaming = async (
 };
 
 // Load and animate a .omg4 (OMG4-encoded 4D Gaussian Splat) file.
-const loadOmg4Gsplat = async (app: AppBase, config: Config, global: Global, progressCallback: (progress: number) => void) => {
+const loadOmg4Gsplat = async (
+    app: AppBase,
+    config: Config,
+    global: Global,
+    progressCallback: (progress: number) => void
+) => {
     const headerBytes = await fetchOmg4HeaderBytes(config.contentUrl, 40);
     const version = readOmg4Version(headerBytes);
 
@@ -240,7 +245,12 @@ const loadOmg4Gsplat = async (app: AppBase, config: Config, global: Global, prog
 // Load and animate a .queen (QUEEN-encoded 4D Gaussian Splat) file.
 // Waits until initialFrames have been buffered before resolving, so playback
 // starts immediately without stutter; remaining frames stream in the background.
-const loadQueenGsplat = async (app: AppBase, config: Config, global: Global, progressCallback: (progress: number) => void) => {
+const loadQueenGsplat = async (
+    app: AppBase,
+    config: Config,
+    global: Global,
+    progressCallback: (progress: number) => void
+) => {
     const data = await streamQueenData(config.contentUrl, progressCallback);
     data.loadFrame(0);
     const resource = new GSplatResource(app.graphicsDevice, data.gsplatData);
@@ -249,26 +259,41 @@ const loadQueenGsplat = async (app: AppBase, config: Config, global: Global, pro
 };
 
 // Load a static 3DGS scene (PLY / LOD / meta.json etc.)
-const load3dgs = (app: AppBase, config: Config, progressCallback: (progress: number) => void) => loadGsplat(app, config, progressCallback);
+const load3dgs = (app: AppBase, config: Config, progressCallback: (progress: number) => void) =>
+    loadGsplat(app, config, progressCallback);
 
 // Load and animate a 4DGS file, dispatching to the correct format handler.
-const load4dgs = (app: AppBase, config: Config, global: Global, progressCallback: (progress: number) => void): Promise<Entity> => {
-    const lowerName = (config.contentFilename ?? new URL(config.contentUrl, location.href).pathname.split('/').pop() ?? '').toLowerCase();
-    if (lowerName.endsWith('.omg4'))  return loadOmg4Gsplat(app, config, global, progressCallback);
+const load4dgs = (
+    app: AppBase,
+    config: Config,
+    global: Global,
+    progressCallback: (progress: number) => void
+): Promise<Entity> => {
+    const lowerName = (
+        config.contentFilename ??
+        new URL(config.contentUrl, location.href).pathname.split('/').pop() ??
+        ''
+    ).toLowerCase();
+    if (lowerName.endsWith('.omg4')) return loadOmg4Gsplat(app, config, global, progressCallback);
     if (lowerName.endsWith('.queen')) return loadQueenGsplat(app, config, global, progressCallback);
     return Promise.reject(new Error(`Unsupported 4DGS format: ${lowerName}`));
 };
 
 const loadSkybox = (app: AppBase, url: string) => {
     return new Promise<Asset>((resolve, reject) => {
-        const asset = new Asset('skybox', 'texture', {
-            url
-        }, {
-            type: 'rgbp',
-            mipmaps: false,
-            addressu: 'repeat',
-            addressv: 'clamp'
-        });
+        const asset = new Asset(
+            'skybox',
+            'texture',
+            {
+                url
+            },
+            {
+                type: 'rgbp',
+                mipmaps: false,
+                addressu: 'repeat',
+                addressv: 'clamp'
+            }
+        );
 
         asset.on('load', () => {
             resolve(asset);

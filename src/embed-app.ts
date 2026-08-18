@@ -86,7 +86,8 @@ const defaultSettings = {
 const createEmbedViewer = async (options: EmbedViewerOptions): Promise<EmbedViewer> => {
     // 4DGS formats manage their own (streaming/cached) fetches — starting the
     // eager `contents` prefetch for them would download the file twice.
-    const embedFilename = options.contentFilename ?? new URL(options.contentUrl, location.href).pathname.split('/').pop() ?? '';
+    const embedFilename =
+        options.contentFilename ?? new URL(options.contentUrl, location.href).pathname.split('/').pop() ?? '';
     const embedLower = embedFilename.toLowerCase();
     const embedIs4dgs = embedLower.endsWith('.omg4') || embedLower.endsWith('.queen');
 
@@ -131,15 +132,16 @@ const createEmbedViewer = async (options: EmbedViewerOptions): Promise<EmbedView
     initXr(global);
 
     // Load model
-    const filename = config.contentFilename ?? new URL(config.contentUrl, location.href).pathname.split('/').pop() ?? '';
+    const filename =
+        config.contentFilename ?? new URL(config.contentUrl, location.href).pathname.split('/').pop() ?? '';
     const lowerFilename = filename.toLowerCase();
     const progressCallback = (progress: number) => {
         state.progress = progress;
     };
     const is4dgs = lowerFilename.endsWith('.omg4') || lowerFilename.endsWith('.queen');
-    const gsplatLoad = is4dgs ?
-        load4dgs(app, config, global, progressCallback) :
-        load3dgs(app, config, progressCallback);
+    const gsplatLoad = is4dgs
+        ? load4dgs(app, config, global, progressCallback)
+        : load3dgs(app, config, progressCallback);
 
     const viewer = new Viewer(global, gsplatLoad, undefined, undefined);
 
@@ -172,10 +174,12 @@ const createEmbedViewer = async (options: EmbedViewerOptions): Promise<EmbedView
         };
 
         let contentEntity: Entity | null = null;
-        gsplatLoad.then((entity) => {
-            contentEntity = entity;
-            applyTransform(entity);
-        }).catch(() => {});
+        gsplatLoad
+            .then((entity) => {
+                contentEntity = entity;
+                applyTransform(entity);
+            })
+            .catch(() => {});
 
         // Re-apply on session end so the page view always returns to the
         // configured transform, whatever happened during the XR session.

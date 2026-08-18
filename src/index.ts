@@ -1,9 +1,4 @@
-import {
-    EventHandler,
-    platform,
-    revision as engineRevision,
-    version as engineVersion
-} from 'playcanvas';
+import { EventHandler, platform, revision as engineRevision, version as engineVersion } from 'playcanvas';
 import type { Texture } from 'playcanvas';
 
 import { version as appVersion } from '../package.json';
@@ -89,15 +84,16 @@ const main = async (canvas: HTMLCanvasElement, settingsJson: unknown, config: Co
     initUI(global);
 
     // Load model
-    const filename = config.contentFilename ?? new URL(config.contentUrl, location.href).pathname.split('/').pop() ?? '';
+    const filename =
+        config.contentFilename ?? new URL(config.contentUrl, location.href).pathname.split('/').pop() ?? '';
     const lowerFilename = filename.toLowerCase();
     const progressCallback = (progress: number) => {
         state.progress = progress;
     };
     const is4dgs = lowerFilename.endsWith('.omg4') || lowerFilename.endsWith('.queen');
-    const gsplatLoad = is4dgs ?
-        load4dgs(app, config, global, progressCallback) :
-        load3dgs(app, config, progressCallback);
+    const gsplatLoad = is4dgs
+        ? load4dgs(app, config, global, progressCallback)
+        : load3dgs(app, config, progressCallback);
 
     // Load skybox (continue without if it fails — e.g. CORS, 404)
     const skyboxLoad =

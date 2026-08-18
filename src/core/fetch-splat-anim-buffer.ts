@@ -13,9 +13,11 @@ const fullFileCacheKey = async (url: string): Promise<string> => {
     try {
         const head = await fetch(url, { method: 'HEAD' });
         if (head.ok) {
-            validator = head.headers.get('etag') ??
+            validator =
+                head.headers.get('etag') ??
                 head.headers.get('last-modified') ??
-                head.headers.get('content-length') ?? '';
+                head.headers.get('content-length') ??
+                '';
         }
     } catch {
         // offline or HEAD unsupported — fall through to the bare key
@@ -23,7 +25,10 @@ const fullFileCacheKey = async (url: string): Promise<string> => {
     return fullFileKeyPrefix(url) + validator;
 };
 
-const fetchSplatAnimBufferNetwork = async (url: string, onProgress: (progress: number) => void): Promise<ArrayBuffer> => {
+const fetchSplatAnimBufferNetwork = async (
+    url: string,
+    onProgress: (progress: number) => void
+): Promise<ArrayBuffer> => {
     const response = await fetch(url);
     if (!response.ok) {
         throw new Error(`Failed to fetch ${url}: ${response.status} ${response.statusText}`);
@@ -61,7 +66,7 @@ const fetchSplatAnimBufferNetwork = async (url: string, onProgress: (progress: n
         bytes.set(value, received);
         received += value.length;
 
-        const progress = contentLength > 0 ? Math.min(100, Math.trunc(received / contentLength * 100)) : 0;
+        const progress = contentLength > 0 ? Math.min(100, Math.trunc((received / contentLength) * 100)) : 0;
         if (progress > watermark) {
             watermark = progress;
             onProgress(watermark);
@@ -101,10 +106,10 @@ const fetchSplatAnimBuffer = async (url: string, onProgress: (progress: number) 
     // validators). Deliberately NOT awaited: the scene must never be held
     // hostage to (or lost with) a slow or failing cache write.
     idbSetBuffer(cacheKey, buffer)
-    .then(() => idbDeleteByPrefix(fullFileKeyPrefix(url), cacheKey))
-    .catch((err) => {
-        if (OMG4_DEBUG_LOG) console.debug('OMG4 full-file cache write failed', err);
-    });
+        .then(() => idbDeleteByPrefix(fullFileKeyPrefix(url), cacheKey))
+        .catch((err) => {
+            if (OMG4_DEBUG_LOG) console.debug('OMG4 full-file cache write failed', err);
+        });
 
     return buffer;
 };

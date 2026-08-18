@@ -15,7 +15,7 @@ class QueenSplatAnimation extends SplatAnimationBase {
 
     constructor(data: QueenData, resource: GSplatResource) {
         super();
-        this.data     = data;
+        this.data = data;
         this.resource = resource;
     }
 

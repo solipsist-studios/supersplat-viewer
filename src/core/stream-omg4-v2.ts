@@ -56,12 +56,12 @@ const streamOmg4V2 = (url: string, header: Omg4V2Header, callbacks: StreamCallba
 
     // Prefill unready splats as invisible/inert.
     const fieldView = (i: number) => new Float32Array(dest, V2_HEADER_SIZE + i * N * 4, N);
-    fieldView(3).fill(1);       // rot_0 (w): identity quaternion
-    fieldView(7).fill(-30);     // scale_0..2 (log): exp(-30) → sub-pixel
+    fieldView(3).fill(1); // rot_0 (w): identity quaternion
+    fieldView(7).fill(-30); // scale_0..2 (log): exp(-30) → sub-pixel
     fieldView(8).fill(-30);
     fieldView(9).fill(-30);
-    fieldView(10).fill(-20);    // opacity (logit): sigmoid(-20) ≈ 2e-9
-    fieldView(18).fill(1);      // t_sigma: keep shader math finite
+    fieldView(10).fill(-20); // opacity (logit): sigmoid(-20) ≈ 2e-9
+    fieldView(18).fill(1); // t_sigma: keep shader math finite
 
     const data = parseOmg4V2(dest);
 
@@ -96,8 +96,8 @@ const streamOmg4V2 = (url: string, header: Omg4V2Header, callbacks: StreamCallba
         // Staging buffer for the largest possible tile.
         const staging = new Uint8Array(tileFloats(tileSize) * 4);
 
-        let received = 0;           // total body bytes consumed (incl. header)
-        let stagingFill = 0;        // bytes accumulated for the current tile
+        let received = 0; // total body bytes consumed (incl. header)
+        let stagingFill = 0; // bytes accumulated for the current tile
         let readySplats = 0;
         let firstBatchDone = false;
         let lastSyncAt = 0;
@@ -136,8 +136,10 @@ const streamOmg4V2 = (url: string, header: Omg4V2Header, callbacks: StreamCallba
                 return;
             }
             const now = performance.now();
-            if (now - lastSyncAt >= SYNC_MIN_INTERVAL_MS &&
-                readySplats - lastSyncSplats >= N * SYNC_MIN_GROWTH_FRACTION) {
+            if (
+                now - lastSyncAt >= SYNC_MIN_INTERVAL_MS &&
+                readySplats - lastSyncSplats >= N * SYNC_MIN_GROWTH_FRACTION
+            ) {
                 lastSyncAt = now;
                 lastSyncSplats = readySplats;
                 callbacks.onReady(readySplats, false);

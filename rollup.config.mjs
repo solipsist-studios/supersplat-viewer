@@ -111,17 +111,7 @@ const buildEmbedApp = {
         format: 'esm',
         sourcemap: true
     },
-    plugins: [
-        resolve(debugEngine ? { exportConditions: ['development'] } : {}),
-        typescript(),
-        json()
-    ]
+    plugins: [resolve(debugEngine ? { exportConditions: ['development'] } : {}), typescript(), json()]
 };
 
-export default [
-    buildCss,
-    buildPublic,
-    buildDist,
-    buildSettings,
-    buildEmbedApp
-];
+export default [buildCss, buildPublic, buildDist, buildSettings, buildEmbedApp];

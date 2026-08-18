@@ -129,7 +129,7 @@ class InputController {
             this._trackpad.update(ctx, this.frame);
             this._gamepad.update(ctx, this.frame);
         }
-        this.extraDevices.forEach(device => device.update(ctx, this.frame));
+        this.extraDevices.forEach((device) => device.update(ctx, this.frame));
     }
 }
 
