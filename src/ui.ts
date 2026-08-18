@@ -1,6 +1,7 @@
-import { EventHandler } from 'playcanvas';
+import type { EventHandler } from 'playcanvas';
 
 import { version as appVersion } from '../package.json';
+
 import { localize } from './localization';
 import { isSogstFilename } from './parsers/sogst';
 import type { Annotation } from './settings';
@@ -37,7 +38,11 @@ const initJoystick = (
 
     // Update joystick visibility based on camera mode and input mode
     const updateJoystickVisibility = () => {
-        if ((state.cameraMode === 'fly' || state.cameraMode === 'walk') && state.inputMode === 'touch' && state.gamingControls) {
+        if (
+            (state.cameraMode === 'fly' || state.cameraMode === 'walk') &&
+            state.inputMode === 'touch' &&
+            state.gamingControls
+        ) {
             dom.joystickBase.classList.remove('hidden');
             dom.joystickBase.classList.toggle('mode-2d', joystickMode === '2d');
             dom.joystickBase.style.left = `${joystickFixedX}px`;
@@ -238,10 +243,19 @@ const initUI = (global: Global) => {
     const dom = [
         'ui',
         'controlsWrap',
-        'arMode', 'vrMode',
-        'enterFullscreen', 'exitFullscreen',
-        'info', 'infoPanel', 'desktopTab', 'touchTab', 'desktopInfoPanel', 'touchInfoPanel',
-        'timelineContainer', 'handle', 'time',
+        'arMode',
+        'vrMode',
+        'enterFullscreen',
+        'exitFullscreen',
+        'info',
+        'infoPanel',
+        'desktopTab',
+        'touchTab',
+        'desktopInfoPanel',
+        'touchInfoPanel',
+        'timelineContainer',
+        'handle',
+        'time',
         'buttonContainer',
         'play', 'pause',
         'loopMode', 'loopRepeatSvg', 'loopPingpongSvg', 'loopNoneSvg',
@@ -260,14 +274,26 @@ const initUI = (global: Global) => {
         'touchFlyClickToWalk', 'touchFlyGamingControls',
         'touchClickToWalk', 'touchGamingControls',
         'walkHint',
-        'reset', 'frame',
-        'loadingText', 'loadingBar',
-        'joystickBase', 'joystick',
-        'showCollision', 'desktopShowCollisionHelp',
+        'reset',
+        'frame',
+        'loadingText',
+        'loadingBar',
+        'joystickBase',
+        'joystick',
+        'showCollision',
+        'desktopShowCollisionHelp',
         'tooltip',
-        'annotationNav', 'annotationPrev', 'annotationNext', 'annotationInfo', 'annotationNavTitle',
-        'viewerBranding', 'viewerTitle', 'appVersionLabel',
-        'xrModal', 'xrModalOk', 'xrModalCancel'
+        'annotationNav',
+        'annotationPrev',
+        'annotationNext',
+        'annotationInfo',
+        'annotationNavTitle',
+        'viewerBranding',
+        'viewerTitle',
+        'appVersionLabel',
+        'xrModal',
+        'xrModalOk',
+        'xrModalCancel'
     ].reduce((acc: Record<string, HTMLElement>, id) => {
         acc[id] = document.getElementById(id);
         return acc;
@@ -382,19 +408,25 @@ const initUI = (global: Global) => {
     // the trackpad-vs-mouse classifier in input-controller.ts behaves the same
     // whether the event originated on the canvas or was forwarded from the UI.
     const canvas = global.app.graphicsDevice.canvas as HTMLCanvasElement;
-    dom.ui.addEventListener('wheel', (event: WheelEvent) => {
-        event.preventDefault();
-        const forwarded = new WheelEvent(event.type, event);
-        const src = event as WheelEvent & {
-            wheelDelta?: number, wheelDeltaX?: number, wheelDeltaY?: number
-        };
-        for (const key of ['wheelDelta', 'wheelDeltaX', 'wheelDeltaY'] as const) {
-            if (typeof src[key] === 'number') {
-                Object.defineProperty(forwarded, key, { value: src[key], configurable: true });
+    dom.ui.addEventListener(
+        'wheel',
+        (event: WheelEvent) => {
+            event.preventDefault();
+            const forwarded = new WheelEvent(event.type, event);
+            const src = event as WheelEvent & {
+                wheelDelta?: number;
+                wheelDeltaX?: number;
+                wheelDeltaY?: number;
+            };
+            for (const key of ['wheelDelta', 'wheelDeltaX', 'wheelDeltaY'] as const) {
+                if (typeof src[key] === 'number') {
+                    Object.defineProperty(forwarded, key, { value: src[key], configurable: true });
+                }
             }
-        }
-        canvas.dispatchEvent(forwarded);
-    }, { passive: false });
+            canvas.dispatchEvent(forwarded);
+        },
+        { passive: false }
+    );
 
     // Handle loading progress updates
     events.on('progress:changed', (progress) => {
@@ -426,7 +458,9 @@ const initUI = (global: Global) => {
     const exitFullscreen = () => {
         if (hasFullscreenAPI) {
             if (document.fullscreenElement) {
-                document.exitFullscreen().catch(() => {});
+                document.exitFullscreen().catch(() => {
+                    // intentionally ignored
+                });
             }
         } else {
             window.parent.postMessage('exitFullscreen', '*');
@@ -445,7 +479,7 @@ const initUI = (global: Global) => {
 
     // toggle fullscreen when user switches between landscape portrait
     // orientation
-    screen?.orientation?.addEventListener('change', (event) => {
+    screen?.orientation?.addEventListener('change', (_event) => {
         if (['landscape-primary', 'landscape-secondary'].includes(screen.orientation.type)) {
             requestFullscreen();
         } else {
@@ -623,11 +657,10 @@ const initUI = (global: Global) => {
     let uiTimeout: ReturnType<typeof setTimeout> | null = null;
     let annotationVisible = false;
 
-    const isPointerCapturedMode = () => (
+    const isPointerCapturedMode = () =>
         state.inputMode === 'desktop' &&
         state.gamingControls &&
-        (state.cameraMode === 'walk' || state.cameraMode === 'fly')
-    );
+        (state.cameraMode === 'walk' || state.cameraMode === 'fly');
 
     const hideUI = () => {
         if (uiTimeout) {
@@ -990,7 +1023,7 @@ const initUI = (global: Global) => {
     const isThirdPartyEmbedded = () => {
         try {
             return window.location.hostname !== window.parent.location.hostname;
-        } catch (e) {
+        } catch (_e) {
             // cross-origin iframe — parent location is inaccessible
             return true;
         }
