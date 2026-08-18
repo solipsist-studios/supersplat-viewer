@@ -225,46 +225,56 @@ type ExperienceSettings = {
 
 The viewer supports animated 4D Gaussian Splat scenes in the `.sogst` format.
 
-> **Previously `.omg4`.** The format was named after the
-> [OMG4](https://github.com/MinShirley/OMG4) training pipeline whose compression
-> stage the encoder originally consumed, but nothing in the container comes from
-> that work: the representation is spacetime-shaped, the container is PlayCanvas
-> SOG, and the segment streaming is this project's. Hence `.sogst` — SOG +
-> spacetime. The development-era `.omg4` containers (a flat binary format
-> carrying the ASCII magic `OMG4`) were **never released and are no longer
-> read**; the container was renumbered from 3 to 1 when they were removed.
+> **Previously `.omg4`.** The old name came from the
+> [OMG4](https://github.com/MinShirley/OMG4) training pipeline, whose
+> compression stage the encoder first consumed. Nothing in the container comes
+> from that work. The representation is spacetime-shaped, the container is
+> PlayCanvas SOG, and the segment streaming belongs to this project. The name
+> `.sogst` records that: SOG plus spacetime.
+>
+> The development-era `.omg4` containers were a flat binary format that carried
+> the ASCII magic `OMG4`. We **never released them, and the viewer no longer
+> reads them**.
 
 ### What is `.sogst`?
 
-`.sogst` is a web-friendly container for 4D (space-time) Gaussians: a ZIP
-archive of lossless-WebP attribute textures plus a `meta.json` manifest, which
-must be the first entry. `meta.version` is `1` and `meta.format` is `"sogst"`;
-both are required, and the viewer rejects anything else.
+`.sogst` is a web-friendly container for 4D (space-time) Gaussians. It is a ZIP
+archive of lossless-WebP attribute textures and a `meta.json` manifest. The
+manifest must be the first entry.
+
+`meta.version` is `1` and `meta.format` is `"sogst"`. Both are required, and the
+viewer rejects any other value.
 
 Static attributes follow the PlayCanvas **SOG v2** conventions byte for byte, so
-an existing SOG decoder reconstructs them unmodified. The spacetime extension
-stores each Gaussian once — position, sliced 3D covariance, colour, plus its
-temporal parameters (linear velocity, temporal centre, temporal std-dev) — and
-the viewer evaluates motion and temporal fade **on the GPU** each frame:
+an existing SOG decoder reconstructs them unchanged.
+
+The spacetime extension stores each Gaussian once. Each one carries its
+position, its sliced 3D covariance, its colour, and its temporal parameters:
+linear velocity, temporal centre and temporal standard deviation. The viewer
+then evaluates motion and temporal fade **on the GPU** every frame:
 
 ```
 position(t) = position + velocity · (t − t_center)
 alpha(t)    = sigmoid(opacity) · exp(−0.5 · ((t − t_center) / t_sigma)²)
 ```
 
-Playback is continuous in time (no baked frames, no per-frame texture
-uploads) and a full 10-second Neural-3D-Video scene fits in ~36 MB
-(~11 MB without view-dependent SH).
+Playback is continuous in time. There are no baked frames and no per-frame
+texture uploads. A full 10-second Neural-3D-Video scene fits in ~36 MB, or
+~11 MB without view-dependent SH.
 
 Motion may also carry an optional second-order term (`motion.degree == 2`),
-where `position(t) = position + velocity · dt + accel · dt²`. Note that `accel`
-is the raw `dt²` coefficient, **not** half-acceleration, and that the temporal
-factor above is deliberately **unnormalised** — there is no `1/√(2πσ²)` term.
+where `position(t) = position + velocity · dt + accel · dt²`.
 
-Splats are ordered `[ persistent | segment 0 | segment 1 | … ]` and bucketed by
-temporal centre, so a player can cull by time and the archive can be streamed:
-playback begins once the persistent group and the first segment have arrived,
-and the playhead holds at the decoded boundary if the network falls behind.
+Two details are easy to get wrong. `accel` is the raw `dt²` coefficient, **not**
+half-acceleration. The temporal factor above is **unnormalised**, so there is no
+`1/√(2πσ²)` term.
+
+The file orders splats as `[ persistent | segment 0 | segment 1 | … ]` and
+groups them by temporal centre. A player can therefore cull by time, and the
+archive can stream.
+
+Playback starts once the persistent group and the first segment have arrived. If
+the network is too slow, the playhead holds at the decoded boundary.
 
 ### Converting an OMG4 `.xz` checkpoint
 
@@ -297,11 +307,15 @@ compressed, so the archive does not benefit meaningfully from transport gzip.
 
 ### Format specification
 
-The container is specified separately and normatively in
-[`docs/sogst-format.md`](https://github.com/solipsist-studios/cumuli/blob/main/docs/sogst-format.md);
-this README is a summary, and the specification wins wherever the two differ.
+[`docs/sogst-format.md`](https://github.com/solipsist-studios/cumuli/blob/main/docs/sogst-format.md)
+specifies the container normatively. This README is a summary. Where the two
+differ, the specification is correct.
 
-Within the viewer, `src/parsers/sogst.ts` documents what the player relies on,
-`src/core/zip.ts` reads the container, `src/core/sogst-decoder.ts` decodes the
-attribute textures, and `src/core/load-sogst.ts` and `src/core/stream-sogst.ts`
-are the whole-file and streaming entry points.
+Within the viewer:
+
+- `src/parsers/sogst.ts` — what the player relies on
+- `src/core/zip.ts` — reads the container
+- `src/core/sogst-texels.ts` — decodes the WebP payloads
+- `src/core/sogst-decoder.ts` — fills the attribute arrays
+- `src/core/load-sogst.ts` — whole-file entry point
+- `src/core/stream-sogst.ts` — streaming entry point

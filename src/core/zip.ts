@@ -1,11 +1,12 @@
-// Minimal ZIP reader for .sogst containers. Both the whole-file loader
-// (`load-sogst.ts`) and the incremental streamer (`stream-sogst.ts`) walk
-// the same records, so the record layout lives here rather than as two sets
-// of bare byte offsets.
+// Minimal ZIP reader for .sogst containers. The whole-file loader
+// (`load-sogst.ts`) and the incremental streamer (`stream-sogst.ts`) read
+// the same records. The layout lives here so that the two parsers cannot
+// disagree about the format.
 //
-// Layout constants are field offsets from PKWARE's APPNOTE 6.3.x, section
-// 4.3. Each record is a fixed-size header followed by variable-length
-// name/extra/comment fields, so `size` is the fixed part only.
+// The layout constants are field offsets from PKWARE's APPNOTE 6.3.x,
+// section 4.3. Each record starts with a fixed-size header. Variable-length
+// name, extra and comment fields follow it, so `size` covers the header
+// only.
 
 // Record signatures, little-endian.
 const ZIP_LOCAL_MAGIC = 0x04034b50; // "PK\x03\x04"
@@ -39,13 +40,14 @@ const ZIP_EOCD = {
     cdrOffset: 16 // u32 offset of the first central-directory record
 } as const;
 
-// The EOCD carries a trailing comment of up to 0xffff bytes, and its own
-// length field sits inside the record — so the only way to find the record
-// is to scan backwards over the widest comment it could have.
+// The EOCD carries a trailing comment of up to 0xffff bytes. Its own length
+// field sits inside the record, so a reader cannot seek to it. The reader
+// must scan backwards over the widest comment the record can have.
 const ZIP_MAX_COMMENT_BYTES = 0xffff;
 
-// General-purpose bit 3: sizes are zero in the local header and follow the
-// payload in a data descriptor instead.
+// General-purpose bit 3. The writer sets it when it writes zero sizes in the
+// local header and puts the real sizes in a data descriptor after the
+// payload.
 const ZIP_FLAG_DATA_DESCRIPTOR = 0x8;
 
 // Compression methods this reader accepts.
@@ -58,9 +60,9 @@ type ZipEntry = {
     data: Uint8Array;
 };
 
-// Central-directory walk over a complete archive (stored + deflate
-// entries). Our encoder always writes stored entries; deflate is handled
-// for robustness against re-zipped files.
+// Central-directory walk over a complete archive. Our encoder always writes
+// stored entries. This reader also accepts deflate entries, because another
+// tool can re-zip the archive.
 const parseZipEntries = (buffer: ArrayBuffer): ZipEntry[] => {
     const view = new DataView(buffer);
     const u16 = (o: number) => view.getUint16(o, true);
@@ -96,8 +98,9 @@ const parseZipEntries = (buffer: ArrayBuffer): ZipEntry[] => {
         if (u32(lfhOffset) !== ZIP_LOCAL_MAGIC) {
             throw new Error('sogst: invalid zip (bad local file header)');
         }
-        // The central directory's name/extra lengths need not match the
-        // local header's, so the payload offset comes from the local header.
+        // The central directory can record different name and extra lengths
+        // from the local header, so read the payload offset from the local
+        // header.
         const dataOffset =
             lfhOffset + ZIP_LFH.size + u16(lfhOffset + ZIP_LFH.nameLength) + u16(lfhOffset + ZIP_LFH.extraLength);
 

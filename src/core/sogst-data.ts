@@ -2,20 +2,21 @@ import type { GSplatData } from 'playcanvas';
 
 import type { SogstMeta, SogstSegments } from '../parsers/sogst';
 
-// A decoded, playable .sogst clip: the engine's own GSplatData for the
-// static attributes, plus the per-splat temporal attributes that have no
-// engine equivalent (velocity, optional acceleration, and the radial-basis
-// window's centre and sigma). `SogstDecoder.buildData()` produces one, and
-// everything downstream — GSplatResource creation in app-setup.ts, the GPU
-// modifier in sogst-motion.ts, the driver in sogst-splat-animation.ts —
-// consumes this shape.
+// A decoded, playable .sogst clip. It holds the engine's own GSplatData for
+// the static attributes. It also holds the per-splat temporal attributes
+// that have no engine equivalent: velocity, optional acceleration, and the
+// centre and sigma of the radial-basis window.
+//
+// `SogstDecoder.buildData()` produces one. Three places downstream read this
+// shape: GSplatResource creation in app-setup.ts, the GPU modifier in
+// sogst-motion.ts, and the driver in sogst-splat-animation.ts.
 class SogstData {
     // Temporal segment table for per-segment culling (see parsers/sogst.ts).
     segments?: SogstSegments;
 
-    // Highest absolute clip time that is fully decoded — streaming loads
-    // advance this per segment and the animation driver holds the playhead
-    // at it. Infinity once (or when) everything is loaded.
+    // Highest absolute clip time the decoder has finished. A streaming load
+    // advances this once per segment, and the animation driver holds the
+    // playhead at it. It becomes Infinity when everything is loaded.
     loadedThrough = Infinity;
 
     readonly meta: SogstMeta;
@@ -42,9 +43,9 @@ class SogstData {
 
     readonly tSigma: Float32Array;
 
-    // Degree-2 motion: quadratic coefficient arrays (units/sec^2), or null
-    // on degree-1 content. These are the raw dt^2 coefficients, not
-    // half-acceleration (see parsers/sogst.ts).
+    // Degree-2 motion. These are the quadratic coefficient arrays in
+    // units/sec^2, and they are null on degree-1 content. They hold the raw
+    // dt^2 coefficients, not half-acceleration (see parsers/sogst.ts).
     accelX: Float32Array | null = null;
 
     accelY: Float32Array | null = null;

@@ -1,15 +1,17 @@
-// .sogst — SOG spacetime. What a .sogst file *is*; `core/load-sogst.ts`
-// decodes one.
+// .sogst — SOG spacetime. This file describes what a .sogst file *is*.
+// `core/load-sogst.ts` decodes one.
 // ─────────────────────────────────────────────────────────────────────────────
-// A .sogst file is a ZIP archive (`PK\x03\x04`) of lossless-WebP attribute
-// textures plus a `meta.json` manifest, which MUST be the first entry. Static
-// attributes follow the PlayCanvas SOG v2 conventions byte for byte, so an
-// existing SOG decoder reconstructs them unmodified; the spacetime extension
-// adds per-splat linear motion, an optional second-order term, and a temporal
-// radial-basis window.
+// A .sogst file is a ZIP archive (`PK\x03\x04`) that holds lossless-WebP
+// attribute textures and a `meta.json` manifest. The manifest MUST be the
+// first entry.
 //
-// `meta.version` is 1 and `meta.format` is "sogst"; both are REQUIRED and
-// anything else is rejected.
+// The static attributes follow the PlayCanvas SOG v2 conventions byte for
+// byte, so an existing SOG decoder reconstructs them unchanged. The spacetime
+// extension adds three things per splat: linear motion, an optional
+// second-order term, and a temporal radial-basis window.
+//
+// `meta.version` is 1 and `meta.format` is "sogst". Both are REQUIRED, and a
+// player rejects any other value.
 //
 // At clip time t (seconds, absolute — not normalised), a splat evaluates as:
 //
@@ -18,10 +20,13 @@
 //   mean(t)  = xyz + v*dt + a*dt*dt       (motion.degree == 2)
 //   alpha(t) = sigmoid(opacity) * exp(-0.5 * (dt / t_sigma)^2)
 //
-// Three things about that are easy to get wrong and all fail silently: the
-// temporal factor is **unnormalised** (no 1/sqrt(2*pi*sigma^2)); `t_sigma` is a
-// standard deviation in seconds, not a variance; and `a` is the raw dt^2
-// coefficient, **not** half-acceleration.
+// Three details in that model are easy to get wrong, and each one fails
+// silently:
+//
+//   1. The temporal factor is **unnormalised**. There is no
+//      1/sqrt(2*pi*sigma^2) term.
+//   2. `t_sigma` is a standard deviation in seconds, not a variance.
+//   3. `a` is the raw dt^2 coefficient, **not** half-acceleration.
 // ─────────────────────────────────────────────────────────────────────────────
 
 // The only extension.
@@ -37,19 +42,23 @@ const isSogstFilename = (filename: string): boolean => {
     return SOGST_EXTENSIONS.some((ext) => lower.endsWith(ext));
 };
 
-// Temporal segment table. Splats are ordered [ persistent | seg 0 | seg 1 | … ];
-// persistent splats are always drawn and the rest are bucketed by t_center.
+// Temporal segment table. The file orders splats as
+// [ persistent | seg 0 | seg 1 | … ]. A player always draws the persistent
+// splats, and it groups the rest into segments by t_center.
 //
-// **All index ranges are half-open, [first, last).** `persistent` is [0, P) and
-// each segment `range` is [first, last); an empty segment has first == last and
-// is legal. `t0`/`t1` are the actual time coverage of a segment's members, not
-// the bucket bounds, so they overlap adjacent segments and `t0` may precede
-// `time.min`.
+// **All index ranges are half-open, [first, last).** `persistent` is [0, P).
+// Each segment `range` is [first, last). An empty segment has
+// first == last, and it is legal.
 //
-// The drawing rule at time t: draw [0, P), plus — over every segment whose
-// [t0, t1] contains t — the single span [ min(range[0]), max(range[1]) ).
-// Segments are time-ordered and their coverage overlaps, so the active set is
-// contiguous and this is two ranges, never a scatter.
+// `t0` and `t1` give the real time coverage of a segment's members, not the
+// bounds of its bucket. Adjacent segments therefore overlap, and `t0` can
+// come before `time.min`.
+//
+// The drawing rule at time t has two parts. Draw [0, P). Then take every
+// segment whose [t0, t1] contains t, and draw the single span
+// [ min(range[0]), max(range[1]) ). The segments are in time order and their
+// coverage overlaps, so the active set is contiguous. This is always two
+// ranges, never a scatter.
 type SogstSegments = {
     duration: number;
     persistent: [number, number];
@@ -58,16 +67,18 @@ type SogstSegments = {
 
 // The `meta.json` manifest, as far as this player reads it.
 //
-// Deliberately a description of what we consume, not of the whole format: the
-// spec requires a player to **ignore** manifest keys it does not recognise
-// rather than reject them, so an archive carrying more than this is conforming
-// and must still load. TypeScript agrees — extra properties are structurally
-// fine on a parsed value — so adding a field here is only ever about letting
-// this code read it, never about tightening what we accept.
+// This type describes what the player reads, not the whole format. The spec
+// requires a player to **ignore** a manifest key it does not recognise, and
+// not to reject it. An archive that carries more than this type lists is
+// therefore conforming, and it must still load.
 //
-// Quantised attributes follow SOG v2: `mins`/`maxs` are split-plane endpoints
-// stored in log space (T = sign(x)*ln(1+|x|)), so a reader comparing them
-// against real-world values has to invert that first.
+// TypeScript works the same way, because extra properties on a parsed value
+// are structurally fine. Adding a field here only lets this code read that
+// field. It never narrows what the player accepts.
+//
+// Quantised attributes follow SOG v2. `mins` and `maxs` are split-plane
+// endpoints in log space, where T = sign(x)*ln(1+|x|). A reader must invert
+// that transform before it compares them against real-world values.
 type SogstMeta = {
     version: number;
     format: string;

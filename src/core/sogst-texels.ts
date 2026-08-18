@@ -1,19 +1,19 @@
 import { PIXELFORMAT_RGBA8, Texture } from 'playcanvas';
 import type { AppBase } from 'playcanvas';
 
-// WebP payload decoding for .sogst archives: every attribute texture in the
+// WebP payload decoding for .sogst archives. Every attribute texture in the
 // container is a lossless WebP, and the decoder needs its raw RGBA texels.
 
-// Reads a decoded group payload's texel array. Both holders expose _levels[0]:
-// TexelImage by construction, and Texture publicly — though declared there as a
-// union wide enough to include image sources, while everything decoded here is
-// filled from a typed array.
+// Reads a decoded group payload's texel array. Both holders expose
+// _levels[0]. TexelImage does so by construction, and Texture declares it
+// publicly. Texture declares it as a union that also covers image sources,
+// but a typed array fills every texture this file decodes.
 const texelsOf = (image: TexelImage | Texture | undefined): Uint8Array => image!._levels[0] as Uint8Array;
 
-// Decode webp bytes into an engine texture. Decoding must not premultiply:
-// several textures carry codebook indices next to a data-bearing alpha
-// channel (sh0 stores opacity there), and premultiplication would corrupt
-// the indices of low-alpha splats.
+// Decode webp bytes into an engine texture. The decode must not premultiply.
+// Several textures carry codebook indices next to an alpha channel that holds
+// data, and sh0 stores opacity there. Premultiplication would corrupt the
+// indices of low-alpha splats.
 const decodeTexture = async (app: AppBase, bytes: Uint8Array, name: string): Promise<Texture> => {
     const bitmap = await createImageBitmap(new Blob([bytes as unknown as ArrayBuffer], { type: 'image/webp' }), {
         premultiplyAlpha: 'none',
@@ -38,8 +38,8 @@ const readTexels = async (texture: Texture): Promise<Uint8Array> => {
     return texels as Uint8Array;
 };
 
-// The SOG iterator only reads texel arrays (_levels[0]) plus dimensions,
-// so decode feeds it these plain holders instead of real GPU textures.
+// The SOG iterator reads texel arrays (_levels[0]) and dimensions only, so
+// the decode gives it these plain holders instead of real GPU textures.
 type TexelImage = {
     width: number;
     height: number;
@@ -48,14 +48,19 @@ type TexelImage = {
 };
 
 // Decodes webp payloads to raw RGBA texels in a worker with its own
-// OffscreenCanvas WebGL context. The main-thread alternative (upload +
-// texture.read on the app's context) forces every readback to sync behind
-// queued rendering work — profiled at ~40% of the main thread during
-// streaming playback, and the single biggest source of first-pass stutter
-// on weak devices. A 2D canvas cannot be used instead: getImageData
-// premultiplies, corrupting codebook indices next to data-bearing alpha
-// (sh0 stores opacity there). In the worker, readPixels blocks only the
-// worker.
+// OffscreenCanvas WebGL context.
+//
+// The main-thread alternative uploads the payload and calls texture.read on
+// the app's context. That path syncs every readback behind queued rendering
+// work. A profile measured it at ~40% of the main thread during streaming
+// playback, which made it the largest source of first-pass stutter on weak
+// devices.
+//
+// A 2D canvas does not work either. getImageData premultiplies, and that
+// corrupts the codebook indices next to the alpha channel that holds data
+// (sh0 stores opacity there).
+//
+// In the worker, readPixels blocks the worker only.
 const TEXEL_WORKER_SRC = `
 let canvas = null, gl = null, tex = null, fbo = null;
 self.onmessage = async (e) => {
@@ -123,8 +128,9 @@ class WebpTexelWorker {
             };
         }
         const id = this.nextId++;
-        // exact-size copy so the underlying buffer can transfer without
-        // detaching (or wholesale-cloning) the caller's archive buffer
+        // Exact-size copy. The worker can then transfer the buffer without
+        // detaching the caller's archive buffer, and without copying all of
+        // it.
         const copy = bytes.slice();
         return new Promise<TexelImage>((resolve, reject) => {
             this.pending.set(id, { resolve, reject });

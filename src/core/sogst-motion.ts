@@ -4,31 +4,39 @@ import type { Entity, GSplatResource } from 'playcanvas';
 import { uploadTextureRows } from './gsplat-range-sync';
 import type { SogstData } from './sogst-data';
 
-// GPU evaluation of the .sogst temporal model on the engine's unified
-// gsplat pipeline. Two extra per-splat textures are attached to the
-// GSplatResource streams (auto-bound to the work-buffer material), and the
-// component's work-buffer modifier hook evaluates, at time uniform
-// `sogstTime`:
+// GPU evaluation of the .sogst temporal model on the engine's unified gsplat
+// pipeline.
+//
+// This module attaches two extra per-splat textures to the GSplatResource
+// streams, and the engine binds them to the work-buffer material. The
+// component's work-buffer modifier hook then evaluates the model at the time
+// uniform `sogstTime`:
 //
 //   center(t) = center + R_model * velocity * (t - t_center)
 //   alpha(t)  = alpha * exp(-0.5 * ((t - t_center) / t_sigma)^2)
 //
-// The work-buffer pass operates on world-space centers, so the model-space
-// velocity is rotated by the entity's world rotation, passed in as the
-// `sogstModelRotation` quaternion uniform (the viewer never scales the splat
-// entity, so scale is ignored). Because the modifier runs in the work-buffer
-// pass, depth sorting uses the motion-displaced centers automatically.
+// The two textures hold:
 //
-// splatMotion   (RGBA32F): xyz = velocity (units/sec), w = t_center (sec)
-// splatTemporal (R32F)   : r = t_sigma (sec)
+//   splatMotion   (RGBA32F): xyz = velocity (units/sec), w = t_center (sec)
+//   splatTemporal (R32F)   : r = t_sigma (sec)
 //
-// Segmented content additionally culls splats outside the active
-// temporal window: the file orders splats [persistent | segment 0 | ...],
-// and each frame the animation driver pushes sogstCullRanges =
-// (persistentEnd, dynamicStart, dynamicEnd, 0). Splats outside
-// [0, persistentEnd) ∪ [dynamicStart, dynamicEnd) have temporal opacity
-// ~0 at the current time, so they collapse to zero scale/alpha — saving
-// their motion math, blending and fill.
+// The work-buffer pass works on world-space centers. The shader therefore
+// rotates the model-space velocity by the entity's world rotation, which
+// arrives in the `sogstModelRotation` quaternion uniform. The shader ignores
+// scale, because the viewer never scales the splat entity.
+//
+// The modifier runs in the work-buffer pass, so depth sorting uses the
+// motion-displaced centers without any further work.
+//
+// Segmented content also culls splats outside the active temporal window. The
+// file orders splats as [persistent | segment 0 | ...], and each frame the
+// animation driver pushes sogstCullRanges = (persistentEnd, dynamicStart,
+// dynamicEnd, 0).
+//
+// A splat outside [0, persistentEnd) ∪ [dynamicStart, dynamicEnd) has a
+// temporal opacity near 0 at the current time. The shader collapses it to
+// zero scale and alpha, which saves its motion math, its blending and its
+// fill.
 
 const glslModifyChunk = /* glsl */ `
 uniform highp sampler2D splatMotion;
@@ -100,9 +108,10 @@ void modifySplatRotationScale(vec3 originalCenter, vec3 modifiedCenter, inout ve
 #endif // SOGST_SEG_CULL
 #ifdef SOGST_COV_COMP
     // Reproduce the screen-space footprint the OMG4 reference rasterizer
-    // produced during training (FoV-sentinel bug): inflate by (KX, KY) along
-    // the camera's right/up axes and replace the view-dependent perspective
-    // tilt with the reference rasterizer's degenerate constant one.
+    // produced during training, which its FoV-sentinel bug caused. This takes
+    // two steps. First inflate by (KX, KY) along the camera's right and up
+    // axes. Then replace the view-dependent perspective tilt with the
+    // reference rasterizer's degenerate constant one.
     mat3 Rc = sogstQuatToMat(sogstCamRot);
     vec3 vcam = transpose(Rc) * (modifiedCenter - sogstCamPos);
     float invz = 1.0 / min(vcam.z, -1e-4);
@@ -348,10 +357,10 @@ const uploadSogstMotionRows = (resource: GSplatResource, a: number, b: number) =
     }
 };
 
-// Rewrite only splats [a, b) of the motion/temporal textures from the
-// textures' persistent CPU copies and upload just the covering rows. Used
-// by the segment streamer, where a full O(numSplats) rewrite per 0.1s
-// segment would stall weak devices.
+// Rewrite splats [a, b) of the motion and temporal textures from the
+// textures' persistent CPU copies, then upload the covering rows only. The
+// segment streamer uses this. A full O(numSplats) rewrite for every 0.1s
+// segment would stall a weak device.
 const syncSogstMotionRange = (resource: GSplatResource, data: SogstData, a: number, b: number, upload = true) => {
     const streams = resource.streams;
     const motionTex = streams.textures.get('splatMotion');
@@ -391,21 +400,24 @@ const resolveBlock = (src: string, tag: string, keep: boolean) => {
 };
 
 // The perspective tilt the OMG4 reference rasterizer applied during
-// training. It is a constant rather than the geometrically correct
-// view-dependent term because the reference rasterizer's projection was
-// degenerate, so every splat was trained against this one shear.
+// training. It is a constant, not the geometrically correct view-dependent
+// term. The reference rasterizer's projection was degenerate, so the training
+// fitted every splat against this one shear.
 //
-// The value is empirical, not derived: it is the shear that best reproduces
-// the trained footprints, measured at 15.8 dB PSNR against the reference
-// render at the test view. Changing it re-introduces the stringy artifacts
-// at zoomed, off-training viewpoints that it was fitted to remove.
+// The value is empirical, not derived. It is the shear that best reproduces
+// the trained footprints. We measured it at 15.8 dB PSNR against the
+// reference render at the test view. A different value returns the stringy
+// artifacts at zoomed, off-training viewpoints that this one removes.
 const COV_COMP_TILT = 0.7096;
 
-// Resolve the chunk template: the SOGST_COV_COMP block is kept (with the
-// KX/KY/tilt literals inlined — no extra uniforms needed on the compute
-// path) only when a cov2d scale is present; the SOGST_SEG_CULL block is
-// kept only for segmented content, so a file without a segment table
-// compiles the identical shader as before.
+// Resolve the chunk template.
+//
+// This keeps the SOGST_COV_COMP block only when a cov2d scale is present. It
+// inlines the KX, KY and tilt literals there, so the compute path needs no
+// extra uniforms.
+//
+// It keeps the SOGST_SEG_CULL block only for segmented content. A file
+// without a segment table therefore compiles the same shader as before.
 const buildModifyChunk = (src: string, cov2dScale: [number, number] | null, segmented: boolean, accel = false) => {
     let out = resolveBlock(src, 'SOGST_SEG_CULL', segmented);
     out = resolveBlock(out, 'SOGST_COV_COMP', !!cov2dScale);

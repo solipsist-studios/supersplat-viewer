@@ -2,17 +2,19 @@
 // streamer and the whole-file loader. Everything lives in one database/store
 // so the debug UI's "Clear SOGST Cache" wipes both.
 //
-// Large payloads are split across multiple entries: structured-cloning a
-// single multi-hundred-MB ArrayBuffer into IndexedDB spikes memory hard
-// enough to crash the tab (observed on 300MB files). A manifest entry at the
-// base key describes the pieces, stored at `<key>#<i>`; each piece is written
-// in its own transaction so peak overhead stays around one piece.
+// The cache splits a large payload across several entries. Structured-cloning
+// one ArrayBuffer of several hundred MB into IndexedDB raises memory enough
+// to crash the tab. We saw this on 300MB files.
+//
+// A manifest entry at the base key describes the pieces, which live at
+// `<key>#<i>`. Each piece is written in its own transaction, so peak overhead
+// stays near the size of one piece.
 
 const SOGST_IDB_NAME = 'supersplat-sogst-chunks';
 const SOGST_IDB_STORE = 'ranges';
 
-// 32MB pieces: small enough to clone without memory pressure, large enough
-// that a 300MB file is only ~10 transactions.
+// 32MB pieces. This size clones without memory pressure, and it keeps a
+// 300MB file to about 10 transactions.
 const PIECE_BYTES = 32 * 1024 * 1024;
 
 type PieceManifest = {
@@ -131,9 +133,9 @@ const idbSetBuffer = async (key: string, buffer: ArrayBuffer): Promise<void> => 
         return;
     }
 
-    // Write pieces first (each slice is a transient copy of at most
-    // PIECE_BYTES), then the manifest last so readers never see a manifest
-    // whose pieces are missing.
+    // Write the pieces first, then write the manifest last. A reader then
+    // never sees a manifest whose pieces are missing. Each slice is a
+    // temporary copy of at most PIECE_BYTES.
     const pieces = Math.ceil(buffer.byteLength / PIECE_BYTES);
     for (let i = 0; i < pieces; i++) {
         const piece = buffer.slice(i * PIECE_BYTES, Math.min((i + 1) * PIECE_BYTES, buffer.byteLength));
@@ -147,8 +149,8 @@ const idbSetBuffer = async (key: string, buffer: ArrayBuffer): Promise<void> => 
     await idbPutValue(db, key, { sogstPieces: pieces, totalBytes: buffer.byteLength } satisfies PieceManifest);
 };
 
-// Delete every entry whose key starts with the prefix except `keep` (and its
-// piece entries) — used to drop stale copies of a file when its validator
+// Delete every entry whose key starts with the prefix, except `keep` and its
+// piece entries. This drops stale copies of a file when its validator
 // changes.
 const idbDeleteByPrefix = async (prefix: string, keep?: string): Promise<void> => {
     const db = await openSogstDb();

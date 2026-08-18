@@ -7,63 +7,68 @@ import { SogstData } from './sogst-data';
 import { decodeTexture, readTexels, texelsOf, WebpTexelWorker } from './sogst-texels';
 import type { TexelImage } from './sogst-texels';
 
-// GSplatSogData._patchCodebooks is private to the engine. It is the one member
-// here with no public equivalent, so the dependency is spelled out rather than
-// hidden behind a blanket `as any` — if the engine drops it, this is the line
-// to look at.
+// GSplatSogData._patchCodebooks is private to the engine. It is the one
+// member this file uses that has no public equivalent. The cast names the
+// member instead of hiding it behind a blanket `as any`. If the engine drops
+// the member, look at this line first.
 type SogCodebookPatch = { _patchCodebooks?: () => void };
 
-// SOG's own container version. .sogst carries meta.version 1, but its static
-// attributes follow the SOG v2 conventions byte for byte, so the per-group
-// shim below advertises 2 — GSplatSogData selects its decode path from it.
+// SOG's own container version. A .sogst archive carries meta.version 1, but
+// its static attributes follow the SOG v2 conventions byte for byte.
+// GSplatSogData selects its decode path from meta.version, so the per-group
+// shim below advertises 2.
 const SOG_META_VERSION = 2;
 
-// Zeroth-order SH basis function, and the offset SOG applies before storing
-// DC colour so it lands in [0, 1]. Inverting both recovers the f_dc_* value.
+// Zeroth-order SH basis function. SH_DC_OFFSET is the offset SOG adds before
+// it stores DC colour, which moves the value into [0, 1]. Inverting both
+// recovers the f_dc_* value.
 const SH_C0 = 0.28209479177387814;
 const SH_DC_OFFSET = 0.5;
 
-// Higher-order SH coefficients per splat: bands 1-3 are 3 + 5 + 7 = 15
+// Higher-order SH coefficients per splat. Bands 1 to 3 hold 3 + 5 + 7 = 15
 // coefficients, one set per colour channel.
 const SH_REST_COEFFS = 45;
 
-// Opacity is stored as a logit. Splats that are not yet decoded, and splats
-// whose stored alpha saturates, are pinned to +/- this magnitude: sigmoid
-// is flat to float precision well before it, so a larger value buys nothing
-// and NaNs on the inverse.
+// The decoder stores opacity as a logit. It pins two kinds of splat to plus
+// or minus this magnitude: splats it has not decoded yet, and splats whose
+// stored alpha saturates. Sigmoid is flat to float precision well before
+// this magnitude, so a larger value adds no range. A larger value also makes
+// the inverse return NaN.
 const OPACITY_LOGIT_LIMIT = 40;
 
-// Quantisation of the 16-bit split-plane textures, and the RGBA texel
-// stride every attribute texture is read at.
+// Quantisation range of the 16-bit split-plane textures. RGBA_STRIDE is the
+// texel stride the decoder reads every attribute texture at.
 const U16_MAX = 65535;
 const RGBA_STRIDE = 4;
 
-// trbf.webp channel assignment (see parsers/sogst.ts): R indexes the
-// t_center codebook, G the t_sigma codebook.
+// trbf.webp channel assignment (see parsers/sogst.ts). R indexes the
+// t_center codebook and G indexes the t_sigma codebook.
 const TRBF_CENTER_CHANNEL = 0;
 const TRBF_SIGMA_CHANNEL = 1;
 
-// Main-thread budget per decode slice. Decode runs behind live playback on
-// streaming loads; slices above ~a half frame read as visible stutter.
+// Main-thread budget per decode slice. On streaming loads the decode runs
+// behind live playback. A slice longer than about half a frame causes
+// visible stutter.
 const DECODE_SLICE_MS = 6;
 
-// Reading the clock costs more than a loop iteration, so the elapsed-time
-// test runs on a power-of-two stride (`i & (STRIDE - 1)`). The temporal
-// loop's body is the cheaper of the two, so it checks less often.
+// Reading the clock costs more than one loop iteration, so the elapsed-time
+// test runs on a power-of-two stride (`i & (STRIDE - 1)`). The temporal loop
+// has the cheaper body of the two, so it tests less often.
 const STATIC_CLOCK_STRIDE = 64;
 const TEMPORAL_CLOCK_STRIDE = 256;
 
-// Yield to the event loop so progress UI can repaint mid-decode. setTimeout
-// rather than requestAnimationFrame: rAF never fires in hidden tabs.
+// Yield to the event loop so that the progress UI can repaint during a
+// decode. This uses setTimeout and not requestAnimationFrame, because rAF
+// never fires in a hidden tab.
 const yieldToUi = () =>
     new Promise((resolve) => {
         setTimeout(resolve, 0);
     });
 
-// Invert one channel of a 16-bit split-plane pair: the `_u` texture holds
-// the high byte and `_l` the low, together quantising [min, max] across the
-// full u16 range. Values are stored log-transformed (sign(x)*ln(1+|x|)), so
-// the exponential undoes that.
+// Invert one channel of a 16-bit split-plane pair. The `_u` texture holds
+// the high byte and `_l` holds the low byte. Together they quantise
+// [min, max] across the full u16 range. The encoder stores the values
+// log-transformed as sign(x)*ln(1+|x|), and the exponential inverts that.
 const decodeSplit16 = (
     lo: Uint8Array,
     hi: Uint8Array,
@@ -77,9 +82,10 @@ const decodeSplit16 = (
     return Math.sign(t) * (Math.exp(Math.abs(t)) - 1);
 };
 
-// Canonical per-group texture names. Monolithic archives use these bare;
-// streamed archives prefix them with the group directory ("persistent/",
-// "seg_000/", ...). shN_centroids is global either way.
+// Canonical per-group texture names. A monolithic archive uses these names
+// unchanged. A streamed archive prefixes each one with its group directory
+// ("persistent/", "seg_000/", and so on). shN_centroids is global in both
+// layouts.
 const GROUP_FILE_NAMES = [
     'means_l.webp',
     'means_u.webp',
@@ -91,8 +97,8 @@ const GROUP_FILE_NAMES = [
     'trbf.webp'
 ];
 
-// Per-group texture names for this archive: degree-2 (accel) content adds
-// the accel split pair to every group.
+// Per-group texture names for this archive. Degree-2 content adds the accel
+// split pair to every group.
 const groupBaseNames = (meta: SogstMeta): string[] => {
     return meta.accel ? [...GROUP_FILE_NAMES, 'accel_l.webp', 'accel_u.webp'] : GROUP_FILE_NAMES;
 };
@@ -103,8 +109,9 @@ type SogstGroup = {
     segIndex: number; // index into meta.segments.list; -1 otherwise
 };
 
-// Decode groups in play order: [whole file] for monolithic archives, or
-// [persistent, seg_000, seg_001, ...] (empty groups omitted) for streamed.
+// Decode groups in play order. A monolithic archive has one group covering
+// the whole file. A streamed archive has [persistent, seg_000, seg_001, ...]
+// and omits empty groups.
 const enumerateSogstGroups = (meta: SogstMeta): SogstGroup[] => {
     if (!meta.streams) {
         return [{ prefix: null, range: [0, meta.count], segIndex: -1 }];
@@ -126,11 +133,14 @@ const groupFileList = (meta: SogstMeta): string[] => {
     return meta.shN ? [...base, 'shN_labels.webp'] : base;
 };
 
-// Incremental decoder: allocates the full-length attribute arrays up front
-// (prefilled invisible) and fills index ranges as group payloads become
-// available — the same arrays back the GSplatData, so a streaming caller
-// can create the GPU resource after the first groups and refresh it as
-// later groups land. Also used for complete buffers (all groups at once).
+// Incremental decoder. It allocates the full-length attribute arrays first
+// and prefills them invisible. It then fills index ranges as group payloads
+// arrive.
+//
+// The same arrays back the GSplatData. A streaming caller can therefore
+// create the GPU resource after the first groups arrive, and refresh it as
+// later groups decode. A caller with a complete buffer uses the same class
+// and decodes all groups at once.
 class SogstDecoder {
     private app: AppBase;
 
@@ -187,8 +197,8 @@ class SogstDecoder {
         this.members.forEach((name) => {
             this.arrays[name] = new Float32Array(this.n);
         });
-        // not-yet-loaded splats must be invisible: sigmoid of a deeply
-        // negative logit is zero to float precision
+        // Splats that are not decoded yet must be invisible. Sigmoid of a
+        // deeply negative logit is zero to float precision.
         this.arrays.opacity.fill(-OPACITY_LOGIT_LIMIT);
         this.velocity = [new Float32Array(this.n), new Float32Array(this.n), new Float32Array(this.n)];
         this.accel = meta.accel ? [new Float32Array(this.n), new Float32Array(this.n), new Float32Array(this.n)] : null;
@@ -201,8 +211,8 @@ class SogstDecoder {
         this.centroidsBytes = bytes;
     }
 
-    // webp -> raw texels, off the main thread; falls back to the app
-    // context's upload + readback path if the worker cannot run.
+    // Decode webp to raw texels off the main thread. If the worker cannot
+    // run, this uses the app context's upload and readback path instead.
     private async decodeTexels(bytes: Uint8Array, name: string): Promise<TexelImage | Texture> {
         if (!this.texelWorkerBroken) {
             try {
@@ -217,8 +227,8 @@ class SogstDecoder {
         return texture;
     }
 
-    // Decode one group's texture payloads (keyed by bare canonical name)
-    // into [range[0], range[1]) of the full arrays.
+    // Decode one group's texture payloads into [range[0], range[1]) of the
+    // full arrays. The payload map is keyed by bare canonical name.
     async decodeGroup(group: SogstGroup, files: Map<string, Uint8Array>, onProgress?: (frac: number) => void) {
         const [a, b] = group.range;
         const m = b - a;
@@ -233,9 +243,9 @@ class SogstDecoder {
             return this.decodeTexels(bytes, `${group.prefix ?? 'mono'}-${name}`);
         };
 
-        // SH decodes with the group only when its labels are present —
-        // sh-deferred archives ship labels behind all geometry, and those
-        // groups take a later decodeGroupSH pass instead.
+        // SH decodes with the group only when its labels are present. An
+        // sh-deferred archive writes all labels after the geometry, so those
+        // groups use a later decodeGroupSH pass instead.
         const useSH = !!this.meta.shN && files.has('shN_labels.webp');
         if (useSH && !this.centroidsTexture) {
             if (!this.centroidsBytes) {
@@ -256,11 +266,11 @@ class SogstDecoder {
             tex.set(name, textures[i]);
         });
 
-        // Static attributes decode through the engine's own SOG iterator; a
-        // per-group shim presents the group textures with the global
-        // codebooks/mins. GSplatSogData selects its decode path from
-        // meta.version, so the shim advertises the SOG container version
-        // rather than .sogst's own.
+        // Static attributes decode through the engine's own SOG iterator. A
+        // per-group shim gives the iterator the group textures together with
+        // the global codebooks and mins. GSplatSogData selects its decode
+        // path from meta.version, so the shim advertises the SOG container
+        // version and not the .sogst one.
         const sog = new GSplatSogData();
         sog.meta = { ...this.meta, version: SOG_META_VERSION, count: m };
         sog.numSplats = m;
@@ -287,11 +297,14 @@ class SogstDecoder {
         const arrays = this.arrays;
         const restArrays = sh ? Array.from({ length: SH_REST_COEFFS }, (_, j) => arrays[`f_rest_${j}`]) : null;
 
-        // Time-budgeted slices rather than a fixed chunk size: decode runs
-        // behind live playback on streaming loads, so no single slice may
-        // hold the main thread past a few milliseconds — segment sizes vary
-        // wildly (tens of thousands of splats on dense scenes) and a
-        // count-based chunk either yields too rarely (jank) or too often.
+        // Time-budgeted slices, not a fixed chunk size. On streaming loads
+        // the decode runs behind live playback, so no slice may hold the
+        // main thread for more than a few milliseconds.
+        //
+        // A count-based chunk cannot meet that bound. Segment sizes vary
+        // widely, up to tens of thousands of splats on a dense scene. A fixed
+        // count therefore yields either too rarely, which causes stutter, or
+        // too often, which wastes time.
         for (let i = 0; i < m;) {
             const sliceStart = performance.now();
             while (i < m) {
@@ -307,15 +320,17 @@ class SogstDecoder {
                 arrays.scale_0[o] = s.x;
                 arrays.scale_1[o] = s.y;
                 arrays.scale_2[o] = s.z;
-                // The spec permits an encoder to lose the RGB of any texel
-                // whose alpha is zero (libwebp may rewrite fully-transparent
-                // blocks when the `exact` flag is unavailable), so nothing may
-                // *depend* on the colour read here. Storing it unconditionally
-                // is safe only because the splat stays invisible: opacity
-                // saturates to -OPACITY_LOGIT_LIMIT below, and the temporal factor in
-                // sogst-motion.ts multiplies alpha by exp(-0.5*dt^2) <= 1 and
-                // so can never raise it. Do not add a path that scales alpha
-                // up without guarding on c.w > 0 here.
+                // The spec lets an encoder lose the RGB of any texel whose
+                // alpha is zero. libwebp can rewrite a fully-transparent
+                // block when the `exact` flag is not available. Nothing may
+                // therefore *depend* on the colour this line reads.
+                //
+                // Storing the colour unconditionally is safe only because the
+                // splat stays invisible. Opacity saturates to
+                // -OPACITY_LOGIT_LIMIT below, and the temporal factor in
+                // sogst-motion.ts multiplies alpha by exp(-0.5*dt^2), which
+                // is never above 1. Do not add a path that scales alpha up
+                // unless it first tests c.w > 0 here.
                 arrays.f_dc_0[o] = (c.x - SH_DC_OFFSET) / SH_C0;
                 arrays.f_dc_1[o] = (c.y - SH_DC_OFFSET) / SH_C0;
                 arrays.f_dc_2[o] = (c.z - SH_DC_OFFSET) / SH_C0;
@@ -336,13 +351,14 @@ class SogstDecoder {
             await yieldToUi();
         }
 
-        // the centroids texture is shared across groups — detach it so the
-        // shim's destroy() only releases the group-local textures
+        // The groups share the centroids texture. Detach it so that the
+        // shim's destroy() releases the group-local textures only.
         sog.sh_centroids = null;
         sog.destroy();
 
-        // Temporal attributes (not part of the engine's SOG model) — texels
-        // were read back in the batch above; only the textures remain to free.
+        // Temporal attributes, which the engine's SOG model does not cover.
+        // The batch above already read their texels back, so only the
+        // textures remain to free.
         const motionL = texelsOf(tex.get('motion_l.webp'));
         const motionU = texelsOf(tex.get('motion_u.webp'));
         const trbf = texelsOf(tex.get('trbf.webp'));
@@ -390,8 +406,9 @@ class SogstDecoder {
     }
 
     // Decode a deferred SH labels payload for one group into the f_rest
-    // arrays (sh-deferred archives ship all labels behind the geometry so
-    // the scene can reveal DC-only and layer view dependence in later).
+    // arrays. An sh-deferred archive writes all labels after the geometry, so
+    // the scene can appear with DC colour only and add view dependence
+    // later.
     async decodeGroupSH(group: SogstGroup, labelsBytes: Uint8Array) {
         const [a, b] = group.range;
         const m = b - a;
@@ -406,8 +423,8 @@ class SogstDecoder {
         }
         const labels = await this.decodeTexels(labelsBytes, `${group.prefix ?? 'mono'}-shN_labels`);
 
-        // SH-only iterator: null attribute targets skip every texture but
-        // sh_labels/sh_centroids
+        // SH-only iterator. Null attribute targets make it skip every
+        // texture except sh_labels and sh_centroids.
         const sog = new GSplatSogData();
         sog.meta = { ...this.meta, version: SOG_META_VERSION, count: m };
         sog.numSplats = m;

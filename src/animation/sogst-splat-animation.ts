@@ -7,10 +7,12 @@ import type { Global } from '../types';
 
 import { Playhead } from './playhead';
 
-// Animation driver for .sogst content. Unlike the per-frame formats there
-// is nothing to upload per frame: playback is a pair of uniforms (time and
-// entity rotation) evaluated by the GPU in the unified work-buffer pass, so
-// time is continuous and never gated on fetches or texture uploads. Depth
+// Animation driver for .sogst content. This driver uploads nothing per
+// frame, which the per-frame formats must do.
+//
+// Playback is a pair of uniforms, the time and the entity rotation, and the
+// GPU evaluates them in the unified work-buffer pass. Time is therefore
+// continuous, and it never waits for a fetch or a texture upload. Depth
 // sorting picks up the motion-displaced centers automatically because the
 // modifier runs before the work buffer is sorted.
 class SogstSplatAnimation {
@@ -73,9 +75,10 @@ class SogstSplatAnimation {
         return [segments.persistent[1], lo, hi];
     }
 
-    // Push uniforms if the time, entity rotation or (when covariance
-    // compensation is active) camera rotation changed - each push marks the
-    // work buffer render-dirty, so avoid redundant updates.
+    // Push the uniforms when the time or the entity rotation changed. Also
+    // push them when the camera rotation changed and covariance compensation
+    // is active. Each push marks the work buffer render-dirty, so do not push
+    // the same values twice.
     private apply(animTime: number): boolean {
         if (!this.entity) {
             return false;

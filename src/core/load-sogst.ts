@@ -7,29 +7,35 @@ import type { SogstData } from './sogst-data';
 import { SogstDecoder, enumerateSogstGroups, groupFileList } from './sogst-decoder';
 import { inflateRaw, parseZipEntries, ZIP_LOCAL_MAGIC } from './zip';
 
-// .sogst loading: SOG-compressed temporal splats. See parsers/sogst.ts for
-// what the container is; this file turns a complete archive into playable
-// data, and stream-sogst.ts does the same incrementally off the network.
+// .sogst loading: SOG-compressed temporal splats. parsers/sogst.ts describes
+// the container. This file turns a complete archive into playable data, and
+// stream-sogst.ts does the same work incrementally off the network.
 //
-// The file is a ZIP archive (identified by the leading "PK\x03\x04" magic)
-// holding a meta.json plus lossless-webp attribute textures. Static
-// attributes follow the PlayCanvas SOG v2 conventions exactly — means_l/u
-// (16-bit split, log-transformed), quats (smallest-three), scales/sh0
-// (256-entry codebook indices, opacity in sh0's alpha), optional VQ'd
-// higher-order SH (shN_centroids/shN_labels) — so the engine's own
-// GSplatSogData decoder reconstructs them unmodified. Two additional
-// textures carry the temporal model:
+// The file is a ZIP archive that holds a meta.json and lossless-webp
+// attribute textures. The leading "PK\x03\x04" magic identifies it.
 //
-//   motion_l/motion_u : per-axis 16-bit split of velocity, same
-//                       sign(x)*ln(1+|x|) transform + mins/maxs as means
+// The static attributes follow the PlayCanvas SOG v2 conventions exactly, so
+// the engine's own GSplatSogData decoder reconstructs them unchanged:
+//
+//   means_l/means_u  : 16-bit split, log-transformed
+//   quats            : smallest-three
+//   scales, sh0      : 256-entry codebook indices, opacity in sh0's alpha
+//   shN_centroids,
+//   shN_labels       : optional, vector-quantised higher-order SH
+//
+// Two more textures carry the temporal model:
+//
+//   motion_l/motion_u : per-axis 16-bit split of velocity, with the same
+//                       sign(x)*ln(1+|x|) transform and mins/maxs as means
 //   trbf              : R = index into trbf.center codebook (t_center, s),
 //                       G = index into trbf.sigma codebook (t_sigma, s)
 //
-// The pieces live next door: zip.ts reads the container, sogst-texels.ts
-// decodes the webp payloads, sogst-decoder.ts fills the attribute arrays,
-// and sogst-data.ts is the decoded result the playback path consumes.
+// The other pieces are next door. zip.ts reads the container, sogst-texels.ts
+// decodes the webp payloads, sogst-decoder.ts fills the attribute arrays, and
+// sogst-data.ts holds the decoded result the playback path reads.
 
-// True if the buffer starts with the ZIP local-file magic (the container is a ZIP).
+// True if the buffer starts with the ZIP local-file magic, because the
+// container is a ZIP.
 const isSogstArchive = (buffer: ArrayBuffer): boolean => {
     return buffer.byteLength >= 4 && new DataView(buffer).getUint32(0, true) === ZIP_LOCAL_MAGIC;
 };
@@ -39,8 +45,8 @@ const parseSogstMeta = (bytes: Uint8Array | undefined): SogstMeta => {
         throw new Error('sogst: meta.json not found in archive');
     }
     const meta = JSON.parse(new TextDecoder().decode(bytes));
-    // Both keys are REQUIRED and anything else is rejected — including a
-    // missing `format`, which earlier development-era archives omitted.
+    // Both keys are REQUIRED. This rejects any other value, and it also
+    // rejects a missing `format`.
     if (meta.version !== SOGST_META_VERSION) {
         throw new Error(`sogst: expected meta version ${SOGST_META_VERSION}, got ${meta.version}`);
     }
@@ -50,8 +56,9 @@ const parseSogstMeta = (bytes: Uint8Array | undefined): SogstMeta => {
     return meta;
 };
 
-// Decode a complete archive (either layout) into playable data. Used for
-// non-streamed archives and for cache hits on streamed ones.
+// Decode a complete archive into playable data. This accepts either layout.
+// Two callers use it: non-streamed archives, and cache hits on streamed
+// archives.
 const loadSogst = async (
     app: AppBase,
     buffer: ArrayBuffer,
@@ -96,10 +103,10 @@ const loadSogst = async (
     return data;
 };
 
-// Set exact scene bounds from the archive's global means range — during a
-// streaming load the attribute arrays are only partially filled, so bounds
-// computed from them would understate the scene. The mins/maxs live in the
-// SOG log-transformed space; invert with sign(v) * (e^|v| - 1).
+// Set exact scene bounds from the archive's global means range. A streaming
+// load fills the attribute arrays only in part, so bounds computed from those
+// arrays would understate the scene. The mins and maxs are in the SOG
+// log-transformed space. Invert them with sign(v) * (e^|v| - 1).
 const setAabbFromMeta = (meta: SogstMeta, aabb: BoundingBox) => {
     const mins = meta.means.mins as number[];
     const maxs = meta.means.maxs as number[];

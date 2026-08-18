@@ -7,84 +7,98 @@ import type { SogstData } from './sogst-data';
 import { SogstDecoder, enumerateSogstGroups, groupFileList, groupBaseNames } from './sogst-decoder';
 import { ZIP_FLAG_DATA_DESCRIPTOR, ZIP_LFH, ZIP_LOCAL_MAGIC } from './zip';
 
-// Progressive loader for streamed archives. The encoder writes the ZIP
-// in play order — meta.json, shN_centroids, persistent/*, seg_000/*, ... —
-// with every entry stored (uncompressed), so entries can be parsed straight
-// off the network stream from their local file headers. Groups decode as
-// their last entry arrives; the scene is revealed once the persistent group
-// and the first temporal segment are in, while later segments keep decoding
-// behind playback. data.loadedThrough advances per segment so the animation
-// driver can hold the playhead if the network falls behind.
+// Progressive loader for streamed archives.
+//
+// The encoder writes the ZIP in play order: meta.json, shN_centroids,
+// persistent/*, seg_000/*, and so on. It stores every entry uncompressed, so
+// this loader can parse each entry from its local file header as the entry
+// arrives off the network.
+//
+// A group decodes when its last entry arrives. The viewer shows the scene
+// once the persistent group and the first temporal segment are complete, and
+// the later segments continue to decode during playback. data.loadedThrough
+// advances once per segment, so the animation driver can hold the playhead
+// when the network is too slow.
 
-// Growth buffer for a response with no Content-Length; it doubles from here,
-// so this only sets how many reallocations a small archive costs.
+// Growth buffer for a response that has no Content-Length. The buffer doubles
+// from this size, so the value sets only how many times a small archive
+// reallocates.
 const INITIAL_BUFFER_BYTES = 1 << 20;
 
 // -- buffer-ahead gate tuning --------------------------------------------
-// These are the margins in the two readiness inequalities below. They are
-// tuning, not format constants: chosen against the reference clips on a
-// throttled connection, where they were the smallest values that stopped
-// the first playback pass from hitching at segment boundaries. Loosening
-// them reveals the scene sooner and risks starving the playhead.
+// These constants are the margins in the two readiness tests below. They are
+// tuning values, not format constants. We measured them against the
+// reference clips on a throttled connection. They were the smallest values
+// that stopped the first playback pass from hitching at segment boundaries.
+//
+// Smaller margins show the scene sooner, but they also risk starving the
+// playhead.
 
-// Floor on the clip duration used by the gate, so a still (duration 0)
-// cannot make the required-buffer term collapse to zero.
+// Lowest clip duration the gate will use. Without it, a still image has
+// duration 0 and the required-buffer term falls to zero.
 const MIN_GATE_DURATION_S = 0.1;
 
-// Bandwidth measured over the first fraction of a second is dominated by
-// connection setup, so the gate refuses to reveal until this much has
-// elapsed rather than acting on that estimate.
+// Connection setup dominates the bandwidth measured in the first fraction of
+// a second. The gate therefore waits for this much time before it uses the
+// estimate.
 const BANDWIDTH_WARMUP_S = 0.15;
 
-// Headroom subtracted from the clip duration before asking whether the
-// remaining bytes fit in it — the last segment has to land before playback
-// reaches it, not exactly as it does.
+// Headroom the gate subtracts from the clip duration before it tests whether
+// the remaining bytes fit. The last segment must arrive before playback
+// reaches it, not at the same moment.
 const DOWNLOAD_HEADROOM_S = 0.3;
 
-// Safety factor on the bandwidth estimate: measured throughput has to beat
-// what the clip needs by this much before the byte side of the gate opens.
+// Safety factor on the bandwidth estimate. The measured throughput must
+// exceed what the clip needs by this factor before the byte side of the gate
+// opens.
 const DOWNLOAD_MARGIN = 1.3;
 
-// Trailing window for the fill-rate estimate. Long enough to average over
-// one segment's decode, short enough to track a connection that degrades.
+// Trailing window for the fill-rate estimate. It is long enough to average
+// one segment's decode, and short enough to follow a connection that gets
+// slower.
 const FILL_WINDOW_MS = 1500;
 
-// Minimum wall-clock span between the oldest and newest fill sample before
-// the fill rate means anything.
+// Minimum wall-clock time between the oldest and the newest fill sample. The
+// fill rate has no meaning below it.
 const MIN_FILL_SPAN_S = 0.35;
 
-// Floor on the required buffer, so content that decodes faster than it
-// plays still buffers a little before revealing.
+// Lowest required buffer. Content that decodes faster than it plays still
+// buffers this much before the viewer shows it.
 const MIN_BUFFER_S = 0.3;
 
 // Safety factor on the buffering inequality (buffered >= duration * (1 - f)).
 const FILL_MARGIN = 1.25;
 
-// Cap on retained fill samples: FILL_WINDOW_MS of history at the fastest
-// segment rate observed, with slack.
+// Limit on retained fill samples. It holds FILL_WINDOW_MS of history at the
+// fastest segment rate we measured, plus some margin.
 const MAX_FILL_SAMPLES = 40;
 
 type SogstStreamCallbacks = {
     /**
-     * Download progress in [0, 100], measured against the reveal point
-     * (meta.streams.reveal_bytes), not the whole file.
+     * Download progress in [0, 100]. It measures progress against the reveal
+     * point in meta.streams.reveal_bytes, not against the whole file.
      */
     onProgress: (progress: number) => void;
     /**
-     * A group finished decoding into the shared arrays. Fires per group
-     * after the reveal; the caller refreshes GPU data for the given
-     * [start, end) splat range (null = no new splats, e.g. the
-     * end-of-stream notification) and then advances data.loadedThrough
-     * to the given value — the driver deliberately does not advance it
-     * itself, so the playhead can never enter a segment whose GPU data
-     * the caller has not finished syncing.
+     * A group finished decoding into the shared arrays. This fires once per
+     * group after the reveal.
+     *
+     * The caller must refresh the GPU data for the given [start, end) splat
+     * range, then set data.loadedThrough to the given value. A null range
+     * means no new splats, as in the end-of-stream notification.
+     *
+     * The driver does not advance data.loadedThrough itself. That is
+     * deliberate: it keeps the playhead out of any segment whose GPU data the
+     * caller has not synced yet.
      */
     onReady: (range: [number, number] | null, loadedThrough: number) => void;
     /**
-     * A deferred SH labels payload finished decoding into the f_rest
-     * arrays (sh-deferred archives only). The caller refreshes the GPU SH
-     * data for the given [start, end) splat range; nothing about playback
-     * gating changes — splats render DC-only until this lands.
+     * A deferred SH labels payload finished decoding into the f_rest arrays.
+     * This fires for sh-deferred archives only.
+     *
+     * The caller must refresh the GPU SH data for the given [start, end)
+     * splat range. This does not change playback gating. The splats render
+     * with DC colour only until the payload arrives.
      */
     onShReady?: (range: [number, number]) => void;
 };
@@ -143,12 +157,15 @@ const streamSogst = (app: AppBase, url: string, callbacks: SogstStreamCallbacks)
                 entriesDone = true;
                 return null;
             }
-            // Walking entries by local-header size only works because the
-            // format forbids data descriptors (general-purpose bit 3). A
-            // writer that emits them zeroes the local sizes, which would make
-            // `total` the header length and march us into the payload as if
-            // it were the next entry — garbage names, no error. Fail loudly
-            // instead: this is a malformed archive, not a stream underrun.
+            // This parser walks entries by local-header size, which works
+            // only because the format forbids data descriptors
+            // (general-purpose bit 3).
+            //
+            // A writer that emits them writes zero local sizes. `total` would
+            // then equal the header length, and the next read would start
+            // inside the payload and treat it as the next entry. The result
+            // is garbage names and no error. Throw instead: this is a
+            // malformed archive, not a stream underrun.
             const flags = view.getUint16(ZIP_LFH.flags, true);
             if ((flags & ZIP_FLAG_DATA_DESCRIPTOR) !== 0) {
                 throw new Error('sogst: archive uses ZIP data descriptors, which the format forbids');
@@ -182,34 +199,39 @@ const streamSogst = (app: AppBase, url: string, callbacks: SogstStreamCallbacks)
         let progressWatermark = -1;
         let decodedThrough = 0; // decoded content boundary (absolute)
         let downloadStart = 0;
-        // trailing samples of (wall time, buffered content) for the fill-
-        // rate estimate — a cumulative mean drags below the sustained rate
-        // during the initial decode ramp and over-delays the reveal
+        // Trailing samples of wall time and buffered content, for the
+        // fill-rate estimate. A cumulative mean falls below the sustained
+        // rate during the initial decode ramp, and it then delays the reveal
+        // too long.
         const fillSamples: { t: number; b: number }[] = [];
 
-        // Absolute clip time playable once groups [0, idx] are decoded: up
-        // to the start of the next (not yet decoded) segment's coverage.
+        // Absolute clip time the viewer can play once groups [0, idx] are
+        // decoded. It runs up to the start of the next segment's coverage,
+        // which is the first segment the decoder has not finished.
         const loadedThroughAfter = (idx: number): number => {
             const next = groups[idx + 1];
             return next ? meta.segments.list[next.segIndex].t0 : Infinity;
         };
 
-        // Buffer-ahead readiness. The scene is revealed (and the playhead
-        // started) only when the whole pipeline is provably ahead of
-        // playback — otherwise the playhead starves at segment boundaries
-        // through the first pass, perceived as rhythmic hitching. Two
-        // sides, both with margin:
+        // Buffer-ahead readiness. The viewer shows the scene and starts the
+        // playhead only when the whole pipeline is ahead of playback. Without
+        // this test the playhead starves at segment boundaries through the
+        // first pass, which the viewer sees as regular hitching.
+        //
+        // The test has two sides, and each one carries a margin:
         //
         //  bytesQ: at the measured bandwidth, the remaining geometry bytes
-        //          download within the clip duration (network side);
-        //  fillQ:  the classic buffering inequality on the measured fill
-        //          rate f of decoded content-time (network + decode + sync
-        //          combined — this is what protects slow CPUs, where decode
-        //          rather than download is the bottleneck):
-        //          buffered >= duration * (1 - f) * margin.
+        //          download within the clip duration. This covers the
+        //          network.
+        //  fillQ:  the standard buffering test on the measured fill rate f of
+        //          decoded content-time, which is
+        //          buffered >= duration * (1 - f) * margin. The fill rate
+        //          covers network, decode and sync together, so this side
+        //          protects a slow CPU, where decode and not download is the
+        //          bottleneck.
         //
-        // Both quotients also drive the tail of the progress bar, so the
-        // bar reaches 100 exactly when playback can start cleanly.
+        // The two quotients also drive the last part of the progress bar, so
+        // the bar reaches 100 at the moment playback can start cleanly.
         const gateInfo = (): { bytesQ: number; fillQ: number } => {
             const gb = meta?.streams?.geometry_bytes;
             if (!gb) {
@@ -231,11 +253,11 @@ const streamSogst = (app: AppBase, url: string, callbacks: SogstStreamCallbacks)
 
             let fillQ = 0;
             if (!isFinite(decodedThrough)) {
-                fillQ = 1; // geometry fully decoded
+                fillQ = 1; // The geometry is fully decoded.
             } else if (fillSamples.length > 1) {
                 const buffered = decodedThrough - (meta.time?.min ?? 0);
                 const now = performance.now();
-                // oldest sample within the trailing window
+                // Oldest sample inside the trailing window.
                 let ref = fillSamples[0];
                 for (const sample of fillSamples) {
                     if (now - sample.t <= FILL_WINDOW_MS) {
@@ -266,16 +288,16 @@ const streamSogst = (app: AppBase, url: string, callbacks: SogstStreamCallbacks)
             revealResolve(data!);
         };
 
-        // Decode runs on its own promise chain so the network loop never
-        // pauses for it — serializing download behind decode both wastes
-        // bandwidth and drags the measured fill rate (and therefore the
-        // buffering gate) well below what the connection supports.
+        // Decode runs on its own promise chain, so the network loop never
+        // waits for it. Running the download behind the decode wastes
+        // bandwidth. It also lowers the measured fill rate, and therefore the
+        // buffering gate, well below what the connection supports.
         let decodeChain: Promise<void> = Promise.resolve();
         const enqueueDecode = (task: () => Promise<void>) => {
             decodeChain = decodeChain.then(task);
-            // rejection is delivered where the chain is awaited (stream
-            // tail) — this handler only silences the interim unhandled-
-            // rejection warning
+            // The stream tail awaits this chain and receives the rejection
+            // there. This handler only silences the unhandled-rejection
+            // warning in the meantime.
             decodeChain.catch(() => {
                 /* surfaced via the reveal promise */
             });
@@ -304,9 +326,10 @@ const streamSogst = (app: AppBase, url: string, callbacks: SogstStreamCallbacks)
                     doReveal();
                 }
             } else if (!revealed && revealPending) {
-                // still buffering: later groups keep decoding into the
-                // shared arrays (the resource created at reveal picks them
-                // up); reveal as soon as the pipeline is provably ahead
+                // Still buffering. Later groups keep decoding into the
+                // shared arrays, and the resource created at the reveal
+                // reads them. Show the scene as soon as the pipeline is
+                // ahead of playback.
                 if (gateReady()) {
                     doReveal();
                 }
@@ -363,20 +386,22 @@ const streamSogst = (app: AppBase, url: string, callbacks: SogstStreamCallbacks)
                 return; // stray entry (or all groups already decoded)
             }
             const bare = name.slice(group.prefix!.length + 1);
-            // An entry backing a group member this build doesn't know must be
-            // ignored, not treated as the group's data (spec §3.1 — additive
-            // groups ship under version 1 and have to degrade like shN/accel).
-            // Filtering here is also what keeps the size test below sound: it
-            // counts entries, so an unrecognised one would push the count to
-            // neededNames.length while a required name was still outstanding,
-            // firing the decode a file short — which then throws "missing from
-            // archive". Whether that happened depended on the order the
-            // encoder wrote the entries in.
+            // Ignore an entry that backs a group member this build does not
+            // know. Do not treat it as the group's data. Spec section 3.1
+            // requires this: additive groups ship under version 1, and a
+            // player must degrade the way it does for shN and accel.
+            //
+            // The filter also keeps the size test below correct. That test
+            // counts entries. An unrecognised entry would raise the count to
+            // neededNames.length while a required name was still missing, and
+            // the decode would start one file short. The decode then throws
+            // "missing from archive". Whether this happened depended on the
+            // order in which the encoder wrote the entries.
             if (!neededNames.includes(bare)) {
                 return;
             }
-            // copy out of the shared download buffer: it may be grown
-            // (reallocated) while the group is still pending
+            // Copy out of the shared download buffer. The loop can
+            // reallocate that buffer while the group is still pending.
             pending.set(bare, entryData.slice());
             if (pending.size === neededNames.length) {
                 const idx = groupIdx;
@@ -407,9 +432,10 @@ const streamSogst = (app: AppBase, url: string, callbacks: SogstStreamCallbacks)
                 }
 
                 if (meta?.streams?.reveal_bytes && !revealed) {
-                    // download maps to 0-70; buffer-readiness (the lower of
-                    // the bandwidth and fill quotients) maps to 70-99, so
-                    // the bar hits 100 exactly at a play-ready reveal
+                    // The download maps to 0-70. Buffer readiness maps to
+                    // 70-99, and it uses the lower of the bandwidth and fill
+                    // quotients. The bar therefore reaches 100 at the moment
+                    // the scene is ready to play.
                     let progress;
                     if (meta.streams.geometry_bytes) {
                         const dl = Math.min(1, received / meta.streams.reveal_bytes);
@@ -423,7 +449,8 @@ const streamSogst = (app: AppBase, url: string, callbacks: SogstStreamCallbacks)
                         callbacks.onProgress(progress);
                     }
                 } else if (monolithic && contentLength > 0) {
-                    // whole-file download maps to 0-70, decode takes 70-100
+                    // The whole-file download maps to 0-70. The decode maps
+                    // to 70-100.
                     const progress = Math.min(70, Math.trunc((received / contentLength) * 70));
                     if (progress > progressWatermark) {
                         progressWatermark = progress;
@@ -452,8 +479,8 @@ const streamSogst = (app: AppBase, url: string, callbacks: SogstStreamCallbacks)
                 return buffer;
             }
 
-            // flush a trailing partial group (shouldn't happen with a well-
-            // formed archive, but don't leave decoded splats stranded)
+            // Flush a trailing partial group. A well-formed archive does not
+            // produce one, but do not leave decoded splats unused.
             if (decoder && groupIdx < groups.length && pending.size === neededNames.length) {
                 const idx = groupIdx;
                 const files = pending;
@@ -461,10 +488,11 @@ const streamSogst = (app: AppBase, url: string, callbacks: SogstStreamCallbacks)
                 groupIdx++;
                 enqueueDecode(() => processGroup(idx, groups[idx], files));
             }
-            // drain all queued decodes (also surfaces any decode error)
+            // Drain all queued decodes. This also raises any decode error.
             await decodeChain;
             if (revealPending && !revealed) {
-                // download finished — nothing left to buffer against
+                // The download finished, so there is nothing left to buffer
+                // against.
                 doReveal();
             }
             if (!revealed) {
@@ -483,7 +511,7 @@ const streamSogst = (app: AppBase, url: string, callbacks: SogstStreamCallbacks)
         }
     })();
 
-    // the reveal consumer handles errors via the complete promise
+    // The reveal consumer handles errors through the complete promise.
     complete.catch(() => {
         /* caller handles it on the returned promise */
     });

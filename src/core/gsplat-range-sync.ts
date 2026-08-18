@@ -3,27 +3,53 @@ import type { GSplatData, GSplatResource, Texture } from 'playcanvas';
 
 type TypedArray = Uint8Array | Uint16Array | Uint32Array | Float32Array;
 
-// Ranged variants of the engine's GSplatResource GPU-data updates
-// (updateColorData / updateTransformData / updateSHData). The engine
-// methods repack every splat and re-upload whole textures — fine for a
-// one-off refresh, but the segment streamer refreshes once per decoded
-// ~0.1s segment, and O(numSplats) work per segment freezes weak devices
-// for the whole first playback pass. These variants repack only splats
-// [a, b) into the textures' persistent CPU copies and upload just the
-// covering rows. Packing math is kept byte-identical to the engine's.
+// Ranged variants of the engine's GSplatResource GPU-data updates:
+// updateColorData, updateTransformData and updateSHData.
+//
+// The engine methods repack every splat and re-upload whole textures. That is
+// acceptable for a single refresh. The segment streamer, however, refreshes
+// once per decoded ~0.1s segment, and O(numSplats) work per segment freezes a
+// weak device for the whole first playback pass.
+//
+// These variants repack splats [a, b) only, into the textures' persistent CPU
+// copies, and they upload the covering rows only. The packing math stays
+// byte-identical to the engine's.
 
 // Zeroth-order spherical-harmonic basis function, 1 / (2 * sqrt(pi)).
-// Colour is stored as the DC coefficient, so recovering the [0, 1] value the
-// packing expects means SH_C0 * f_dc + 0.5 — the same constant the engine's
-// own gsplat code and every 3DGS reference implementation use.
+//
+// The format stores colour as the DC coefficient. To recover the [0, 1] value
+// the packing expects, compute SH_C0 * f_dc + 0.5. The engine's own gsplat
+// code and every 3DGS reference implementation use this same constant.
 const SH_C0 = 0.28209479177387814;
 
-// Upload the texture rows covering splat texel indices [a, b). The CPU
-// level copy is already updated in place, so devices without a partial
-// write path (WebGPU) fall back to a full upload of that copy.
+// Three spherical-harmonic coefficients share one uint32 in the engine's
+// 11:10:11 layout. R takes 11 bits at 31..21, G takes 10 bits at 20..11, and
+// B takes 11 bits at 10..0.
+//
+// We do not choose these widths. The shader unpacks the word with
+// `unpack111011` in the engine's gsplat chunks. A mismatch here corrupts
+// colour silently. It does not raise an error.
+const SH_R_BITS = 11;
+const SH_G_BITS = 10;
+const SH_B_BITS = 11;
+
+// Left shift that moves each field to its bit position. B occupies the low
+// bits and needs no shift.
+const SH_R_SHIFT = SH_G_BITS + SH_B_BITS;
+const SH_G_SHIFT = SH_B_BITS;
+
+// Largest value each field can hold, which is also the quantisation scale.
+const SH_R_MAX = (1 << SH_R_BITS) - 1;
+const SH_G_MAX = (1 << SH_G_BITS) - 1;
+const SH_B_MAX = (1 << SH_B_BITS) - 1;
+
+// Upload the texture rows that cover splat texel indices [a, b). The caller
+// has already updated the CPU level copy in place. A device with no partial
+// write path, such as WebGPU, therefore uploads that whole copy instead.
 const uploadTextureRows = (texture: Texture, elemsPerTexel: number, a: number, b: number) => {
-    // Texture._levels is typed as a union covering image sources too; every
-    // gsplat stream texture is created from a typed array, so narrow to that.
+    // Texture._levels has a union type that also covers image sources. A
+    // typed array creates every gsplat stream texture, so narrow it to
+    // that.
     const level = texture?._levels?.[0] as TypedArray | undefined;
     if (!level) {
         return;
@@ -140,8 +166,6 @@ const updateSHRange = (resource: GSplatResource, gsplatData: GSplatData, a: numb
     for (let i = 0; i < numCoeffs * 3; ++i) {
         src.push(gsplatData.getProp(`f_rest_${i}`) as Float32Array);
     }
-    const t11 = (1 << 11) - 1;
-    const t10 = (1 << 10) - 1;
     const float32 = new Float32Array(1);
     const uint32 = new Uint32Array(float32.buffer);
     const c = new Array(numCoeffs * 3).fill(0);
@@ -159,31 +183,40 @@ const updateSHRange = (resource: GSplatResource, gsplatData: GSplatData, a: numb
             continue;
         }
         for (let j = 0; j < numCoeffs; ++j) {
-            c[j * 3 + 0] = Math.max(0, Math.min(t11, Math.floor(((c[j * 3 + 0] / max) * 0.5 + 0.5) * t11 + 0.5)));
-            c[j * 3 + 1] = Math.max(0, Math.min(t10, Math.floor(((c[j * 3 + 1] / max) * 0.5 + 0.5) * t10 + 0.5)));
-            c[j * 3 + 2] = Math.max(0, Math.min(t11, Math.floor(((c[j * 3 + 2] / max) * 0.5 + 0.5) * t11 + 0.5)));
+            c[j * 3 + 0] = Math.max(
+                0,
+                Math.min(SH_R_MAX, Math.floor(((c[j * 3 + 0] / max) * 0.5 + 0.5) * SH_R_MAX + 0.5))
+            );
+            c[j * 3 + 1] = Math.max(
+                0,
+                Math.min(SH_G_MAX, Math.floor(((c[j * 3 + 1] / max) * 0.5 + 0.5) * SH_G_MAX + 0.5))
+            );
+            c[j * 3 + 2] = Math.max(
+                0,
+                Math.min(SH_B_MAX, Math.floor(((c[j * 3 + 2] / max) * 0.5 + 0.5) * SH_B_MAX + 0.5))
+            );
         }
         float32[0] = max;
         sh1to3Data[i * 4 + 0] = uint32[0];
-        sh1to3Data[i * 4 + 1] = (c[0] << 21) | (c[1] << 11) | c[2];
-        sh1to3Data[i * 4 + 2] = (c[3] << 21) | (c[4] << 11) | c[5];
-        sh1to3Data[i * 4 + 3] = (c[6] << 21) | (c[7] << 11) | c[8];
+        sh1to3Data[i * 4 + 1] = (c[0] << SH_R_SHIFT) | (c[1] << SH_G_SHIFT) | c[2];
+        sh1to3Data[i * 4 + 2] = (c[3] << SH_R_SHIFT) | (c[4] << SH_G_SHIFT) | c[5];
+        sh1to3Data[i * 4 + 3] = (c[6] << SH_R_SHIFT) | (c[7] << SH_G_SHIFT) | c[8];
         if (shBands > 1 && sh4to7Data && sh8to11Data) {
-            sh4to7Data[i * 4 + 0] = (c[9] << 21) | (c[10] << 11) | c[11];
-            sh4to7Data[i * 4 + 1] = (c[12] << 21) | (c[13] << 11) | c[14];
-            sh4to7Data[i * 4 + 2] = (c[15] << 21) | (c[16] << 11) | c[17];
-            sh4to7Data[i * 4 + 3] = (c[18] << 21) | (c[19] << 11) | c[20];
+            sh4to7Data[i * 4 + 0] = (c[9] << SH_R_SHIFT) | (c[10] << SH_G_SHIFT) | c[11];
+            sh4to7Data[i * 4 + 1] = (c[12] << SH_R_SHIFT) | (c[13] << SH_G_SHIFT) | c[14];
+            sh4to7Data[i * 4 + 2] = (c[15] << SH_R_SHIFT) | (c[16] << SH_G_SHIFT) | c[17];
+            sh4to7Data[i * 4 + 3] = (c[18] << SH_R_SHIFT) | (c[19] << SH_G_SHIFT) | c[20];
             if (shBands > 2 && sh12to15Data) {
-                sh8to11Data[i * 4 + 0] = (c[21] << 21) | (c[22] << 11) | c[23];
-                sh8to11Data[i * 4 + 1] = (c[24] << 21) | (c[25] << 11) | c[26];
-                sh8to11Data[i * 4 + 2] = (c[27] << 21) | (c[28] << 11) | c[29];
-                sh8to11Data[i * 4 + 3] = (c[30] << 21) | (c[31] << 11) | c[32];
-                sh12to15Data[i * 4 + 0] = (c[33] << 21) | (c[34] << 11) | c[35];
-                sh12to15Data[i * 4 + 1] = (c[36] << 21) | (c[37] << 11) | c[38];
-                sh12to15Data[i * 4 + 2] = (c[39] << 21) | (c[40] << 11) | c[41];
-                sh12to15Data[i * 4 + 3] = (c[42] << 21) | (c[43] << 11) | c[44];
+                sh8to11Data[i * 4 + 0] = (c[21] << SH_R_SHIFT) | (c[22] << SH_G_SHIFT) | c[23];
+                sh8to11Data[i * 4 + 1] = (c[24] << SH_R_SHIFT) | (c[25] << SH_G_SHIFT) | c[26];
+                sh8to11Data[i * 4 + 2] = (c[27] << SH_R_SHIFT) | (c[28] << SH_G_SHIFT) | c[29];
+                sh8to11Data[i * 4 + 3] = (c[30] << SH_R_SHIFT) | (c[31] << SH_G_SHIFT) | c[32];
+                sh12to15Data[i * 4 + 0] = (c[33] << SH_R_SHIFT) | (c[34] << SH_G_SHIFT) | c[35];
+                sh12to15Data[i * 4 + 1] = (c[36] << SH_R_SHIFT) | (c[37] << SH_G_SHIFT) | c[38];
+                sh12to15Data[i * 4 + 2] = (c[39] << SH_R_SHIFT) | (c[40] << SH_G_SHIFT) | c[41];
+                sh12to15Data[i * 4 + 3] = (c[42] << SH_R_SHIFT) | (c[43] << SH_G_SHIFT) | c[44];
             } else {
-                sh8to11Data[i] = (c[21] << 21) | (c[22] << 11) | c[23];
+                sh8to11Data[i] = (c[21] << SH_R_SHIFT) | (c[22] << SH_G_SHIFT) | c[23];
             }
         }
     }
@@ -192,10 +225,12 @@ const updateSHRange = (resource: GSplatResource, gsplatData: GSplatData, a: numb
     }
 };
 
-// Repack GPU splat data for splats [a, b). With upload=false only the CPU
-// level copies are written — callers slicing a large range into many small
-// repack chunks should pass false and finish with one uploadGsplatRows
-// call over the whole range, so upload overhead isn't paid per chunk.
+// Repack GPU splat data for splats [a, b). With upload=false this writes the
+// CPU level copies only.
+//
+// A caller that cuts a large range into many small repack chunks should pass
+// false, then make one uploadGsplatRows call over the whole range. It then
+// pays the upload cost once instead of once per chunk.
 const updateGsplatRangeData = (
     resource: GSplatResource,
     gsplatData: GSplatData,
