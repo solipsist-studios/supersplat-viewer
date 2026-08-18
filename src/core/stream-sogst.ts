@@ -2,12 +2,15 @@ import type { AppBase } from 'playcanvas';
 
 import type { SogstMeta } from '../parsers/sogst';
 
-import type { SogstData
-} from './load-sogst';
+import type { SogstData } from './load-sogst';
 import {
-    SogstDecoder, enumerateSogstGroups, groupFileList, groupBaseNames, loadSogst, parseSogstMeta
+    SogstDecoder,
+    enumerateSogstGroups,
+    groupFileList,
+    groupBaseNames,
+    loadSogst,
+    parseSogstMeta
 } from './load-sogst';
-
 
 // Progressive loader for streamed archives. The encoder writes the ZIP
 // in play order — meta.json, shN_centroids, persistent/*, seg_000/*, ... —
@@ -89,7 +92,7 @@ const streamSogst = (app: AppBase, url: string, callbacks: SogstStreamCallbacks)
         // -- incremental stored-entry parser over the accumulated bytes ----
         let parsePos = 0;
         let entriesDone = false;
-        const nextEntry = (): { name: string, data: Uint8Array } | null => {
+        const nextEntry = (): { name: string; data: Uint8Array } | null => {
             if (entriesDone || received - parsePos < 30) {
                 return null;
             }
@@ -130,17 +133,17 @@ const streamSogst = (app: AppBase, url: string, callbacks: SogstStreamCallbacks)
         let neededNames: string[] = [];
         let groupIdx = 0;
         let pending = new Map<string, Uint8Array>();
-        let revealGroupIdx = 0;      // last group index needed before reveal
+        let revealGroupIdx = 0; // last group index needed before reveal
         let data: SogstData | null = null;
         let revealed = false;
-        let revealPending = false;      // reveal set decoded, awaiting buffer
+        let revealPending = false; // reveal set decoded, awaiting buffer
         let progressWatermark = -1;
-        let decodedThrough = 0;         // decoded content boundary (absolute)
+        let decodedThrough = 0; // decoded content boundary (absolute)
         let downloadStart = 0;
         // trailing samples of (wall time, buffered content) for the fill-
         // rate estimate — a cumulative mean drags below the sustained rate
         // during the initial decode ramp and over-delays the reveal
-        const fillSamples: { t: number, b: number }[] = [];
+        const fillSamples: { t: number; b: number }[] = [];
 
         // Absolute clip time playable once groups [0, idx] are decoded: up
         // to the start of the next (not yet decoded) segment's coverage.
@@ -165,7 +168,7 @@ const streamSogst = (app: AppBase, url: string, callbacks: SogstStreamCallbacks)
         //
         // Both quotients also drive the tail of the progress bar, so the
         // bar reaches 100 exactly when playback can start cleanly.
-        const gateInfo = (): { bytesQ: number, fillQ: number } => {
+        const gateInfo = (): { bytesQ: number; fillQ: number } => {
             const gb = meta?.streams?.geometry_bytes;
             if (!gb) {
                 return { bytesQ: 1, fillQ: 1 };
@@ -186,7 +189,7 @@ const streamSogst = (app: AppBase, url: string, callbacks: SogstStreamCallbacks)
 
             let fillQ = 0;
             if (!isFinite(decodedThrough)) {
-                fillQ = 1;      // geometry fully decoded
+                fillQ = 1; // geometry fully decoded
             } else if (fillSamples.length > 1) {
                 const buffered = decodedThrough - (meta.time?.min ?? 0);
                 const now = performance.now();
@@ -231,10 +234,16 @@ const streamSogst = (app: AppBase, url: string, callbacks: SogstStreamCallbacks)
             // rejection is delivered where the chain is awaited (stream
             // tail) — this handler only silences the interim unhandled-
             // rejection warning
-            decodeChain.catch(() => { /* surfaced via the reveal promise */ });
+            decodeChain.catch(() => {
+                /* surfaced via the reveal promise */
+            });
         };
 
-        const processGroup = async (idx: number, group: ReturnType<typeof enumerateSogstGroups>[number], files: Map<string, Uint8Array>) => {
+        const processGroup = async (
+            idx: number,
+            group: ReturnType<typeof enumerateSogstGroups>[number],
+            files: Map<string, Uint8Array>
+        ) => {
             await decoder!.decodeGroup(group, files);
             if (idx >= revealGroupIdx) {
                 decodedThrough = loadedThroughAfter(idx);
@@ -279,7 +288,7 @@ const streamSogst = (app: AppBase, url: string, callbacks: SogstStreamCallbacks)
                 // geometry groups complete on the base texture set alone
                 neededNames = meta.streams.sh_deferred ? [...groupBaseNames(meta)] : groupFileList(meta);
                 // reveal set = persistent group plus the first temporal segment
-                const firstSeg = groups.findIndex(g => g.segIndex >= 0);
+                const firstSeg = groups.findIndex((g) => g.segIndex >= 0);
                 revealGroupIdx = firstSeg >= 0 ? firstSeg : groups.length - 1;
                 return;
             }
@@ -297,7 +306,7 @@ const streamSogst = (app: AppBase, url: string, callbacks: SogstStreamCallbacks)
                 // trailing SH pass: geometry for this group is long since
                 // decoded and (possibly) playing DC-only
                 const prefix = name.slice(0, -'/shN_labels.webp'.length);
-                const group = groups.find(g => g.prefix === prefix);
+                const group = groups.find((g) => g.prefix === prefix);
                 if (group) {
                     const labels = entryData.slice();
                     enqueueDecode(async () => {
@@ -309,7 +318,7 @@ const streamSogst = (app: AppBase, url: string, callbacks: SogstStreamCallbacks)
             }
             const group = groups[groupIdx];
             if (!group || !name.startsWith(`${group.prefix}/`)) {
-                return;     // stray entry (or all groups already decoded)
+                return; // stray entry (or all groups already decoded)
             }
             const bare = name.slice(group.prefix!.length + 1);
             // An entry backing a group member this build doesn't know must be
@@ -338,7 +347,6 @@ const streamSogst = (app: AppBase, url: string, callbacks: SogstStreamCallbacks)
 
         try {
             for (;;) {
-                 
                 const { done, value } = await reader.read();
                 if (done) {
                     break;
@@ -393,8 +401,9 @@ const streamSogst = (app: AppBase, url: string, callbacks: SogstStreamCallbacks)
             const buffer = bytes.byteLength === received ? bytes.buffer : bytes.slice(0, received).buffer;
 
             if (monolithic) {
-                const decoded = await loadSogst(app, buffer,
-                    p => callbacks.onProgress(Math.min(100, Math.round(70 + p * 0.3))));
+                const decoded = await loadSogst(app, buffer, (p) =>
+                    callbacks.onProgress(Math.min(100, Math.round(70 + p * 0.3)))
+                );
                 revealed = true;
                 callbacks.onProgress(100);
                 revealResolve(decoded);
@@ -433,7 +442,9 @@ const streamSogst = (app: AppBase, url: string, callbacks: SogstStreamCallbacks)
     })();
 
     // the reveal consumer handles errors via the complete promise
-    complete.catch(() => { /* caller handles it on the returned promise */ });
+    complete.catch(() => {
+        /* caller handles it on the returned promise */
+    });
 
     return { reveal, complete };
 };

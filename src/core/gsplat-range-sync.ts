@@ -29,7 +29,9 @@ const uploadTextureRows = (texture: Texture, elemsPerTexel: number, a: number, b
         const rowA = Math.floor(a / w);
         const rowB = Math.min(texture.height, Math.ceil(b / w));
         const rows = level.subarray(rowA * w * elemsPerTexel, rowB * w * elemsPerTexel);
-        (texture.write(0, rowA, w, rowB - rowA, rows) as Promise<unknown>)?.catch(() => { /* upload races teardown; nothing to recover */ });
+        (texture.write(0, rowA, w, rowB - rowA, rows) as Promise<unknown>)?.catch(() => {
+            /* upload races teardown; nothing to recover */
+        });
     } else {
         texture.upload();
     }
@@ -58,7 +60,13 @@ const updateColorRange = (resource: GSplatResource, gsplatData: GSplatData, a: n
     }
 };
 
-const updateTransformRange = (resource: GSplatResource, gsplatData: GSplatData, a: number, b: number, upload: boolean) => {
+const updateTransformRange = (
+    resource: GSplatResource,
+    gsplatData: GSplatData,
+    a: number,
+    b: number,
+    upload: boolean
+) => {
     const transformA = resource.streams.getTexture('transformA');
     const transformB = resource.streams.getTexture('transformB');
     const dataA = transformA?._levels?.[0] as Uint32Array | undefined;
@@ -184,7 +192,13 @@ const updateSHRange = (resource: GSplatResource, gsplatData: GSplatData, a: numb
 // level copies are written — callers slicing a large range into many small
 // repack chunks should pass false and finish with one uploadGsplatRows
 // call over the whole range, so upload overhead isn't paid per chunk.
-const updateGsplatRangeData = (resource: GSplatResource, gsplatData: GSplatData, a: number, b: number, upload = true) => {
+const updateGsplatRangeData = (
+    resource: GSplatResource,
+    gsplatData: GSplatData,
+    a: number,
+    b: number,
+    upload = true
+) => {
     if (b <= a) {
         return;
     }

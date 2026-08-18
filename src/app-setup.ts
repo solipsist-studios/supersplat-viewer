@@ -128,7 +128,7 @@ const loadSogstStreaming = async (
     // hitch on weak devices. data.loadedThrough only advances once a
     // segment's slices have all been pushed to the GPU, so the playhead
     // can never enter a segment that isn't fully renderable yet.
-    const queue: { range: [number, number] | null, loadedThrough: number | null, sh: boolean }[] = [];
+    const queue: { range: [number, number] | null; loadedThrough: number | null; sh: boolean }[] = [];
     let pumping = false;
 
     // Teardown guard. The pump yields to the UI between slices, so an
@@ -151,9 +151,10 @@ const loadSogstStreaming = async (
         queue.length = 0;
     });
 
-    const yieldToUi = () => new Promise((resolve) => {
-        setTimeout(resolve, 0);
-    });
+    const yieldToUi = () =>
+        new Promise((resolve) => {
+            setTimeout(resolve, 0);
+        });
 
     const drain = async () => {
         while (queue.length > 0) {
@@ -192,7 +193,7 @@ const loadSogstStreaming = async (
                             break;
                         }
                     }
-                     
+
                     await yieldToUi();
                     if (destroyed) {
                         return;
@@ -204,7 +205,7 @@ const loadSogstStreaming = async (
                     if (!item.sh) {
                         uploadSogstMotionRows(resource, u, e);
                     }
-                     
+
                     await yieldToUi();
                     if (destroyed) {
                         return;
@@ -264,7 +265,9 @@ const loadSogstStreaming = async (
     // can do anything useful, so leave the load promise unsettled rather
     // than handing the caller a scene that belongs to a dead device.
     if (destroyed) {
-        return new Promise<Entity>(() => { /* never settles: the app is gone */ });
+        return new Promise<Entity>(() => {
+            /* never settles: the app is gone */
+        });
     }
 
     const setup = setupSogst(app, config, global, data);
@@ -280,20 +283,27 @@ const loadSogstStreaming = async (
 
     // cache the complete archive in the background for instant revisits
     stream.complete
-    .then((buffer) => {
-        idbSetBuffer(cacheKey, buffer)
-        .then(() => idbDeleteByPrefix(fullFileKeyPrefix(config.contentUrl), cacheKey))
-        .catch(() => { /* cache write is best-effort */ });
-    })
-    .catch((err: Error) => {
-        console.warn('SOGST stream did not complete; partial scene retained:', err);
-    });
+        .then((buffer) => {
+            idbSetBuffer(cacheKey, buffer)
+                .then(() => idbDeleteByPrefix(fullFileKeyPrefix(config.contentUrl), cacheKey))
+                .catch(() => {
+                    /* cache write is best-effort */
+                });
+        })
+        .catch((err: Error) => {
+            console.warn('SOGST stream did not complete; partial scene retained:', err);
+        });
 
     return setup.entity;
 };
 
 // Load and animate a .sogst (SOG spacetime 4DGS) archive.
-const loadSogstGsplat = async (app: AppBase, config: Config, global: Global, progressCallback: (progress: number) => void) => {
+const loadSogstGsplat = async (
+    app: AppBase,
+    config: Config,
+    global: Global,
+    progressCallback: (progress: number) => void
+) => {
     const cacheKey = await fullFileCacheKey(config.contentUrl);
     const cached = await idbGetBuffer(cacheKey);
     if (cached) {
@@ -306,7 +316,8 @@ const loadSogstGsplat = async (app: AppBase, config: Config, global: Global, pro
 };
 
 // Load a static 3DGS scene (PLY / LOD / meta.json etc.)
-const load3dgs = (app: AppBase, config: Config, progressCallback: (progress: number) => void) => loadGsplat(app, config, progressCallback);
+const load3dgs = (app: AppBase, config: Config, progressCallback: (progress: number) => void) =>
+    loadGsplat(app, config, progressCallback);
 
 // Extensions the static 3DGS path understands, mirroring the parser table in
 // the engine's GSplatHandler ({ply, sog, json} plus lod-meta.json). Variants
@@ -318,9 +329,8 @@ const STATIC_3DGS_EXTENSIONS = ['.ply', '.sog', '.json'];
 
 // The scene filename, which is what every format decision is made on.
 // `contentFilename` exists because a blob: URL carries no name of its own.
-const contentFilename = (config: Config) => (
-    config.contentFilename ?? new URL(config.contentUrl, location.href).pathname.split('/').pop() ?? ''
-).toLowerCase();
+const contentFilename = (config: Config) =>
+    (config.contentFilename ?? new URL(config.contentUrl, location.href).pathname.split('/').pop() ?? '').toLowerCase();
 
 // True for formats driven by SplatAnimationBase rather than by the engine's
 // gsplat asset handler.
@@ -343,7 +353,12 @@ const isStatic3dgsFilename = (filename: string) => {
 // .omg4 scenes — to reach a conclusion the filename already supported. An
 // extensionless URL carries no evidence either way and keeps the historical
 // 3DGS path rather than being rejected on a guess.
-const loadContent = (app: AppBase, config: Config, global: Global, progressCallback: (progress: number) => void): Promise<Entity> => {
+const loadContent = (
+    app: AppBase,
+    config: Config,
+    global: Global,
+    progressCallback: (progress: number) => void
+): Promise<Entity> => {
     const filename = contentFilename(config);
     if (is4dgsFilename(filename)) {
         return loadSogstGsplat(app, config, global, progressCallback);
@@ -354,22 +369,29 @@ const loadContent = (app: AppBase, config: Config, global: Global, progressCallb
         return load3dgs(app, config, progressCallback);
     }
     const ext = filename.slice(filename.lastIndexOf('.'));
-    return Promise.reject(new Error(
-        `Unsupported content format '${ext}' (${filename}). ` +
-        'Supported: .ply, .compressed.ply, .sog, .json (meta.json / lod-meta.json), .sogst'
-    ));
+    return Promise.reject(
+        new Error(
+            `Unsupported content format '${ext}' (${filename}). ` +
+                'Supported: .ply, .compressed.ply, .sog, .json (meta.json / lod-meta.json), .sogst'
+        )
+    );
 };
 
 const loadSkybox = (app: AppBase, url: string) => {
     return new Promise<Asset>((resolve, reject) => {
-        const asset = new Asset('skybox', 'texture', {
-            url
-        }, {
-            type: 'rgbp',
-            mipmaps: false,
-            addressu: 'repeat',
-            addressv: 'clamp'
-        });
+        const asset = new Asset(
+            'skybox',
+            'texture',
+            {
+                url
+            },
+            {
+                type: 'rgbp',
+                mipmaps: false,
+                addressu: 'repeat',
+                addressv: 'clamp'
+            }
+        );
 
         asset.on('load', () => {
             resolve(asset);

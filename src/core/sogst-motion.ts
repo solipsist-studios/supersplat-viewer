@@ -1,14 +1,8 @@
-import {
-    PIXELFORMAT_R32F,
-    PIXELFORMAT_RGBA32F
-    
-    
-} from 'playcanvas';
+import { PIXELFORMAT_R32F, PIXELFORMAT_RGBA32F } from 'playcanvas';
 import type { Entity, GSplatResource } from 'playcanvas';
 
 import { uploadTextureRows } from './gsplat-range-sync';
 import type { SogstData } from './load-sogst';
-
 
 // GPU evaluation of the .sogst v2 temporal model on the engine's unified
 // gsplat pipeline. Two extra per-splat textures are attached to the
@@ -339,11 +333,9 @@ const attachSogstMotion = (resource: GSplatResource, data: SogstData) => {
             accel[i * 4 + 1] = data.accelY[i];
             accel[i * 4 + 2] = data.accelZ[i];
         }
-        streams.textures.set('splatAccel',
-            streams.createTexture('splatAccel', PIXELFORMAT_RGBA32F, dims, accel));
+        streams.textures.set('splatAccel', streams.createTexture('splatAccel', PIXELFORMAT_RGBA32F, dims, accel));
     }
 };
-
 
 // Upload the motion/temporal texture rows covering [a, b).
 const uploadSogstMotionRows = (resource: GSplatResource, a: number, b: number) => {
@@ -408,15 +400,18 @@ const buildModifyChunk = (src: string, cov2dScale: [number, number] | null, segm
     out = resolveBlock(out, 'SOGST_COV_COMP', !!cov2dScale);
     out = resolveBlock(out, 'SOGST_ACCEL', accel);
     if (cov2dScale) {
-        out = out
-        .replace(/SOGST_KX/g, cov2dScale[0].toFixed(6))
-        .replace(/SOGST_KY/g, cov2dScale[1].toFixed(6));
+        out = out.replace(/SOGST_KX/g, cov2dScale[0].toFixed(6)).replace(/SOGST_KY/g, cov2dScale[1].toFixed(6));
     }
     return out;
 };
 
 // Install the temporal-evaluation modifier on the gsplat component.
-const bindSogstModifier = (entity: Entity, cov2dScale: [number, number] | null = null, segmented = false, accel = false) => {
+const bindSogstModifier = (
+    entity: Entity,
+    cov2dScale: [number, number] | null = null,
+    segmented = false,
+    accel = false
+) => {
     const component = entity.gsplat;
     if (!component) {
         throw new Error('sogst v2: entity has no gsplat component');
@@ -431,8 +426,12 @@ const bindSogstModifier = (entity: Entity, cov2dScale: [number, number] | null =
 // placement render-dirty, so only call when a value actually changed.
 // `cullRanges` = (persistentEnd, dynamicStart, dynamicEnd) splat-index
 // bounds for segmented content (see the chunk comment above).
-const setSogstParams = (entity: Entity, time: number, camera?: Entity,
-    cullRanges?: [number, number, number] | null) => {
+const setSogstParams = (
+    entity: Entity,
+    time: number,
+    camera?: Entity,
+    cullRanges?: [number, number, number] | null
+) => {
     const component = entity.gsplat;
     if (!component) {
         return;

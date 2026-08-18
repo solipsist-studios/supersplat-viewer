@@ -38,7 +38,7 @@ const SOGST_META_FORMAT = 'sogst';
 // True if `filename` names a .sogst container.
 const isSogstFilename = (filename: string): boolean => {
     const lower = filename.toLowerCase();
-    return SOGST_EXTENSIONS.some(ext => lower.endsWith(ext));
+    return SOGST_EXTENSIONS.some((ext) => lower.endsWith(ext));
 };
 
 // Temporal segment table. Splats are ordered [ persistent | seg 0 | seg 1 | … ];
@@ -57,8 +57,8 @@ const isSogstFilename = (filename: string): boolean => {
 type SogstSegments = {
     duration: number;
     persistent: [number, number];
-    list: { t0: number, t1: number, range: [number, number] }[];
-}
+    list: { t0: number; t1: number; range: [number, number] }[];
+};
 
 // The `meta.json` manifest, as far as this player reads it.
 //
@@ -76,15 +76,15 @@ type SogstMeta = {
     version: number;
     format: string;
     count: number;
-    means: { mins: number[], maxs: number[] };
-    motion: { mins: number[], maxs: number[], degree?: number, files?: string[] };
-    trbf: { center: { codebook: number[] }, sigma: { codebook: number[] } };
+    means: { mins: number[]; maxs: number[] };
+    motion: { mins: number[]; maxs: number[]; degree?: number; files?: string[] };
+    trbf: { center: { codebook: number[] }; sigma: { codebook: number[] } };
     /** Present only when motion.degree == 2. */
-    accel?: { mins: number[], maxs: number[], files?: string[] };
+    accel?: { mins: number[]; maxs: number[]; files?: string[] };
     /** Absent on a still; defaults are 0 / 0 / 30. */
-    time?: { min: number, max: number, fps: number };
+    time?: { min: number; max: number; fps: number };
     cov2d_scale?: number[];
-    shN?: { bands: number, files: string[] };
+    shN?: { bands: number; files: string[] };
     segments?: SogstSegments;
     /** Present only on streamable archives; absent means one monolithic group. */
     streams?: {
@@ -94,7 +94,7 @@ type SogstMeta = {
         geometry_bytes: number;
         sh_deferred?: boolean;
     };
-}
+};
 
 export { isSogstFilename, SOGST_EXTENSIONS, SOGST_META_VERSION, SOGST_META_FORMAT };
 export type { SogstSegments, SogstMeta };

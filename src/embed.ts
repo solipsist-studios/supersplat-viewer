@@ -92,10 +92,10 @@ const initEmbed = (global: Global, viewer: Viewer) => {
     // iframe secure-context, permissions policy, or missing user activation.
     global.app.xr?.on('error', (err: Error) => {
         const nav = navigator as Navigator & {
-            userActivation?: { isActive: boolean; hasBeenActive: boolean }
+            userActivation?: { isActive: boolean; hasBeenActive: boolean };
         };
         const doc = document as Document & {
-            featurePolicy?: { allowsFeature: (feature: string) => boolean }
+            featurePolicy?: { allowsFeature: (feature: string) => boolean };
         };
         send({
             type: 'ssv:xrError',

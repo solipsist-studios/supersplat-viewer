@@ -1,12 +1,4 @@
-import {
-    GSplatData,
-    GSplatSogData,
-    PIXELFORMAT_RGBA8,
-    Quat,
-    Texture,
-    Vec3,
-    Vec4
-} from 'playcanvas';
+import { GSplatData, GSplatSogData, PIXELFORMAT_RGBA8, Quat, Texture, Vec3, Vec4 } from 'playcanvas';
 import type { AppBase, BoundingBox } from 'playcanvas';
 
 import { SOGST_META_FORMAT, SOGST_META_VERSION } from '../parsers/sogst';
@@ -44,7 +36,7 @@ type SogCodebookPatch = { _patchCodebooks?: () => void };
 // `SogstData` below is the decoded result, and is what the whole playback
 // path (motion textures, work-buffer modifier, animation driver) consumes.
 
-const ZIP_LOCAL_MAGIC = 0x04034b50;      // "PK\x03\x04"
+const ZIP_LOCAL_MAGIC = 0x04034b50; // "PK\x03\x04"
 const ZIP_EOCD_MAGIC = 0x06054b50;
 const ZIP_CDR_MAGIC = 0x02014b50;
 
@@ -52,7 +44,7 @@ type ZipEntry = {
     filename: string;
     deflated: boolean;
     data: Uint8Array;
-}
+};
 
 // Minimal ZIP reader (central-directory walk; stored + deflate entries).
 // Our encoder always writes stored entries, deflate is handled for
@@ -109,8 +101,9 @@ const parseZipEntries = (buffer: ArrayBuffer): ZipEntry[] => {
 };
 
 const inflateRaw = async (compressed: Uint8Array): Promise<Uint8Array> => {
-    const stream = new Blob([compressed as unknown as ArrayBuffer]).stream()
-    .pipeThrough(new DecompressionStream('deflate-raw'));
+    const stream = new Blob([compressed as unknown as ArrayBuffer])
+        .stream()
+        .pipeThrough(new DecompressionStream('deflate-raw'));
     return new Uint8Array(await new Response(stream).arrayBuffer());
 };
 
@@ -149,7 +142,7 @@ type TexelImage = {
     height: number;
     _levels: [Uint8Array];
     destroy: () => void;
-}
+};
 
 // Decodes webp payloads to raw RGBA texels in a worker with its own
 // OffscreenCanvas WebGL context. The main-thread alternative (upload +
@@ -197,7 +190,7 @@ self.onmessage = async (e) => {
 class WebpTexelWorker {
     private worker: Worker | null = null;
 
-    private pending = new Map<number, { resolve:(t: TexelImage) => void, reject: (e: Error) => void }>();
+    private pending = new Map<number, { resolve: (t: TexelImage) => void; reject: (e: Error) => void }>();
 
     private nextId = 0;
 
@@ -216,7 +209,12 @@ class WebpTexelWorker {
                     entry.reject(new Error(error));
                 } else {
                     entry.resolve({
-                        width, height, _levels: [data], destroy: () => { /* plain holder: no GPU resource to free */ }
+                        width,
+                        height,
+                        _levels: [data],
+                        destroy: () => {
+                            /* plain holder: no GPU resource to free */
+                        }
                     });
                 }
             };
@@ -235,7 +233,7 @@ class WebpTexelWorker {
         this.worker?.terminate();
         this.worker = null;
         const failure = new Error('texel worker destroyed');
-        this.pending.forEach(entry => entry.reject(failure));
+        this.pending.forEach((entry) => entry.reject(failure));
         this.pending.clear();
     }
 }
@@ -284,10 +282,14 @@ class SogstData {
 
     accelZ: Float32Array | null = null;
 
-    constructor(meta: SogstMeta, gsplatData: GSplatData,
+    constructor(
+        meta: SogstMeta,
+        gsplatData: GSplatData,
         velocity: [Float32Array, Float32Array, Float32Array],
-        tCenter: Float32Array, tSigma: Float32Array,
-        accel: [Float32Array, Float32Array, Float32Array] | null = null) {
+        tCenter: Float32Array,
+        tSigma: Float32Array,
+        accel: [Float32Array, Float32Array, Float32Array] | null = null
+    ) {
         this.meta = meta;
         this.numSplats = meta.count;
         this.timeMin = meta.time?.min ?? 0;
@@ -318,9 +320,10 @@ const isSogstArchive = (buffer: ArrayBuffer): boolean => {
 
 // Yield to the event loop so progress UI can repaint mid-decode. setTimeout
 // rather than requestAnimationFrame: rAF never fires in hidden tabs.
-const yieldToUi = () => new Promise((resolve) => {
-    setTimeout(resolve, 0);
-});
+const yieldToUi = () =>
+    new Promise((resolve) => {
+        setTimeout(resolve, 0);
+    });
 
 const SH_C0 = 0.28209479177387814;
 
@@ -332,8 +335,14 @@ const DECODE_SLICE_MS = 6;
 // streamed archives prefix them with the group directory ("persistent/",
 // "seg_000/", ...). shN_centroids is global either way.
 const GROUP_FILE_NAMES = [
-    'means_l.webp', 'means_u.webp', 'quats.webp', 'scales.webp', 'sh0.webp',
-    'motion_l.webp', 'motion_u.webp', 'trbf.webp'
+    'means_l.webp',
+    'means_u.webp',
+    'quats.webp',
+    'scales.webp',
+    'sh0.webp',
+    'motion_l.webp',
+    'motion_u.webp',
+    'trbf.webp'
 ];
 
 // Per-group texture names for this archive: degree-2 (accel) content adds
@@ -343,10 +352,10 @@ const groupBaseNames = (meta: SogstMeta): string[] => {
 };
 
 type SogstGroup = {
-    prefix: string | null;          // null => monolithic (bare names)
+    prefix: string | null; // null => monolithic (bare names)
     range: [number, number];
-    segIndex: number;               // index into meta.segments.list; -1 otherwise
-}
+    segIndex: number; // index into meta.segments.list; -1 otherwise
+};
 
 // Decode groups in play order: [whole file] for monolithic archives, or
 // [persistent, seg_000, seg_001, ...] (empty groups omitted) for streamed.
@@ -408,11 +417,20 @@ class SogstDecoder {
         this.meta = meta;
         this.n = meta.count;
         this.members = [
-            'x', 'y', 'z',
-            'f_dc_0', 'f_dc_1', 'f_dc_2',
+            'x',
+            'y',
+            'z',
+            'f_dc_0',
+            'f_dc_1',
+            'f_dc_2',
             'opacity',
-            'scale_0', 'scale_1', 'scale_2',
-            'rot_0', 'rot_1', 'rot_2', 'rot_3'
+            'scale_0',
+            'scale_1',
+            'scale_2',
+            'rot_0',
+            'rot_1',
+            'rot_2',
+            'rot_3'
         ];
         if (meta.shN) {
             for (let i = 0; i < 45; i++) {
@@ -427,8 +445,7 @@ class SogstDecoder {
         // negative opacity logit (same trick as the v2 streaming prefill)
         this.arrays.opacity.fill(-40);
         this.velocity = [new Float32Array(this.n), new Float32Array(this.n), new Float32Array(this.n)];
-        this.accel = meta.accel ?
-            [new Float32Array(this.n), new Float32Array(this.n), new Float32Array(this.n)] : null;
+        this.accel = meta.accel ? [new Float32Array(this.n), new Float32Array(this.n), new Float32Array(this.n)] : null;
         this.tCenter = new Float32Array(this.n);
         this.tSigma = new Float32Array(this.n);
         this.tSigma.fill(1);
@@ -456,8 +473,7 @@ class SogstDecoder {
 
     // Decode one group's texture payloads (keyed by bare canonical name)
     // into [range[0], range[1]) of the full arrays.
-    async decodeGroup(group: SogstGroup, files: Map<string, Uint8Array>,
-        onProgress?: (frac: number) => void) {
+    async decodeGroup(group: SogstGroup, files: Map<string, Uint8Array>, onProgress?: (frac: number) => void) {
         const [a, b] = group.range;
         const m = b - a;
         if (m <= 0) {
@@ -488,7 +504,7 @@ class SogstDecoder {
         if (useSH) {
             names.push('shN_labels.webp');
         }
-        const textures = await Promise.all(names.map(name => texFor(name)));
+        const textures = await Promise.all(names.map((name) => texFor(name)));
         const tex = new Map<string, TexelImage | Texture>();
         names.forEach((name, i) => {
             tex.set(name, textures[i]);
@@ -556,7 +572,7 @@ class SogstDecoder {
                 arrays.f_dc_0[o] = (c.x - 0.5) / SH_C0;
                 arrays.f_dc_1[o] = (c.y - 0.5) / SH_C0;
                 arrays.f_dc_2[o] = (c.z - 0.5) / SH_C0;
-                arrays.opacity[o] = c.w <= 0 ? -40 : (c.w >= 1 ? 40 : -Math.log(1 / c.w - 1));
+                arrays.opacity[o] = c.w <= 0 ? -40 : c.w >= 1 ? 40 : -Math.log(1 / c.w - 1);
                 if (sh && restArrays) {
                     for (let j = 0; j < 45; j++) {
                         restArrays[j][o] = sh[j];
@@ -568,7 +584,7 @@ class SogstDecoder {
                 }
             }
             onProgress?.(i / m);
-             
+
             await yieldToUi();
         }
 
@@ -606,12 +622,16 @@ class SogstDecoder {
             while (i < m) {
                 const o = a + i;
                 for (let ch = 0; ch < 3; ch++) {
-                    const t = vMins[ch] + (vMaxs[ch] - vMins[ch]) * ((motionU[i * 4 + ch] << 8) + motionL[i * 4 + ch]) / 65535;
+                    const t =
+                        vMins[ch] +
+                        ((vMaxs[ch] - vMins[ch]) * ((motionU[i * 4 + ch] << 8) + motionL[i * 4 + ch])) / 65535;
                     this.velocity[ch][o] = Math.sign(t) * (Math.exp(Math.abs(t)) - 1);
                 }
                 if (this.accel && accelL && accelU && aMins && aMaxs) {
                     for (let ch = 0; ch < 3; ch++) {
-                        const t = aMins[ch] + (aMaxs[ch] - aMins[ch]) * ((accelU[i * 4 + ch] << 8) + accelL[i * 4 + ch]) / 65535;
+                        const t =
+                            aMins[ch] +
+                            ((aMaxs[ch] - aMins[ch]) * ((accelU[i * 4 + ch] << 8) + accelL[i * 4 + ch])) / 65535;
                         this.accel[ch][o] = Math.sign(t) * (Math.exp(Math.abs(t)) - 1);
                     }
                 }
@@ -622,7 +642,7 @@ class SogstDecoder {
                     break;
                 }
             }
-             
+
             await yieldToUi();
         }
     }
@@ -671,7 +691,7 @@ class SogstDecoder {
                     break;
                 }
             }
-             
+
             await yieldToUi();
         }
 
@@ -680,16 +700,18 @@ class SogstDecoder {
     }
 
     buildData(): SogstData {
-        const gsplatData = new GSplatData([{
-            name: 'vertex',
-            count: this.n,
-            properties: this.members.map(name => ({
-                name,
-                type: 'float' as const,
-                byteSize: 4,
-                storage: this.arrays[name]
-            }))
-        }]);
+        const gsplatData = new GSplatData([
+            {
+                name: 'vertex',
+                count: this.n,
+                properties: this.members.map((name) => ({
+                    name,
+                    type: 'float' as const,
+                    byteSize: 4,
+                    storage: this.arrays[name]
+                }))
+            }
+        ]);
         return new SogstData(this.meta, gsplatData, this.velocity, this.tCenter, this.tSigma, this.accel);
     }
 
@@ -723,14 +745,16 @@ const parseSogstMeta = (bytes: Uint8Array | undefined): SogstMeta => {
 
 // Decode a complete archive (either layout) into playable data. Used for
 // non-streamed archives and for cache hits on streamed ones.
-const loadSogst = async (app: AppBase, buffer: ArrayBuffer,
-    onProgress?: (progress: number) => void): Promise<SogstData> => {
+const loadSogst = async (
+    app: AppBase,
+    buffer: ArrayBuffer,
+    onProgress?: (progress: number) => void
+): Promise<SogstData> => {
     const report = (value: number) => onProgress?.(Math.min(100, Math.round(value)));
 
     const entries = parseZipEntries(buffer);
     const files = new Map<string, Uint8Array>();
     for (const entry of entries) {
-         
         files.set(entry.filename, entry.deflated ? await inflateRaw(entry.data) : entry.data);
     }
 
@@ -754,8 +778,8 @@ const loadSogst = async (app: AppBase, buffer: ArrayBuffer,
         }
         const m = group.range[1] - group.range[0];
         const base = done;
-         
-        await decoder.decodeGroup(group, groupBytes, frac => report(((base + frac * m) / meta.count) * 100));
+
+        await decoder.decodeGroup(group, groupBytes, (frac) => report(((base + frac * m) / meta.count) * 100));
         done += m;
     }
 
@@ -786,7 +810,14 @@ const setAabbFromMeta = (meta: SogstMeta, aabb: BoundingBox) => {
 };
 
 export {
-    isSogstArchive, loadSogst, SogstData,
-    SogstDecoder, enumerateSogstGroups, groupFileList, groupBaseNames, parseSogstMeta, setAabbFromMeta,
+    isSogstArchive,
+    loadSogst,
+    SogstData,
+    SogstDecoder,
+    enumerateSogstGroups,
+    groupFileList,
+    groupBaseNames,
+    parseSogstMeta,
+    setAabbFromMeta,
     GROUP_FILE_NAMES
 };

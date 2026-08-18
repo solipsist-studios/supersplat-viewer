@@ -14,9 +14,11 @@ const fullFileCacheKey = async (url: string): Promise<string> => {
     try {
         const head = await fetch(url, { method: 'HEAD' });
         if (head.ok) {
-            validator = head.headers.get('etag') ??
+            validator =
+                head.headers.get('etag') ??
                 head.headers.get('last-modified') ??
-                head.headers.get('content-length') ?? '';
+                head.headers.get('content-length') ??
+                '';
         }
     } catch {
         // offline or HEAD unsupported — fall through to the bare key

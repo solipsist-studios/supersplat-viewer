@@ -257,22 +257,49 @@ const initUI = (global: Global) => {
         'handle',
         'time',
         'buttonContainer',
-        'play', 'pause',
-        'loopMode', 'loopRepeatSvg', 'loopPingpongSvg', 'loopNoneSvg',
-        'playbackSpeedControl', 'playbackSpeed', 'playbackSpeedMenu', 'playbackSpeedCustom',
-        'settings', 'settingsPanel',
-        'sogstRotationBlock', 'sogstRotationValue',
-        'sogstRotateXNeg', 'sogstRotateXPos',
-        'sogstRotateYNeg', 'sogstRotateYPos',
-        'sogstRotateZNeg', 'sogstRotateZPos',
-        'sogstRotateReset', 'sogstClearCache',
-        'annotationsRow', 'annotationsOption', 'annotationsCheck',
-        'orbitCamera', 'flyCamera', 'fpsCamera',
-        'performanceModeRow', 'performanceModeCheck', 'performanceModeOption',
-        'gamingControlsDivider', 'gamingControlsRow', 'gamingControlsCheck', 'gamingControlsOption',
-        'desktopFlyClickToFly', 'desktopFlyGamingControls', 'desktopClickToWalk', 'desktopGamingControls',
-        'touchFlyClickToWalk', 'touchFlyGamingControls',
-        'touchClickToWalk', 'touchGamingControls',
+        'play',
+        'pause',
+        'loopMode',
+        'loopRepeatSvg',
+        'loopPingpongSvg',
+        'loopNoneSvg',
+        'playbackSpeedControl',
+        'playbackSpeed',
+        'playbackSpeedMenu',
+        'playbackSpeedCustom',
+        'settings',
+        'settingsPanel',
+        'sogstRotationBlock',
+        'sogstRotationValue',
+        'sogstRotateXNeg',
+        'sogstRotateXPos',
+        'sogstRotateYNeg',
+        'sogstRotateYPos',
+        'sogstRotateZNeg',
+        'sogstRotateZPos',
+        'sogstRotateReset',
+        'sogstClearCache',
+        'annotationsRow',
+        'annotationsOption',
+        'annotationsCheck',
+        'orbitCamera',
+        'flyCamera',
+        'fpsCamera',
+        'performanceModeRow',
+        'performanceModeCheck',
+        'performanceModeOption',
+        'gamingControlsDivider',
+        'gamingControlsRow',
+        'gamingControlsCheck',
+        'gamingControlsOption',
+        'desktopFlyClickToFly',
+        'desktopFlyGamingControls',
+        'desktopClickToWalk',
+        'desktopGamingControls',
+        'touchFlyClickToWalk',
+        'touchFlyGamingControls',
+        'touchClickToWalk',
+        'touchGamingControls',
         'walkHint',
         'reset',
         'frame',
@@ -378,12 +405,13 @@ const initUI = (global: Global) => {
         }
 
         if (typeof indexedDB !== 'undefined') {
-            const deleteDb = (name: string) => new Promise<void>((resolve) => {
-                const request = indexedDB.deleteDatabase(name);
-                request.onsuccess = () => resolve();
-                request.onerror = () => resolve();
-                request.onblocked = () => resolve();
-            });
+            const deleteDb = (name: string) =>
+                new Promise<void>((resolve) => {
+                    const request = indexedDB.deleteDatabase(name);
+                    request.onsuccess = () => resolve();
+                    request.onerror = () => resolve();
+                    request.onblocked = () => resolve();
+                });
             await deleteDb('supersplat-sogst-chunks');
             await deleteDb('supersplat-omg4-chunks');
         }
@@ -738,8 +766,11 @@ const initUI = (global: Global) => {
             state.cameraMode = 'anim';
         }
         // play-once mode holds at the end; pressing play again restarts
-        if (state.animationLoopMode === 'none' &&
-            state.animationDuration > 0 && state.animationTime >= state.animationDuration) {
+        if (
+            state.animationLoopMode === 'none' &&
+            state.animationDuration > 0 &&
+            state.animationTime >= state.animationDuration
+        ) {
             events.fire('scrubAnim', 0);
         }
         state.animationPaused = false;
@@ -774,9 +805,7 @@ const initUI = (global: Global) => {
     const minSpeed = 0.1;
     const maxSpeed = 10;
     const speedInput = dom.playbackSpeedCustom as HTMLInputElement;
-    const speedPresets = Array.from(
-        dom.playbackSpeedMenu.querySelectorAll<HTMLElement>('.speedPreset')
-    );
+    const speedPresets = Array.from(dom.playbackSpeedMenu.querySelectorAll<HTMLElement>('.speedPreset'));
 
     // Trim float noise (1.0500000000000003 → 1.05) so the label stays readable.
     const formatSpeed = (speed: number) => parseFloat(speed.toFixed(2)).toString();
@@ -836,9 +865,9 @@ const initUI = (global: Global) => {
     updatePlaybackSpeedUI();
 
     const updatePlayPause = () => {
-        const playing = state.hasAnimation ?
-            !state.animationPaused :
-            (state.cameraMode === 'anim' && !state.animationPaused);
+        const playing = state.hasAnimation
+            ? !state.animationPaused
+            : state.cameraMode === 'anim' && !state.animationPaused;
 
         if (playing) {
             dom.play.classList.add('hidden');
@@ -862,8 +891,8 @@ const initUI = (global: Global) => {
     updatePlayPause();
 
     const updateSlider = () => {
-        dom.handle.style.left = `${state.animationTime / state.animationDuration * 100}%`;
-        dom.time.style.left = `${state.animationTime / state.animationDuration * 100}%`;
+        dom.handle.style.left = `${(state.animationTime / state.animationDuration) * 100}%`;
+        dom.time.style.left = `${(state.animationTime / state.animationDuration) * 100}%`;
         dom.time.innerText = `${state.animationTime.toFixed(1)}s`;
     };
 

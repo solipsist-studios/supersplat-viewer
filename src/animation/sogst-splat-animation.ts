@@ -1,4 +1,4 @@
-import { Quat, Vec3  } from 'playcanvas';
+import { Quat, Vec3 } from 'playcanvas';
 import type { Entity } from 'playcanvas';
 
 import type { SogstData } from '../core/load-sogst';
@@ -83,8 +83,12 @@ class SogstSplatAnimation {
         const rotation = this.entity.getRotation();
         const camRotation = this.camera?.getRotation();
         const camPosition = this.camera?.getPosition();
-        const camChanged = !!(this.cov2dScale && camRotation && camPosition &&
-            (!camRotation.equals(this.lastCamRotation) || !camPosition.equals(this.lastCamPosition)));
+        const camChanged = !!(
+            this.cov2dScale &&
+            camRotation &&
+            camPosition &&
+            (!camRotation.equals(this.lastCamRotation) || !camPosition.equals(this.lastCamPosition))
+        );
         if (animTime === this.lastTime && rotation.equals(this.lastRotation) && !camChanged) {
             return false;
         }

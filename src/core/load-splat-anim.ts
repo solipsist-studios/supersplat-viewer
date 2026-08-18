@@ -1,5 +1,5 @@
-import { Entity  } from 'playcanvas';
-import type { GSplatResource, AppBase  } from 'playcanvas';
+import { Entity } from 'playcanvas';
+import type { GSplatResource, AppBase } from 'playcanvas';
 
 import type { Config, Global } from '../types';
 
@@ -13,7 +13,7 @@ type SetupSplatAnimOptions = {
 type SplatAnimation = {
     readonly duration: number;
     attach(global: Global): () => void;
-}
+};
 
 // Shared entity-creation and state-wiring used by every animated-splat loader.
 //
@@ -34,7 +34,7 @@ const setupSplatAnim = (
     options: SetupSplatAnimOptions = {}
 ): Entity => {
     const rotationEulerDeg = options.rotationEulerDeg ?? [0, 0, 180];
-    const alphaClip = options.alphaClip ?? (1 / 255);
+    const alphaClip = options.alphaClip ?? 1 / 255;
 
     const entity = new Entity('gsplat');
     entity.setLocalEulerAngles(rotationEulerDeg[0], rotationEulerDeg[1], rotationEulerDeg[2]);

@@ -50,7 +50,7 @@ abstract class SplatAnimationBase {
                     }
                     const frameIdx = queuedFrame;
                     queuedFrame = null;
-                     
+
                     if (await this.setFrame(frameIdx)) {
                         sortAndRender();
                     }

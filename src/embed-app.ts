@@ -89,7 +89,8 @@ const createEmbedViewer = async (options: EmbedViewerOptions): Promise<EmbedView
     // their own streaming/cached fetches, and an unrecognised extension is
     // rejected by loadContent without reading the body — prefetching either
     // downloads a file nothing goes on to read.
-    const embedFilename = options.contentFilename ?? new URL(options.contentUrl, location.href).pathname.split('/').pop() ?? '';
+    const embedFilename =
+        options.contentFilename ?? new URL(options.contentUrl, location.href).pathname.split('/').pop() ?? '';
     const embedPrefetch = isStatic3dgsFilename(embedFilename);
 
     const config: Config = {
@@ -170,10 +171,14 @@ const createEmbedViewer = async (options: EmbedViewerOptions): Promise<EmbedView
         };
 
         let contentEntity: Entity | null = null;
-        gsplatLoad.then((entity) => {
-            contentEntity = entity;
-            applyTransform(entity);
-        }).catch(() => { /* load failure is reported through state */ });
+        gsplatLoad
+            .then((entity) => {
+                contentEntity = entity;
+                applyTransform(entity);
+            })
+            .catch(() => {
+                /* load failure is reported through state */
+            });
 
         // Re-apply on session end so the page view always returns to the
         // configured transform, whatever happened during the XR session.

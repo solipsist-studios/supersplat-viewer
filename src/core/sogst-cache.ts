@@ -21,9 +21,12 @@ type PieceManifest = {
 };
 
 const isManifest = (value: unknown): value is PieceManifest => {
-    return !!value && typeof value === 'object' &&
+    return (
+        !!value &&
+        typeof value === 'object' &&
         typeof (value as PieceManifest).sogstPieces === 'number' &&
-        typeof (value as PieceManifest).totalBytes === 'number';
+        typeof (value as PieceManifest).totalBytes === 'number'
+    );
 };
 
 let sogstDbPromise: Promise<IDBDatabase | null> | null = null;
@@ -106,7 +109,6 @@ const idbGetBuffer = async (key: string): Promise<ArrayBuffer | null> => {
     const result = new Uint8Array(value.totalBytes);
     let offset = 0;
     for (let i = 0; i < value.sogstPieces; i++) {
-         
         const piece = await idbGetValue(db, `${key}#${i}`);
         if (!(piece instanceof ArrayBuffer) || offset + piece.byteLength > value.totalBytes) {
             return null;
@@ -135,7 +137,7 @@ const idbSetBuffer = async (key: string, buffer: ArrayBuffer): Promise<void> => 
     const pieces = Math.ceil(buffer.byteLength / PIECE_BYTES);
     for (let i = 0; i < pieces; i++) {
         const piece = buffer.slice(i * PIECE_BYTES, Math.min((i + 1) * PIECE_BYTES, buffer.byteLength));
-         
+
         const ok = await idbPutValue(db, `${key}#${i}`, piece);
         if (!ok) {
             return;

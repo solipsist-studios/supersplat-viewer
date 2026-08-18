@@ -1,8 +1,4 @@
-import {
-    EventHandler,
-    revision as engineRevision,
-    version as engineVersion
-} from 'playcanvas';
+import { EventHandler, revision as engineRevision, version as engineVersion } from 'playcanvas';
 import type { Texture } from 'playcanvas';
 
 import { version as appVersion } from '../package.json';
