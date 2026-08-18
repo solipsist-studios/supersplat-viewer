@@ -29,7 +29,7 @@ type EmbedViewerOptions = {
     transparent?: boolean;
     /** Start with animation paused. */
     noanim?: boolean;
-    /** SOGST content rotation in degrees (default [270, 0, 0]). */
+    /** SOGST content rotation in degrees (default [0, 0, 0]). */
     sogstRotationDeg?: [number, number, number];
     /** 4DGS playback loop style (default 'loop'). */
     loopMode?: 'loop' | 'pingpong';

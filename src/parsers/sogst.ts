@@ -9,10 +9,7 @@
 // radial-basis window.
 //
 // `meta.version` is 1 and `meta.format` is "sogst"; both are REQUIRED and
-// anything else is rejected. (There is no version 2 or 3: the container was
-// renumbered from 3 to 1 when the development-era binary formats — the ones
-// carrying the ASCII magic "OMG4" — were removed. Nothing had shipped, so
-// nothing reads them any more.)
+// anything else is rejected.
 //
 // At clip time t (seconds, absolute — not normalised), a splat evaluates as:
 //
@@ -27,8 +24,7 @@
 // coefficient, **not** half-acceleration.
 // ─────────────────────────────────────────────────────────────────────────────
 
-// The only extension. `.omg4` was the development-era spelling and is no
-// longer accepted — those containers were never released.
+// The only extension.
 const SOGST_EXTENSIONS = ['.sogst'];
 
 // Required `meta.json` identity. A conforming player rejects anything else.

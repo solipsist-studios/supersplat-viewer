@@ -3,7 +3,7 @@ import type { State } from '../types';
 // Shared transport playhead for animated-splat drivers. Owns the current
 // playback time and the pingpong direction, advancing them according to the
 // transport's speed and loop mode so every format — per-frame formats driven
-// by SplatAnimationBase as well as the GPU-evaluated .sogst v2 driver —
+// by SplatAnimationBase as well as the GPU-evaluated .sogst driver —
 // responds identically to the UI controls.
 class Playhead {
     time = 0;

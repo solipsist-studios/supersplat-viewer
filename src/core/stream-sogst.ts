@@ -2,15 +2,10 @@ import type { AppBase } from 'playcanvas';
 
 import type { SogstMeta } from '../parsers/sogst';
 
-import type { SogstData } from './load-sogst';
-import {
-    SogstDecoder,
-    enumerateSogstGroups,
-    groupFileList,
-    groupBaseNames,
-    loadSogst,
-    parseSogstMeta
-} from './load-sogst';
+import { loadSogst, parseSogstMeta } from './load-sogst';
+import type { SogstData } from './sogst-data';
+import { SogstDecoder, enumerateSogstGroups, groupFileList, groupBaseNames } from './sogst-decoder';
+import { ZIP_FLAG_DATA_DESCRIPTOR, ZIP_LFH, ZIP_LOCAL_MAGIC } from './zip';
 
 // Progressive loader for streamed archives. The encoder writes the ZIP
 // in play order — meta.json, shN_centroids, persistent/*, seg_000/*, ... —
@@ -21,7 +16,53 @@ import {
 // behind playback. data.loadedThrough advances per segment so the animation
 // driver can hold the playhead if the network falls behind.
 
-const ZIP_LOCAL_MAGIC = 0x04034b50;
+// Growth buffer for a response with no Content-Length; it doubles from here,
+// so this only sets how many reallocations a small archive costs.
+const INITIAL_BUFFER_BYTES = 1 << 20;
+
+// -- buffer-ahead gate tuning --------------------------------------------
+// These are the margins in the two readiness inequalities below. They are
+// tuning, not format constants: chosen against the reference clips on a
+// throttled connection, where they were the smallest values that stopped
+// the first playback pass from hitching at segment boundaries. Loosening
+// them reveals the scene sooner and risks starving the playhead.
+
+// Floor on the clip duration used by the gate, so a still (duration 0)
+// cannot make the required-buffer term collapse to zero.
+const MIN_GATE_DURATION_S = 0.1;
+
+// Bandwidth measured over the first fraction of a second is dominated by
+// connection setup, so the gate refuses to reveal until this much has
+// elapsed rather than acting on that estimate.
+const BANDWIDTH_WARMUP_S = 0.15;
+
+// Headroom subtracted from the clip duration before asking whether the
+// remaining bytes fit in it — the last segment has to land before playback
+// reaches it, not exactly as it does.
+const DOWNLOAD_HEADROOM_S = 0.3;
+
+// Safety factor on the bandwidth estimate: measured throughput has to beat
+// what the clip needs by this much before the byte side of the gate opens.
+const DOWNLOAD_MARGIN = 1.3;
+
+// Trailing window for the fill-rate estimate. Long enough to average over
+// one segment's decode, short enough to track a connection that degrades.
+const FILL_WINDOW_MS = 1500;
+
+// Minimum wall-clock span between the oldest and newest fill sample before
+// the fill rate means anything.
+const MIN_FILL_SPAN_S = 0.35;
+
+// Floor on the required buffer, so content that decodes faster than it
+// plays still buffers a little before revealing.
+const MIN_BUFFER_S = 0.3;
+
+// Safety factor on the buffering inequality (buffered >= duration * (1 - f)).
+const FILL_MARGIN = 1.25;
+
+// Cap on retained fill samples: FILL_WINDOW_MS of history at the fastest
+// segment rate observed, with slack.
+const MAX_FILL_SAMPLES = 40;
 
 type SogstStreamCallbacks = {
     /**
@@ -74,7 +115,7 @@ const streamSogst = (app: AppBase, url: string, callbacks: SogstStreamCallbacks)
         }
 
         const contentLength = parseInt(response.headers.get('content-length') ?? '0', 10);
-        let bytes = new Uint8Array(contentLength > 0 ? contentLength : 1 << 20);
+        let bytes = new Uint8Array(contentLength > 0 ? contentLength : INITIAL_BUFFER_BYTES);
         let received = 0;
         const ensureCapacity = (needed: number) => {
             if (needed <= bytes.length) {
@@ -93,10 +134,10 @@ const streamSogst = (app: AppBase, url: string, callbacks: SogstStreamCallbacks)
         let parsePos = 0;
         let entriesDone = false;
         const nextEntry = (): { name: string; data: Uint8Array } | null => {
-            if (entriesDone || received - parsePos < 30) {
+            if (entriesDone || received - parsePos < ZIP_LFH.size) {
                 return null;
             }
-            const view = new DataView(bytes.buffer, parsePos, 30);
+            const view = new DataView(bytes.buffer, parsePos, ZIP_LFH.size);
             if (view.getUint32(0, true) !== ZIP_LOCAL_MAGIC) {
                 // central directory reached — no more entries
                 entriesDone = true;
@@ -108,19 +149,20 @@ const streamSogst = (app: AppBase, url: string, callbacks: SogstStreamCallbacks)
             // `total` the header length and march us into the payload as if
             // it were the next entry — garbage names, no error. Fail loudly
             // instead: this is a malformed archive, not a stream underrun.
-            const flags = view.getUint16(6, true);
-            if ((flags & 0x8) !== 0) {
+            const flags = view.getUint16(ZIP_LFH.flags, true);
+            if ((flags & ZIP_FLAG_DATA_DESCRIPTOR) !== 0) {
                 throw new Error('sogst: archive uses ZIP data descriptors, which the format forbids');
             }
-            const compressedSize = view.getUint32(18, true);
-            const nameLength = view.getUint16(26, true);
-            const extraLength = view.getUint16(28, true);
-            const total = 30 + nameLength + extraLength + compressedSize;
+            const compressedSize = view.getUint32(ZIP_LFH.compressedSize, true);
+            const nameLength = view.getUint16(ZIP_LFH.nameLength, true);
+            const extraLength = view.getUint16(ZIP_LFH.extraLength, true);
+            const total = ZIP_LFH.size + nameLength + extraLength + compressedSize;
             if (received - parsePos < total) {
                 return null;
             }
-            const name = new TextDecoder().decode(bytes.subarray(parsePos + 30, parsePos + 30 + nameLength));
-            const data = bytes.subarray(parsePos + 30 + nameLength + extraLength, parsePos + total);
+            const nameStart = parsePos + ZIP_LFH.size;
+            const name = new TextDecoder().decode(bytes.subarray(nameStart, nameStart + nameLength));
+            const data = bytes.subarray(nameStart + nameLength + extraLength, parsePos + total);
             parsePos += total;
             return { name, data };
         };
@@ -173,16 +215,16 @@ const streamSogst = (app: AppBase, url: string, callbacks: SogstStreamCallbacks)
             if (!gb) {
                 return { bytesQ: 1, fillQ: 1 };
             }
-            const duration = Math.max(0.1, (meta.time?.max ?? 0) - (meta.time?.min ?? 0));
+            const duration = Math.max(MIN_GATE_DURATION_S, (meta.time?.max ?? 0) - (meta.time?.min ?? 0));
             const elapsed = (performance.now() - downloadStart) / 1000;
 
             let bytesQ = 1;
             if (received < gb) {
-                if (elapsed < 0.15) {
+                if (elapsed < BANDWIDTH_WARMUP_S) {
                     bytesQ = 0;
                 } else {
                     const bw = received / elapsed;
-                    const target = Math.max(1, gb - (bw * (duration - 0.3)) / 1.3);
+                    const target = Math.max(1, gb - (bw * (duration - DOWNLOAD_HEADROOM_S)) / DOWNLOAD_MARGIN);
                     bytesQ = Math.min(1, received / target);
                 }
             }
@@ -196,15 +238,15 @@ const streamSogst = (app: AppBase, url: string, callbacks: SogstStreamCallbacks)
                 // oldest sample within the trailing window
                 let ref = fillSamples[0];
                 for (const sample of fillSamples) {
-                    if (now - sample.t <= 1500) {
+                    if (now - sample.t <= FILL_WINDOW_MS) {
                         break;
                     }
                     ref = sample;
                 }
                 const span = (now - ref.t) / 1000;
-                if (buffered > 0 && span >= 0.35) {
+                if (buffered > 0 && span >= MIN_FILL_SPAN_S) {
                     const f = Math.min(1, Math.max(0, buffered - ref.b) / span);
-                    const required = Math.max(0.3, duration * (1 - f) * 1.25);
+                    const required = Math.max(MIN_BUFFER_S, duration * (1 - f) * FILL_MARGIN);
                     fillQ = Math.min(1, buffered / required);
                 }
             }
@@ -249,7 +291,7 @@ const streamSogst = (app: AppBase, url: string, callbacks: SogstStreamCallbacks)
                 decodedThrough = loadedThroughAfter(idx);
                 if (isFinite(decodedThrough)) {
                     fillSamples.push({ t: performance.now(), b: decodedThrough - (meta.time?.min ?? 0) });
-                    if (fillSamples.length > 40) {
+                    if (fillSamples.length > MAX_FILL_SAMPLES) {
                         fillSamples.shift();
                     }
                 }

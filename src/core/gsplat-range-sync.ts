@@ -6,12 +6,16 @@ type TypedArray = Uint8Array | Uint16Array | Uint32Array | Float32Array;
 // Ranged variants of the engine's GSplatResource GPU-data updates
 // (updateColorData / updateTransformData / updateSHData). The engine
 // methods repack every splat and re-upload whole textures — fine for a
-// one-off refresh, but the v3 segment streamer refreshes once per decoded
+// one-off refresh, but the segment streamer refreshes once per decoded
 // ~0.1s segment, and O(numSplats) work per segment freezes weak devices
 // for the whole first playback pass. These variants repack only splats
 // [a, b) into the textures' persistent CPU copies and upload just the
 // covering rows. Packing math is kept byte-identical to the engine's.
 
+// Zeroth-order spherical-harmonic basis function, 1 / (2 * sqrt(pi)).
+// Colour is stored as the DC coefficient, so recovering the [0, 1] value the
+// packing expects means SH_C0 * f_dc + 0.5 — the same constant the engine's
+// own gsplat code and every 3DGS reference implementation use.
 const SH_C0 = 0.28209479177387814;
 
 // Upload the texture rows covering splat texel indices [a, b). The CPU

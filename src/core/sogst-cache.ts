@@ -1,6 +1,6 @@
-// Durable IndexedDB cache for SOGST payloads, shared by the v1 chunk streamer
-// (byte-range entries) and the v2 full-file loader. Everything lives in one
-// database/store so the debug UI's "Clear SOGST Cache" wipes both.
+// Durable IndexedDB cache for SOGST payloads, shared by the byte-range chunk
+// streamer and the whole-file loader. Everything lives in one database/store
+// so the debug UI's "Clear SOGST Cache" wipes both.
 //
 // Large payloads are split across multiple entries: structured-cloning a
 // single multi-hundred-MB ArrayBuffer into IndexedDB spikes memory hard
@@ -95,8 +95,8 @@ const idbGetBuffer = async (key: string): Promise<ArrayBuffer | null> => {
 
     const value = await idbGetValue(db, key);
 
-    // Small payloads (v1 range entries, pre-manifest v2 entries) are stored
-    // directly as ArrayBuffers.
+    // Payloads below PIECE_BYTES are stored directly as ArrayBuffers, with
+    // no manifest entry.
     if (value instanceof ArrayBuffer) {
         return value;
     }

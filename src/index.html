@@ -84,7 +84,7 @@
             const contentUrl = url.searchParams.has('content')
                 ? url.searchParams.get('content')
                 : './coffee_martini.sogst';
-            const sogstRotationDeg = parseRotationParam(url.searchParams.get('sogstrot'), [270, 0, 0]);
+            const sogstRotationDeg = parseRotationParam(url.searchParams.get('sogstrot'), [0, 0, 0]);
 
             const renderer = url.searchParams.has('webgl') ? 'webgl' : 'webgpu';
 
@@ -351,7 +351,7 @@
                 <div class="divider"></div>
                 <div id="sogstRotationBlock" class="hidden">
                     <div class="settingsRow">
-                        <div id="sogstRotationValue">SOGST Rotation: 270, 0, 0</div>
+                        <div id="sogstRotationValue">SOGST Rotation: 0, 0, 0</div>
                     </div>
                     <div class="settingsRow">
                         <button id="sogstRotateXNeg">X -90</button>

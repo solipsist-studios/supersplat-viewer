@@ -3,10 +3,10 @@
 // while unchanged ones load from IndexedDB. Browsers won't keep responses
 // this large (hundreds of MB) in the regular HTTP cache.
 //
-// The `v1` is the *container* version, not a cache-schema version: entries
-// written by an older build hold a manifest this build now rejects, and a
-// decode-then-throw is a worse failure than a re-download. Bump it whenever
-// the accepted `meta.version` changes.
+// The suffix carries the *container* version, not a cache-schema version:
+// entries written against a different accepted `meta.version` may hold a
+// manifest this build rejects, and a decode-then-throw is a worse failure
+// than a re-download. Bump it whenever the accepted `meta.version` changes.
 const fullFileKeyPrefix = (url: string) => `${new URL(url, location.href).toString()}?__sogst_v1_full=`;
 
 const fullFileCacheKey = async (url: string): Promise<string> => {

@@ -16,10 +16,10 @@ import { App } from './app';
 import { fullFileCacheKey, fullFileKeyPrefix } from './core/fetch-splat-anim-buffer';
 import { updateGsplatRangeData, updateGsplatSHRange, uploadGsplatRows } from './core/gsplat-range-sync';
 import { loadSogst, setAabbFromMeta } from './core/load-sogst';
-import type { SogstData } from './core/load-sogst';
 import { setupSplatAnim } from './core/load-splat-anim';
 import { observe } from './core/observe';
 import { idbDeleteByPrefix, idbGetBuffer, idbSetBuffer } from './core/sogst-cache';
+import type { SogstData } from './core/sogst-data';
 import { attachSogstMotion, syncSogstMotionRange, uploadSogstMotionRows } from './core/sogst-motion';
 import { streamSogst } from './core/stream-sogst';
 import { isSogstFilename } from './parsers/sogst';
@@ -74,7 +74,7 @@ const setupSogst = (app: AppBase, config: Config, global: Global, data: SogstDat
 
     const animation = new SogstSplatAnimation(data);
     const entity = setupSplatAnim(app, config, global, resource, animation, {
-        rotationEulerDeg: config.sogstRotationDeg ?? [270, 0, 0],
+        rotationEulerDeg: config.sogstRotationDeg ?? [0, 0, 0],
         alphaClip: 1 / 1024
     });
     animation.bind(entity, data.cov2dScale);
@@ -349,8 +349,8 @@ const isStatic3dgsFilename = (filename: string) => {
 // Dispatch on the filename, rejecting an unrecognised extension here rather
 // than letting it reach the gsplat asset handler. That handler downloads the
 // whole file before the PLY parser rejects its header, so a mistyped or
-// retired extension costs a full transfer — 310MB for one of the retired
-// .omg4 scenes — to reach a conclusion the filename already supported. An
+// unsupported extension costs a full transfer — 310MB for one of the test
+// scenes — to reach a conclusion the filename already supported. An
 // extensionless URL carries no evidence either way and keeps the historical
 // 3DGS path rather than being rejected on a guess.
 const loadContent = (

@@ -297,6 +297,11 @@ compressed, so the archive does not benefit meaningfully from transport gzip.
 
 ### Format specification
 
-The container is specified separately and normatively; this README is a
-summary. `src/parsers/sogst.ts` documents what the viewer relies on, and
-`src/core/load-sogst.ts` is the decoder.
+The container is specified separately and normatively in
+[`docs/sogst-format.md`](https://github.com/solipsist-studios/cumuli/blob/main/docs/sogst-format.md);
+this README is a summary, and the specification wins wherever the two differ.
+
+Within the viewer, `src/parsers/sogst.ts` documents what the player relies on,
+`src/core/zip.ts` reads the container, `src/core/sogst-decoder.ts` decodes the
+attribute textures, and `src/core/load-sogst.ts` and `src/core/stream-sogst.ts`
+are the whole-file and streaming entry points.

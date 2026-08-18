@@ -198,9 +198,9 @@ class Viewer {
         );
 
         // Optional screen-space 2D-covariance scale for gsplat rendering,
-        // used by .sogst v2 files that carry a cov2dScale header field (it
-        // compensates models trained under OMG4's FoV-sentinel footprint
-        // inflation). Identity for all other content.
+        // used by .sogst files that carry a cov2d_scale manifest field (it
+        // compensates models trained under the OMG4 reference rasterizer's
+        // FoV-sentinel footprint inflation). Identity for all other content.
 
         this.origChunks = {
             glsl: {

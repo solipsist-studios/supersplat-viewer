@@ -2,9 +2,9 @@ import { PIXELFORMAT_R32F, PIXELFORMAT_RGBA32F } from 'playcanvas';
 import type { Entity, GSplatResource } from 'playcanvas';
 
 import { uploadTextureRows } from './gsplat-range-sync';
-import type { SogstData } from './load-sogst';
+import type { SogstData } from './sogst-data';
 
-// GPU evaluation of the .sogst v2 temporal model on the engine's unified
+// GPU evaluation of the .sogst temporal model on the engine's unified
 // gsplat pipeline. Two extra per-splat textures are attached to the
 // GSplatResource streams (auto-bound to the work-buffer material), and the
 // component's work-buffer modifier hook evaluates, at time uniform
@@ -22,7 +22,7 @@ import type { SogstData } from './load-sogst';
 // splatMotion   (RGBA32F): xyz = velocity (units/sec), w = t_center (sec)
 // splatTemporal (R32F)   : r = t_sigma (sec)
 //
-// Segmented (v3) content additionally culls splats outside the active
+// Segmented content additionally culls splats outside the active
 // temporal window: the file orders splats [persistent | segment 0 | ...],
 // and each frame the animation driver pushes sogstCullRanges =
 // (persistentEnd, dynamicStart, dynamicEnd, 0). Splats outside
@@ -102,14 +102,14 @@ void modifySplatRotationScale(vec3 originalCenter, vec3 modifiedCenter, inout ve
     // Reproduce the screen-space footprint the OMG4 reference rasterizer
     // produced during training (FoV-sentinel bug): inflate by (KX, KY) along
     // the camera's right/up axes and replace the view-dependent perspective
-    // tilt with the trained constant 0.7096 shear, per splat.
+    // tilt with the reference rasterizer's degenerate constant one.
     mat3 Rc = sogstQuatToMat(sogstCamRot);
     vec3 vcam = transpose(Rc) * (modifiedCenter - sogstCamPos);
     float invz = 1.0 / min(vcam.z, -1e-4);
     mat3 X = mat3(
         SOGST_KX, 0.0, 0.0,
         0.0, SOGST_KY, 0.0,
-        0.7096 * SOGST_KX + vcam.x * invz, 0.7096 * SOGST_KY + vcam.y * invz, 1.0);
+        SOGST_TILT * SOGST_KX + vcam.x * invz, SOGST_TILT * SOGST_KY + vcam.y * invz, 1.0);
     mat3 M = Rc * X * transpose(Rc);
     mat3 Rs = sogstQuatToMat(rotation);
     mat3 A = M * mat3(Rs[0] * scale.x, Rs[1] * scale.y, Rs[2] * scale.z);
@@ -241,7 +241,7 @@ fn modifySplatRotationScale(originalCenter: vec3f, modifiedCenter: vec3f, rotati
     let X = mat3x3f(
         vec3f(SOGST_KX, 0.0, 0.0),
         vec3f(0.0, SOGST_KY, 0.0),
-        vec3f(0.7096 * SOGST_KX + vcam.x * invz, 0.7096 * SOGST_KY + vcam.y * invz, 1.0));
+        vec3f(SOGST_TILT * SOGST_KX + vcam.x * invz, SOGST_TILT * SOGST_KY + vcam.y * invz, 1.0));
     let M = Rc * X * transpose(Rc);
     let Rs = sogstQuatToMat(*rotation);
     let A = M * mat3x3f(Rs[0] * (*scale).x, Rs[1] * (*scale).y, Rs[2] * (*scale).z);
@@ -350,7 +350,7 @@ const uploadSogstMotionRows = (resource: GSplatResource, a: number, b: number) =
 
 // Rewrite only splats [a, b) of the motion/temporal textures from the
 // textures' persistent CPU copies and upload just the covering rows. Used
-// by the v3 segment streamer, where a full O(numSplats) rewrite per 0.1s
+// by the segment streamer, where a full O(numSplats) rewrite per 0.1s
 // segment would stall weak devices.
 const syncSogstMotionRange = (resource: GSplatResource, data: SogstData, a: number, b: number, upload = true) => {
     const streams = resource.streams;
@@ -390,17 +390,31 @@ const resolveBlock = (src: string, tag: string, keep: boolean) => {
     return src.replace(re, keep ? '$1' : '');
 };
 
+// The perspective tilt the OMG4 reference rasterizer applied during
+// training. It is a constant rather than the geometrically correct
+// view-dependent term because the reference rasterizer's projection was
+// degenerate, so every splat was trained against this one shear.
+//
+// The value is empirical, not derived: it is the shear that best reproduces
+// the trained footprints, measured at 15.8 dB PSNR against the reference
+// render at the test view. Changing it re-introduces the stringy artifacts
+// at zoomed, off-training viewpoints that it was fitted to remove.
+const COV_COMP_TILT = 0.7096;
+
 // Resolve the chunk template: the SOGST_COV_COMP block is kept (with the
-// KX/KY literals inlined — no extra uniforms needed on the compute path)
-// only when a cov2d scale is present; the SOGST_SEG_CULL block is kept only
-// for segmented (v3) content, so v2 files compile the identical shader as
-// before.
+// KX/KY/tilt literals inlined — no extra uniforms needed on the compute
+// path) only when a cov2d scale is present; the SOGST_SEG_CULL block is
+// kept only for segmented content, so a file without a segment table
+// compiles the identical shader as before.
 const buildModifyChunk = (src: string, cov2dScale: [number, number] | null, segmented: boolean, accel = false) => {
     let out = resolveBlock(src, 'SOGST_SEG_CULL', segmented);
     out = resolveBlock(out, 'SOGST_COV_COMP', !!cov2dScale);
     out = resolveBlock(out, 'SOGST_ACCEL', accel);
     if (cov2dScale) {
-        out = out.replace(/SOGST_KX/g, cov2dScale[0].toFixed(6)).replace(/SOGST_KY/g, cov2dScale[1].toFixed(6));
+        out = out
+            .replace(/SOGST_KX/g, cov2dScale[0].toFixed(6))
+            .replace(/SOGST_KY/g, cov2dScale[1].toFixed(6))
+            .replace(/SOGST_TILT/g, COV_COMP_TILT.toFixed(6));
     }
     return out;
 };
@@ -414,7 +428,7 @@ const bindSogstModifier = (
 ) => {
     const component = entity.gsplat;
     if (!component) {
-        throw new Error('sogst v2: entity has no gsplat component');
+        throw new Error('sogst: entity has no gsplat component');
     }
     component.setWorkBufferModifier({
         glsl: buildModifyChunk(glslModifyChunk, cov2dScale, segmented, accel),

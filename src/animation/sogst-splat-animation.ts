@@ -1,13 +1,13 @@
 import { Quat, Vec3 } from 'playcanvas';
 import type { Entity } from 'playcanvas';
 
-import type { SogstData } from '../core/load-sogst';
+import type { SogstData } from '../core/sogst-data';
 import { bindSogstModifier, setSogstParams } from '../core/sogst-motion';
 import type { Global } from '../types';
 
 import { Playhead } from './playhead';
 
-// Animation driver for .sogst v2 content. Unlike the per-frame formats there
+// Animation driver for .sogst content. Unlike the per-frame formats there
 // is nothing to upload per frame: playback is a pair of uniforms (time and
 // entity rotation) evaluated by the GPU in the unified work-buffer pass, so
 // time is continuous and never gated on fetches or texture uploads. Depth
@@ -50,9 +50,9 @@ class SogstSplatAnimation {
         bindSogstModifier(entity, cov2dScale, !!this.data.segments, !!this.data.accelX);
     }
 
-    // Active splat-index bounds for segmented (v3) content at an absolute
-    // clip time: persistent splats plus the contiguous run of segments
-    // whose time coverage contains t. Null when the file has no segments.
+    // Active splat-index bounds for segmented content at an absolute clip
+    // time: persistent splats plus the contiguous run of segments whose
+    // time coverage contains t. Null when the file has no segment table.
     private cullRanges(absTime: number): [number, number, number] | null {
         const segments = this.data.segments;
         if (!segments) {

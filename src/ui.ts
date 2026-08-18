@@ -236,7 +236,7 @@ const initPoster = (events: EventHandler) => {
 
 const initUI = (global: Global) => {
     const { config, events, state } = global;
-    const defaultSogstRotation: [number, number, number] = config.sogstRotationDeg ?? [270, 0, 0];
+    const defaultSogstRotation: [number, number, number] = config.sogstRotationDeg ?? [0, 0, 0];
 
     // Acquire Elements
     const docRoot = document.documentElement;
@@ -394,14 +394,12 @@ const initUI = (global: Global) => {
     });
 
     dom.sogstClearCache.addEventListener('click', async () => {
-        // Only `supersplat-sogst-chunks` is still written. The rest are
-        // retired names — the Cache API store belonged to the deleted chunk
-        // streamer, and the `-omg4-` pair predates the rename. A browser that
-        // visited an older build still holds them and nothing else would ever
-        // reclaim that quota, so clear them all.
+        // Only `supersplat-sogst-chunks` is still written. The Cache API
+        // store belonged to the deleted chunk streamer; a browser that
+        // visited an older build still holds it and nothing else would ever
+        // reclaim that quota, so clear it too.
         if (typeof caches !== 'undefined') {
             await caches.delete('supersplat-sogst-v1');
-            await caches.delete('supersplat-omg4-v1');
         }
 
         if (typeof indexedDB !== 'undefined') {
@@ -413,7 +411,6 @@ const initUI = (global: Global) => {
                     request.onblocked = () => resolve();
                 });
             await deleteDb('supersplat-sogst-chunks');
-            await deleteDb('supersplat-omg4-chunks');
         }
     });
 
