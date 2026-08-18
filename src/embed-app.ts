@@ -1,6 +1,7 @@
-import { EventHandler, type Entity } from 'playcanvas';
+import { EventHandler } from 'playcanvas';
+import type { Entity } from 'playcanvas';
 
-import { createApp, createViewerState, initCanvas, load3dgs, load4dgs } from './app-setup';
+import { createApp, createViewerState, initCanvas, isStatic3dgsFilename, loadContent } from './app-setup';
 import { EmbedInputDevice } from './input/devices/external';
 import { importSettings } from './settings';
 import type { Config, Global, State } from './types';
@@ -16,7 +17,7 @@ import { initXr } from './xr';
 
 type EmbedViewerOptions = {
     canvas: HTMLCanvasElement;
-    /** URL of the scene file (.ply/.sog/.compressed.ply/.omg4/.queen/meta.json). */
+    /** URL of the scene file (.ply/.sog/.compressed.ply/.sogst/meta.json). */
     contentUrl: string;
     /** Original filename when contentUrl has no extension (e.g. blob URLs). */
     contentFilename?: string;
@@ -28,8 +29,8 @@ type EmbedViewerOptions = {
     transparent?: boolean;
     /** Start with animation paused. */
     noanim?: boolean;
-    /** OMG4 content rotation in degrees (default [270, 0, 0]). */
-    omg4RotationDeg?: [number, number, number];
+    /** SOGST content rotation in degrees (default [0, 0, 0]). */
+    sogstRotationDeg?: [number, number, number];
     /** 4DGS playback loop style (default 'loop'). */
     loopMode?: 'loop' | 'pingpong';
     /**
@@ -84,18 +85,19 @@ const defaultSettings = {
 };
 
 const createEmbedViewer = async (options: EmbedViewerOptions): Promise<EmbedViewer> => {
-    // 4DGS formats manage their own (streaming/cached) fetches — starting the
-    // eager `contents` prefetch for them would download the file twice.
+    // Only the static 3DGS handler reads `contents`. 4DGS archives manage
+    // their own streaming/cached fetches, and an unrecognised extension is
+    // rejected by loadContent without reading the body — prefetching either
+    // downloads a file nothing goes on to read.
     const embedFilename =
         options.contentFilename ?? new URL(options.contentUrl, location.href).pathname.split('/').pop() ?? '';
-    const embedLower = embedFilename.toLowerCase();
-    const embedIs4dgs = embedLower.endsWith('.omg4') || embedLower.endsWith('.queen');
+    const embedPrefetch = isStatic3dgsFilename(embedFilename);
 
     const config: Config = {
         contentUrl: options.contentUrl,
         contentFilename: options.contentFilename,
-        contents: embedIs4dgs ? undefined : fetch(options.contentUrl),
-        omg4RotationDeg: options.omg4RotationDeg,
+        contents: embedPrefetch ? fetch(options.contentUrl) : undefined,
+        sogstRotationDeg: options.sogstRotationDeg,
         animLoopMode: options.loopMode,
         noui: true,
         noanim: !!options.noanim,
@@ -131,17 +133,12 @@ const createEmbedViewer = async (options: EmbedViewerOptions): Promise<EmbedView
     camera.addComponent('camera');
     initXr(global);
 
-    // Load model
-    const filename =
-        config.contentFilename ?? new URL(config.contentUrl, location.href).pathname.split('/').pop() ?? '';
-    const lowerFilename = filename.toLowerCase();
+    // Load model — loadContent picks the handler from the filename and
+    // rejects an unrecognised extension without fetching the body
     const progressCallback = (progress: number) => {
         state.progress = progress;
     };
-    const is4dgs = lowerFilename.endsWith('.omg4') || lowerFilename.endsWith('.queen');
-    const gsplatLoad = is4dgs
-        ? load4dgs(app, config, global, progressCallback)
-        : load3dgs(app, config, progressCallback);
+    const gsplatLoad = loadContent(app, config, global, progressCallback);
 
     const viewer = new Viewer(global, gsplatLoad, undefined, undefined);
 
@@ -179,7 +176,9 @@ const createEmbedViewer = async (options: EmbedViewerOptions): Promise<EmbedView
                 contentEntity = entity;
                 applyTransform(entity);
             })
-            .catch(() => {});
+            .catch(() => {
+                /* load failure is reported through state */
+            });
 
         // Re-apply on session end so the page view always returns to the
         // configured transform, whatever happened during the XR session.

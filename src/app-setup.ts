@@ -3,30 +3,26 @@ import {
     Color,
     createGraphicsDevice,
     Entity,
-    EventHandler,
     GSplatResource,
     Keyboard,
     Mouse,
     platform,
-    TouchDevice,
-    type TextureHandler,
-    type AppBase
+    TouchDevice
 } from 'playcanvas';
+import type { AppBase, EventHandler, TextureHandler } from 'playcanvas';
 
-import { Omg4SplatAnimation } from './animation/omg4-splat-animation';
-import { Omg4V2SplatAnimation } from './animation/omg4-v2-splat-animation';
-import { QueenSplatAnimation } from './animation/queen-splat-animation';
+import { SogstSplatAnimation } from './animation/sogst-splat-animation';
 import { App } from './app';
-import { fetchSplatAnimBuffer, fullFileCacheKey, fullFileKeyPrefix } from './core/fetch-splat-anim-buffer';
+import { fullFileCacheKey, fullFileKeyPrefix } from './core/fetch-splat-anim-buffer';
+import { updateGsplatRangeData, updateGsplatSHRange, uploadGsplatRows } from './core/gsplat-range-sync';
+import { loadSogst, setAabbFromMeta } from './core/load-sogst';
 import { setupSplatAnim } from './core/load-splat-anim';
 import { observe } from './core/observe';
-import { idbDeleteByPrefix, idbGetBuffer, idbSetBuffer } from './core/omg4-cache';
-import { attachOmg4V2Motion, syncOmg4V2Motion } from './core/omg4-v2-motion';
-import { streamOmg4Data } from './core/stream-omg4';
-import { streamOmg4V2 } from './core/stream-omg4-v2';
-import { streamQueenData } from './core/stream-queen';
-import { parseOmg4V2, readOmg4Version, readOmg4V2Header } from './parsers/omg4';
-import type { Omg4V2Data } from './parsers/omg4';
+import { idbDeleteByPrefix, idbGetBuffer, idbSetBuffer } from './core/sogst-cache';
+import type { SogstData } from './core/sogst-data';
+import { attachSogstMotion, syncSogstMotionRange, uploadSogstMotionRows } from './core/sogst-motion';
+import { streamSogst } from './core/stream-sogst';
+import { isSogstFilename } from './parsers/sogst';
 import type { Config, Global, State } from './types';
 
 // Shared application bootstrap used by both the standalone web app (index.ts)
@@ -70,213 +66,315 @@ const loadGsplat = async (app: AppBase, config: Config, progressCallback: (progr
     });
 };
 
-// Fetch the first bytes of a .omg4 file (enough for any header variant).
-// Uses a byte-range request, but reads through the stream reader and cancels
-// so a server that ignores Range headers doesn't trigger a full download.
-const fetchOmg4HeaderBytes = async (url: string, byteCount: number): Promise<ArrayBuffer> => {
-    const response = await fetch(url, { headers: { range: `bytes=0-${byteCount - 1}` } });
-    if (!response.ok) {
-        throw new Error(`Failed to fetch ${url}: ${response.status} ${response.statusText}`);
-    }
-    const reader = response.body?.getReader();
-    if (!reader) {
-        return response.arrayBuffer();
-    }
-    const out = new Uint8Array(byteCount);
-    let filled = 0;
-    while (filled < byteCount) {
-        // eslint-disable-next-line no-await-in-loop
-        const { done, value } = await reader.read();
-        if (done) {
-            break;
-        }
-        const take = Math.min(byteCount - filled, value.length);
-        out.set(value.subarray(0, take), filled);
-        filled += take;
-    }
-    reader.cancel().catch(() => {});
-    return out.buffer;
-};
-
-// Create resource + entity + animation for parsed v2 data (shared by the
+// Create resource + entity + animation for decoded archive data (shared by
 // full-buffer and streaming paths).
-const setupOmg4V2 = (app: AppBase, config: Config, global: Global, data: Omg4V2Data) => {
+const setupSogst = (app: AppBase, config: Config, global: Global, data: SogstData) => {
     const resource = new GSplatResource(app.graphicsDevice, data.gsplatData);
-    attachOmg4V2Motion(resource, data);
+    attachSogstMotion(resource, data);
 
-    const animation = new Omg4V2SplatAnimation(data);
+    const animation = new SogstSplatAnimation(data);
     const entity = setupSplatAnim(app, config, global, resource, animation, {
-        rotationEulerDeg: config.omg4RotationDeg ?? [270, 0, 0],
+        rotationEulerDeg: config.sogstRotationDeg ?? [0, 0, 0],
         alphaClip: 1 / 1024
     });
     animation.bind(entity, data.cov2dScale);
     return { resource, entity };
 };
 
-// Progressive load of a streamable (tiled) v2 file: create the resource over
-// a prefilled buffer, start rendering after the first ~10% of splats, and
-// keep refreshing the GPU data as tiles arrive. The completed buffer is
-// cached in standard layout, so revisits take the instant cache path.
-const loadOmg4V2Streaming = async (
+// Progressive load of a streamed archive: reveal the scene once the
+// persistent group and the first temporal segment are decoded, then keep
+// refreshing GPU data as later segments land (playback holds at the loaded
+// boundary via data.loadedThrough if the network falls behind). The
+// complete archive is cached for instant revisits.
+const loadSogstStreaming = async (
     app: AppBase,
     config: Config,
     global: Global,
-    header: ReturnType<typeof readOmg4V2Header>,
     cacheKey: string,
     progressCallback: (progress: number) => void
 ) => {
     let resource: GSplatResource | null = null;
-    let data: Omg4V2Data | null = null;
-    let syncCount = 0;
+    let data: Awaited<ReturnType<typeof loadSogst>> | null = null;
 
-    // Push everything received so far to the GPU. The engine update methods
-    // read straight through the gsplatData views over the streaming buffer;
-    // unready splats hold prefilled invisible values.
-    const sync = (readySplats: number, done: boolean) => {
-        if (!resource || !data) {
-            return;
+    // GPU repack runs in small chunks against a per-slice time budget —
+    // chunk counts alone can't bound task length on weak devices (the SH
+    // pass dominates at ~45 coeffs per splat, and a throttled CPU can
+    // spend >100ms on a chunk that takes 5ms on a fast one). Uploads are
+    // NOT per repack chunk: slices only write the CPU level copies, and
+    // each queue item ends with row-upload passes bounded to about a
+    // megabyte per task — a single multi-MB texSubImage2D batch into
+    // actively-sampled textures can stall the driver for a frame or more.
+    const SYNC_CHUNK_SPLATS = 256;
+    const SYNC_SLICE_MS = 6;
+    const UPLOAD_CHUNK_SPLATS = 16384;
+
+    // Refreshing the depth sorter (centersVersion) re-clones the whole
+    // centers buffer to the sort worker and rebuilds the sorted order —
+    // measured at ~90ms of main-thread + driver-sync work per refresh on
+    // real GPUs, which read as metronomic playback hitches when done on a
+    // cadence during streaming. So the sorter is refreshed exactly once,
+    // when the stream completes: until then newly streamed splats render
+    // at their correct positions but blend in slightly stale depth order.
+    const bumpCenters = () => {
+        if (resource) {
+            resource.centersVersion++;
+            app.renderNextFrame = true;
         }
-        const r = resource as any;
-        r.updateColorData(data.gsplatData);
-        r.updateTransformData(data.gsplatData);
-        // SH repack is the most expensive — half cadence, but always at the end
-        if (header.hasSH && (done || syncCount % 2 === 0)) {
-            r.updateSHData(data.gsplatData);
-        }
-        syncCount++;
-
-        syncOmg4V2Motion(resource, data, readySplats);
-
-        // Refresh depth-sorter centers for the splats received so far.
-        const centers = r.centers as Float32Array | undefined;
-        if (centers) {
-            const x = data.gsplatData.getProp('x') as Float32Array;
-            const y = data.gsplatData.getProp('y') as Float32Array;
-            const z = data.gsplatData.getProp('z') as Float32Array;
-            for (let i = 0; i < readySplats; i++) {
-                centers[i * 3 + 0] = x[i];
-                centers[i * 3 + 1] = y[i];
-                centers[i * 3 + 2] = z[i];
-            }
-            r.centersVersion++;
-        }
-
-        app.renderNextFrame = true;
     };
 
-    const stream = streamOmg4V2(config.contentUrl, header, {
-        onProgress: progressCallback,
-        onReady: sync
+    // Per-segment GPU refreshes run through a FIFO queue processed in
+    // small slices with yields in between: segments decode behind live
+    // playback, and a whole-segment repack in one task reads as a visible
+    // hitch on weak devices. data.loadedThrough only advances once a
+    // segment's slices have all been pushed to the GPU, so the playhead
+    // can never enter a segment that isn't fully renderable yet.
+    const queue: { range: [number, number] | null; loadedThrough: number | null; sh: boolean }[] = [];
+    let pumping = false;
+
+    // Teardown guard. The pump yields to the UI between slices, so an
+    // app.destroy() — an embed host switching scenes while this one is
+    // still streaming — lands mid-loop and the continuation runs against a
+    // destroyed device. AppBase fires 'destroy' before tearing the device
+    // down, so the flag is set while the loop can still observe it. Every
+    // resumption point below must re-check it: passing the entry check
+    // proves nothing about the state after the next await.
+    //
+    // The upload half of that is currently absorbed by accident —
+    // app.destroy() tears down the gsplat resource first, so the textures
+    // are gone and uploadTextureRows() bails on its `!level` check before
+    // touching GL. Don't rely on that: it is incidental ordering, not a
+    // guard, and removing the `!level` early-return would expose a null-GL
+    // write (reported from an embed host as a TypeError on activeTexture).
+    let destroyed = false;
+    app.on('destroy', () => {
+        destroyed = true;
+        queue.length = 0;
     });
 
-    data = stream.data;
-    resource = new GSplatResource(app.graphicsDevice, data.gsplatData);
-    attachOmg4V2Motion(resource, data);
+    const yieldToUi = () =>
+        new Promise((resolve) => {
+            setTimeout(resolve, 0);
+        });
 
-    await stream.firstBatch;
+    const drain = async () => {
+        while (queue.length > 0) {
+            if (destroyed) {
+                return;
+            }
+            const item = queue.shift()!;
+            if (item.range && resource && data) {
+                const [a, b] = item.range;
+                const centers = resource.centers as Float32Array | undefined;
+                const x = data.gsplatData.getProp('x') as Float32Array;
+                const y = data.gsplatData.getProp('y') as Float32Array;
+                const z = data.gsplatData.getProp('z') as Float32Array;
+                let s = a;
+                while (s < b) {
+                    const sliceStart = performance.now();
+                    while (s < b) {
+                        const e = Math.min(b, s + SYNC_CHUNK_SPLATS);
+                        if (item.sh) {
+                            // deferred SH arrival: geometry for this range
+                            // is already live, only the SH textures change
+                            updateGsplatSHRange(resource, data.gsplatData, s, e, false);
+                        } else {
+                            updateGsplatRangeData(resource, data.gsplatData, s, e, false);
+                            syncSogstMotionRange(resource, data, s, e, false);
+                            if (centers) {
+                                for (let i = s; i < e; i++) {
+                                    centers[i * 3 + 0] = x[i];
+                                    centers[i * 3 + 1] = y[i];
+                                    centers[i * 3 + 2] = z[i];
+                                }
+                            }
+                        }
+                        s = e;
+                        if (performance.now() - sliceStart >= SYNC_SLICE_MS) {
+                            break;
+                        }
+                    }
 
-    // Importance-ordered tiles span the scene early, so bounds computed from
-    // the first batch are representative (prefilled splats add the origin).
-    data.gsplatData.calcAabb((resource as any).aabb);
+                    await yieldToUi();
+                    if (destroyed) {
+                        return;
+                    }
+                }
+                for (let u = a; u < b; u += UPLOAD_CHUNK_SPLATS) {
+                    const e = Math.min(b, u + UPLOAD_CHUNK_SPLATS);
+                    uploadGsplatRows(resource, u, e, item.sh);
+                    if (!item.sh) {
+                        uploadSogstMotionRows(resource, u, e);
+                    }
 
-    // Cache the completed standard-layout buffer in the background.
+                    await yieldToUi();
+                    if (destroyed) {
+                        return;
+                    }
+                }
+            }
+            if (data && item.loadedThrough !== null) {
+                data.loadedThrough = item.loadedThrough;
+            }
+            if (!item.range) {
+                // end of stream: single sorter refresh over the full scene
+                bumpCenters();
+            }
+            app.renderNextFrame = true;
+        }
+    };
+
+    // Sync wrapper: callers fire and forget. `pumping` is released in a
+    // finally so an early bail-out on teardown cannot strand it set, which
+    // would silently wedge a later pump.
+    const pump = () => {
+        if (pumping || destroyed) {
+            return;
+        }
+        pumping = true;
+        drain().finally(() => {
+            pumping = false;
+        });
+    };
+
+    const sync = (range: [number, number] | null, loadedThrough: number) => {
+        queue.push({ range, loadedThrough, sh: false });
+        if (resource && data) {
+            pump();
+        }
+    };
+
+    const syncSh = (range: [number, number]) => {
+        queue.push({ range, loadedThrough: null, sh: true });
+        if (resource && data) {
+            pump();
+        }
+    };
+
+    const stream = streamSogst(app, config.contentUrl, {
+        onProgress: progressCallback,
+        onReady: sync,
+        onShReady: syncSh
+    });
+
+    data = await stream.reveal;
+
+    // Same teardown race as the pump, but on the reveal continuation and
+    // with a louder failure: setupSogst builds a GSplatResource against
+    // app.graphicsDevice, which app.destroy() has already set to null
+    // (TypeError reading 'isWebGPU'). Nothing downstream of a destroyed app
+    // can do anything useful, so leave the load promise unsettled rather
+    // than handing the caller a scene that belongs to a dead device.
+    if (destroyed) {
+        return new Promise<Entity>(() => {
+            /* never settles: the app is gone */
+        });
+    }
+
+    const setup = setupSogst(app, config, global, data);
+    resource = setup.resource;
+
+    // exact bounds from the global meta range — the arrays are still
+    // partially filled, so computed bounds would understate the scene
+    setAabbFromMeta(data.meta, resource.aabb);
+
+    // catch up on any groups that decoded while the entity was being set up
+    // (the reveal set itself was picked up at resource creation)
+    pump();
+
+    // cache the complete archive in the background for instant revisits
     stream.complete
         .then((buffer) => {
             idbSetBuffer(cacheKey, buffer)
                 .then(() => idbDeleteByPrefix(fullFileKeyPrefix(config.contentUrl), cacheKey))
-                .catch(() => {});
+                .catch(() => {
+                    /* cache write is best-effort */
+                });
         })
         .catch((err: Error) => {
-            console.warn('OMG4 stream did not complete; partial scene retained:', err);
+            console.warn('SOGST stream did not complete; partial scene retained:', err);
         });
 
-    const animation = new Omg4V2SplatAnimation(data);
-    const entity = setupSplatAnim(app, config, global, resource, animation, {
-        rotationEulerDeg: config.omg4RotationDeg ?? [270, 0, 0],
-        alphaClip: 1 / 1024
-    });
-    animation.bind(entity, data.cov2dScale);
-    return entity;
+    return setup.entity;
 };
 
-// Load and animate a .omg4 (OMG4-encoded 4D Gaussian Splat) file.
-const loadOmg4Gsplat = async (
+// Load and animate a .sogst (SOG spacetime 4DGS) archive.
+const loadSogstGsplat = async (
     app: AppBase,
     config: Config,
     global: Global,
     progressCallback: (progress: number) => void
 ) => {
-    const headerBytes = await fetchOmg4HeaderBytes(config.contentUrl, 40);
-    const version = readOmg4Version(headerBytes);
-
-    if (version >= 2) {
-        // v2: compact temporal format; motion and temporal fade are evaluated
-        // on the GPU from a single time uniform.
-        const header = readOmg4V2Header(headerBytes);
-
-        if (header.tiled) {
-            // Streamable layout: serve from the durable cache when possible,
-            // otherwise render progressively while downloading.
-            const cacheKey = await fullFileCacheKey(config.contentUrl);
-            const cached = await idbGetBuffer(cacheKey);
-            if (cached) {
-                console.debug('OMG4 full-file cache hit (idb)', cacheKey);
-                progressCallback(100);
-                return setupOmg4V2(app, config, global, parseOmg4V2(cached)).entity;
-            }
-            return loadOmg4V2Streaming(app, config, global, header, cacheKey, progressCallback);
-        }
-
-        // Standard layout: full prefetch (with its own cache handling).
-        const buffer = await fetchSplatAnimBuffer(config.contentUrl, progressCallback);
-        return setupOmg4V2(app, config, global, parseOmg4V2(buffer)).entity;
+    const cacheKey = await fullFileCacheKey(config.contentUrl);
+    const cached = await idbGetBuffer(cacheKey);
+    if (cached) {
+        // complete archive available locally — decode straight through
+        console.debug('SOGST full-file cache hit (idb)', cacheKey);
+        const data = await loadSogst(app, cached, progressCallback);
+        return setupSogst(app, config, global, data).entity;
     }
-
-    // v1: legacy baked per-frame format, streamed in chunks.
-    const data = await streamOmg4Data(config.contentUrl, progressCallback);
-    const resource = new GSplatResource(app.graphicsDevice, data.gsplatData);
-    const animation = new Omg4SplatAnimation(data, resource);
-    return setupSplatAnim(app, config, global, resource, animation, {
-        rotationEulerDeg: config.omg4RotationDeg ?? [270, 0, 0],
-        alphaClip: 1 / 1024
-    });
-};
-
-// Load and animate a .queen (QUEEN-encoded 4D Gaussian Splat) file.
-// Waits until initialFrames have been buffered before resolving, so playback
-// starts immediately without stutter; remaining frames stream in the background.
-const loadQueenGsplat = async (
-    app: AppBase,
-    config: Config,
-    global: Global,
-    progressCallback: (progress: number) => void
-) => {
-    const data = await streamQueenData(config.contentUrl, progressCallback);
-    data.loadFrame(0);
-    const resource = new GSplatResource(app.graphicsDevice, data.gsplatData);
-    const animation = new QueenSplatAnimation(data, resource);
-    return setupSplatAnim(app, config, global, resource, animation);
+    return loadSogstStreaming(app, config, global, cacheKey, progressCallback);
 };
 
 // Load a static 3DGS scene (PLY / LOD / meta.json etc.)
 const load3dgs = (app: AppBase, config: Config, progressCallback: (progress: number) => void) =>
     loadGsplat(app, config, progressCallback);
 
-// Load and animate a 4DGS file, dispatching to the correct format handler.
-const load4dgs = (
+// Extensions the static 3DGS path understands, mirroring the parser table in
+// the engine's GSplatHandler ({ply, sog, json} plus lod-meta.json). Variants
+// need no entries of their own: `.compressed.ply` is a `.ply`, and both
+// `meta.json` and `.lod-meta.json` are `.json`. Anything absent here reaches
+// the handler's `?? ply` fallback, which is the fail-slow path this list
+// exists to close — keep the two in step when bumping the engine.
+const STATIC_3DGS_EXTENSIONS = ['.ply', '.sog', '.json'];
+
+// The scene filename, which is what every format decision is made on.
+// `contentFilename` exists because a blob: URL carries no name of its own.
+const contentFilename = (config: Config) =>
+    (config.contentFilename ?? new URL(config.contentUrl, location.href).pathname.split('/').pop() ?? '').toLowerCase();
+
+// True for formats driven by SplatAnimationBase rather than by the engine's
+// gsplat asset handler.
+const is4dgsFilename = (filename: string) => isSogstFilename(filename.toLowerCase());
+
+// True for content the eager `contents` prefetch is actually useful for —
+// only the static 3DGS handler reads it. Deciding this as "not 4DGS" would
+// prefetch unrecognised extensions too, downloading a whole file that
+// loadContent then rejects unread.
+const isStatic3dgsFilename = (filename: string) => {
+    const lower = filename.toLowerCase();
+    const dot = lower.lastIndexOf('.');
+    return dot <= 0 || STATIC_3DGS_EXTENSIONS.includes(lower.slice(dot));
+};
+
+// Dispatch on the filename, rejecting an unrecognised extension here rather
+// than letting it reach the gsplat asset handler. That handler downloads the
+// whole file before the PLY parser rejects its header, so a mistyped or
+// unsupported extension costs a full transfer — 310MB for one of the test
+// scenes — to reach a conclusion the filename already supported. An
+// extensionless URL carries no evidence either way and keeps the historical
+// 3DGS path rather than being rejected on a guess.
+const loadContent = (
     app: AppBase,
     config: Config,
     global: Global,
     progressCallback: (progress: number) => void
 ): Promise<Entity> => {
-    const lowerName = (
-        config.contentFilename ??
-        new URL(config.contentUrl, location.href).pathname.split('/').pop() ??
-        ''
-    ).toLowerCase();
-    if (lowerName.endsWith('.omg4')) return loadOmg4Gsplat(app, config, global, progressCallback);
-    if (lowerName.endsWith('.queen')) return loadQueenGsplat(app, config, global, progressCallback);
-    return Promise.reject(new Error(`Unsupported 4DGS format: ${lowerName}`));
+    const filename = contentFilename(config);
+    if (is4dgsFilename(filename)) {
+        return loadSogstGsplat(app, config, global, progressCallback);
+    }
+    // Same predicate the prefetch uses, so the two cannot disagree about
+    // which files are worth fetching.
+    if (isStatic3dgsFilename(filename)) {
+        return load3dgs(app, config, progressCallback);
+    }
+    const ext = filename.slice(filename.lastIndexOf('.'));
+    return Promise.reject(
+        new Error(
+            `Unsupported content format '${ext}' (${filename}). ` +
+                'Supported: .ply, .compressed.ply, .sog, .json (meta.json / lod-meta.json), .sogst'
+        )
+    );
 };
 
 const loadSkybox = (app: AppBase, url: string) => {
@@ -421,8 +519,7 @@ const initCanvas = (global: Global) => {
     app.on('framerender', apply);
 
     // Disable the engine's built-in canvas resize — we handle it via ResizeObserver
-    // @ts-ignore
-    app._allowResize = false;
+    (app as unknown as { _allowResize: boolean })._allowResize = false;
     set(canvas.clientWidth, canvas.clientHeight);
     apply();
 };
@@ -448,6 +545,8 @@ const createViewerState = (events: EventHandler): State => {
         animationDuration: 0,
         animationTime: 0,
         animationPaused: true,
+        animationLoopMode: 'repeat',
+        animationSpeed: 1,
         hasAR: false,
         hasVR: false,
         hasCollision: false,
@@ -456,8 +555,9 @@ const createViewerState = (events: EventHandler): State => {
         collisionOverlayEnabled: false,
         isFullscreen: false,
         controlsHidden: false,
+        showAnnotations: localStorage.getItem('showAnnotations') !== 'false',
         gamingControls: localStorage.getItem('gamingControls') === 'true'
     });
 };
 
-export { createApp, initCanvas, createViewerState, load3dgs, load4dgs, loadSkybox };
+export { createApp, initCanvas, createViewerState, isStatic3dgsFilename, loadContent, loadSkybox };

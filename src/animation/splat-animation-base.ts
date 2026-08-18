@@ -1,5 +1,8 @@
-import { Playhead } from './playhead';
+import type { GSplatComponent } from 'playcanvas';
+
 import type { Global } from '../types';
+
+import { Playhead } from './playhead';
 
 // Abstract base for all animated Gaussian-splat drivers.
 //
@@ -27,7 +30,7 @@ abstract class SplatAnimationBase {
         let queuedFrame: number | null = null;
 
         const sortAndRender = () => {
-            const instance = (app.root.findComponents('gsplat') as any[])[0]?.instance;
+            const instance = (app.root.findComponents('gsplat') as GSplatComponent[])[0]?.instance;
             if (instance) {
                 instance.sort(camera);
             }
@@ -47,7 +50,7 @@ abstract class SplatAnimationBase {
                     }
                     const frameIdx = queuedFrame;
                     queuedFrame = null;
-                    // eslint-disable-next-line no-await-in-loop
+
                     if (await this.setFrame(frameIdx)) {
                         sortAndRender();
                     }

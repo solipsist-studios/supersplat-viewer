@@ -83,26 +83,32 @@
             const settingsUrl = url.searchParams.get('settings');
             const contentUrl = url.searchParams.has('content')
                 ? url.searchParams.get('content')
-                : './coffee_martini.omg4';
-            const omg4RotationDeg = parseRotationParam(url.searchParams.get('omg4rot'), [270, 0, 0]);
+                : './coffee_martini.sogst';
+            const sogstRotationDeg = parseRotationParam(url.searchParams.get('sogstrot'), [0, 0, 0]);
 
             const renderer = url.searchParams.has('webgl') ? 'webgl' : 'webgpu';
 
             const budgetParam = url.searchParams.get('budget');
             const budget = budgetParam !== null ? Number(budgetParam) : undefined;
 
-            // 4DGS formats manage their own (streaming/cached) fetches — the
-            // eager `contents` prefetch would download the file twice.
+            // Only the static 3DGS path consumes the eager `contents` prefetch.
+            // 4DGS archives manage their own streaming/cached fetches, and an
+            // unrecognised extension is rejected by loadContent without reading
+            // the body — prefetching either would pull a file nothing goes on
+            // to read, which is the cost the early rejection exists to avoid.
+            // An extensionless URL carries no evidence and takes the 3DGS path.
+            // keep in step with STATIC_3DGS_EXTENSIONS and SOGST_EXTENSIONS in src/
             const contentPath = new URL(contentUrl, location.href).pathname.toLowerCase();
-            const contentIs4dgs = contentPath.endsWith('.omg4') || contentPath.endsWith('.queen');
+            const contentExt = /\.[^./]+$/.exec(contentPath)?.[0] ?? '';
+            const contentIsStatic3dgs = !contentExt || ['.ply', '.sog', '.json'].includes(contentExt);
 
             const sseConfig = {
                 poster: posterUrl && createImage(posterUrl),
                 skyboxUrl,
                 collisionUrl,
-                omg4RotationDeg,
+                sogstRotationDeg,
                 contentUrl,
-                contents: contentIs4dgs ? undefined : fetch(contentUrl),
+                contents: contentIsStatic3dgs ? fetch(contentUrl) : undefined,
                 noui: url.searchParams.has('noui'),
                 noanim: url.searchParams.has('noanim'),
                 embed: url.searchParams.has('embed'),
@@ -343,27 +349,27 @@
                     </div>
                 </div>
                 <div class="divider"></div>
-                <div id="omg4RotationBlock" class="hidden">
+                <div id="sogstRotationBlock" class="hidden">
                     <div class="settingsRow">
-                        <div id="omg4RotationValue">OMG4 Rotation: 270, 0, 0</div>
+                        <div id="sogstRotationValue">SOGST Rotation: 0, 0, 0</div>
                     </div>
                     <div class="settingsRow">
-                        <button id="omg4RotateXNeg">X -90</button>
-                        <button id="omg4RotateXPos">X +90</button>
+                        <button id="sogstRotateXNeg">X -90</button>
+                        <button id="sogstRotateXPos">X +90</button>
                     </div>
                     <div class="settingsRow">
-                        <button id="omg4RotateYNeg">Y -90</button>
-                        <button id="omg4RotateYPos">Y +90</button>
+                        <button id="sogstRotateYNeg">Y -90</button>
+                        <button id="sogstRotateYPos">Y +90</button>
                     </div>
                     <div class="settingsRow">
-                        <button id="omg4RotateZNeg">Z -90</button>
-                        <button id="omg4RotateZPos">Z +90</button>
+                        <button id="sogstRotateZNeg">Z -90</button>
+                        <button id="sogstRotateZPos">Z +90</button>
                     </div>
                     <div class="settingsRow">
-                        <button id="omg4RotateReset">Reset OMG4 Rot</button>
+                        <button id="sogstRotateReset">Reset SOGST Rot</button>
                     </div>
                     <div class="settingsRow">
-                        <button id="omg4ClearCache">Clear OMG4 Cache</button>
+                        <button id="sogstClearCache">Clear SOGST Cache</button>
                     </div>
                     <div class="divider"></div>
                 </div>
@@ -379,8 +385,8 @@
             </div>
 
             <!-- Hidden file inputs for 3DGS and 4DGS loading -->
-            <input type="file" id="load3dgsInput" accept=".ply,.splat,.zip,.json" style="display: none" />
-            <input type="file" id="load4dgsInput" accept=".omg4,.queen" style="display: none" />
+            <input type="file" id="load3dgsInput" accept=".ply,.sog,.json" style="display: none" />
+            <input type="file" id="load4dgsInput" accept=".sogst" style="display: none" />
 
             <!-- Info Panel -->
             <div id="infoPanel" class="hidden">

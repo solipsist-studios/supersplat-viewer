@@ -1,4 +1,5 @@
-import { Entity, GSplatResource, type AppBase } from 'playcanvas';
+import { Entity } from 'playcanvas';
+import type { GSplatResource, AppBase } from 'playcanvas';
 
 import type { Config, Global } from '../types';
 
@@ -8,11 +9,11 @@ type SetupSplatAnimOptions = {
 };
 
 // Structural interface satisfied by SplatAnimationBase subclasses and by
-// Omg4V2SplatAnimation (which drives a GPU time uniform instead of frames).
-interface SplatAnimation {
+// SogstSplatAnimation (which drives a GPU time uniform instead of frames).
+type SplatAnimation = {
     readonly duration: number;
     attach(global: Global): () => void;
-}
+};
 
 // Shared entity-creation and state-wiring used by every animated-splat loader.
 //

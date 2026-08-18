@@ -190,7 +190,7 @@ class CameraManager {
                 state.cameraMode === 'anim'
                     ? state.animationPaused
                         ? 0
-                        : deltaTime * state.animationSpeed
+                        : deltaTime * (state.animationSpeed ?? 1)
                     : deltaTime;
 
             // update transition timer

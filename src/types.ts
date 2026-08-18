@@ -15,7 +15,7 @@ type Config = {
     contentUrl?: string;
     contentFilename?: string; // original filename when content is a blob URL (no extension in URL)
     contents?: Promise<Response>;
-    omg4RotationDeg?: [number, number, number];
+    sogstRotationDeg?: [number, number, number];
     animLoopMode?: 'loop' | 'pingpong'; // 4DGS playback loop style (default 'loop')
     collisionUrl?: string;
 

@@ -1,10 +1,12 @@
 import type { State } from '../types';
 
-// Shared transport playhead for animated-splat drivers. Owns the current
-// playback time and the pingpong direction, advancing them according to the
-// transport's speed and loop mode so every format — per-frame formats driven
-// by SplatAnimationBase as well as the GPU-evaluated .omg4 v2 driver —
-// responds identically to the UI controls.
+// Shared transport playhead for animated-splat drivers. It owns the current
+// playback time and the pingpong direction, and it advances both from the
+// transport's speed and loop mode.
+//
+// Two kinds of driver share it: the per-frame formats that SplatAnimationBase
+// drives, and the GPU-evaluated .sogst driver. Both therefore respond to the
+// UI controls in the same way.
 class Playhead {
     time = 0;
 
@@ -14,7 +16,10 @@ class Playhead {
     // Advance by dt seconds. Returns true once a 'none' loop has run past the
     // end, signalling the caller to pause the transport.
     advance(dt: number, duration: number, state: State): boolean {
-        this.time += dt * state.animationSpeed * this.direction;
+        // `?? 1` guards against a host state object that has no transport
+        // fields. A NaN here would corrupt `time` permanently, because NaN
+        // fails every range test below and fires observe() without end.
+        this.time += dt * (state.animationSpeed ?? 1) * this.direction;
 
         if (duration <= 0) {
             this.time = 0;
