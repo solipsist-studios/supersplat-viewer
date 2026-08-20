@@ -23,7 +23,7 @@ import type { SogstData } from './core/sogst-data';
 import { attachSogstMotion, syncSogstMotionRange, uploadSogstMotionRows } from './core/sogst-motion';
 import { streamSogst } from './core/stream-sogst';
 import { isSogstFilename } from './parsers/sogst';
-import type { Config, Global, State } from './types';
+import type { Config, Global, LoopMode, State } from './types';
 
 // Shared application bootstrap used by both the standalone web app (index.ts)
 // and the embeddable library entry (embed-app.ts).
@@ -524,9 +524,20 @@ const initCanvas = (global: Global) => {
     apply();
 };
 
+// Translate the config's loop style into the transport's loop mode. The two
+// use different vocabularies: the embed API offers 'loop' and 'pingpong',
+// while the transport carries the three-way mode the UI button cycles.
+//
+// The embed sets `noui`, so `loopMode` is the only way a host page can reach
+// this setting. A config that never reaches the state therefore reads as
+// pingpong being ignored, with playback running in the default mode.
+const initialLoopMode = (config?: Config): LoopMode => {
+    return config?.animLoopMode === 'pingpong' ? 'pingpong' : 'repeat';
+};
+
 // Build the observable viewer state (shared defaults, including the legacy
 // `retinaDisplay` -> `performanceMode` localStorage migration).
-const createViewerState = (events: EventHandler): State => {
+const createViewerState = (events: EventHandler, config?: Config): State => {
     const legacyRetina = localStorage.getItem('retinaDisplay');
     if (legacyRetina !== null && localStorage.getItem('performanceMode') === null) {
         localStorage.setItem('performanceMode', String(legacyRetina === 'false'));
@@ -545,7 +556,7 @@ const createViewerState = (events: EventHandler): State => {
         animationDuration: 0,
         animationTime: 0,
         animationPaused: true,
-        animationLoopMode: 'repeat',
+        animationLoopMode: initialLoopMode(config),
         animationSpeed: 1,
         hasAR: false,
         hasVR: false,
