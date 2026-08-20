@@ -21,7 +21,7 @@ const main = async (canvas: HTMLCanvasElement, settingsJson: unknown, config: Co
 
     // shared with the embed entry point — keep the defaults in one place so the two
     // bundles cannot drift (a missing field here reads as `undefined` at runtime)
-    const state = createViewerState(events);
+    const state = createViewerState(events, config);
 
     const global: Global = {
         app,

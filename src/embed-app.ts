@@ -116,7 +116,7 @@ const createEmbedViewer = async (options: EmbedViewerOptions): Promise<EmbedView
     const { app, camera, renderer } = await createApp(options.canvas, config);
 
     const events = new EventHandler();
-    const state = createViewerState(events);
+    const state = createViewerState(events, config);
 
     const global: Global = {
         app,
