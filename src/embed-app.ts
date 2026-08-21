@@ -1,4 +1,4 @@
-import { EventHandler } from 'playcanvas';
+import { EventHandler, Vec3 } from 'playcanvas';
 import type { Entity } from 'playcanvas';
 
 import { createApp, createViewerState, initCanvas, isStatic3dgsFilename, loadContent } from './app-setup';
@@ -45,6 +45,18 @@ type EmbedViewerOptions = {
 
 type XrMode = 'AR' | 'VR';
 
+/**
+ * A camera pose in the same shape as a settings file's `cameras[0].initial`,
+ * so a pose read back from a live viewer pastes straight into settings with
+ * no conversion. The viewer stores its camera as position/angles/distance
+ * internally; this is the look-at form.
+ */
+type CameraPose = {
+    position: [number, number, number];
+    target: [number, number, number];
+    fov: number;
+};
+
 type EmbedViewer = {
     /** Live observed viewer state (loaded, progress, animation*, hasAR/VR…). */
     state: State;
@@ -57,6 +69,13 @@ type EmbedViewer = {
     restart: () => void;
     seek: (time: number) => void;
     resetCamera: () => void;
+    /**
+     * Read the live camera pose, or null before the camera exists (it is
+     * built once the scene finishes loading). This is an authoring aid: a
+     * host can orbit to the framing it wants and read out the numbers to
+     * bake in, instead of guessing settings values and reloading.
+     */
+    getCameraPose: () => CameraPose | null;
     /** Queue orbit/zoom pixel deltas (same semantics as the site's flipbook). */
     input: (deltas: { rotate?: [number, number]; zoom?: number }) => void;
     /** Whether an XR session of this mode can start right now. */
@@ -65,6 +84,8 @@ type EmbedViewer = {
     startXr: (mode: XrMode) => boolean;
     destroy: () => void;
 };
+
+const tmpTarget = new Vec3();
 
 const defaultSettings = {
     version: 2,
@@ -221,6 +242,19 @@ const createEmbedViewer = async (options: EmbedViewerOptions): Promise<EmbedView
         resetCamera: () => {
             events.fire('inputEvent', 'reset');
         },
+        getCameraPose: () => {
+            // cameraManager is only assigned when loading completes
+            const active = viewer.cameraManager?.camera;
+            if (!active) {
+                return null;
+            }
+            active.calcFocusPoint(tmpTarget);
+            return {
+                position: [active.position.x, active.position.y, active.position.z],
+                target: [tmpTarget.x, tmpTarget.y, tmpTarget.z],
+                fov: active.fov
+            };
+        },
         input: (deltas: { rotate?: [number, number]; zoom?: number }) => {
             if (deltas.rotate) {
                 device.queueRotate(deltas.rotate[0], deltas.rotate[1]);
@@ -245,4 +279,4 @@ const createEmbedViewer = async (options: EmbedViewerOptions): Promise<EmbedView
 };
 
 export { createEmbedViewer };
-export type { EmbedViewer, EmbedViewerOptions, XrMode };
+export type { CameraPose, EmbedViewer, EmbedViewerOptions, XrMode };
