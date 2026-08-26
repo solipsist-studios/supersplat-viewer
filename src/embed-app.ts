@@ -25,6 +25,11 @@ type EmbedViewerOptions = {
     settings?: object;
     /** Requested renderer; XR sessions require 'webgl'. Default 'webgpu'. */
     renderer?: 'webgl' | 'webgpu';
+    /**
+     * Antialias the splats (the GSPLAT_AA shader path). Off by default. The
+     * viewer fixes this at load time, so a later change has no effect.
+     */
+    aa?: boolean;
     /** Render with a transparent background for blending with the host page. */
     transparent?: boolean;
     /** Start with animation paused. */
@@ -107,7 +112,7 @@ const createEmbedViewer = async (options: EmbedViewerOptions): Promise<EmbedView
         ministats: false,
         colorize: false,
         fullload: false,
-        aa: false,
+        aa: !!options.aa,
         renderer: options.renderer ?? 'webgpu',
         heatmap: false,
         debug: false
