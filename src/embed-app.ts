@@ -44,7 +44,10 @@ type EmbedViewerOptions = {
      * determines where content sits relative to the floor in AR (y=0).
      */
     position?: [number, number, number];
-    /** Scale for the content entity (real-world size in AR). */
+    /**
+     * Scale for the content entity (real-world size in AR). Uniform scales
+     * are exact; .sogst motion follows the world transform's lossy scale.
+     */
     scale?: [number, number, number];
 };
 
