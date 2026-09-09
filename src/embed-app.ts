@@ -25,6 +25,11 @@ type EmbedViewerOptions = {
     settings?: object;
     /** Requested renderer; XR sessions require 'webgl'. Default 'webgpu'. */
     renderer?: 'webgl' | 'webgpu';
+    /**
+     * Antialias the splats (the GSPLAT_AA shader path). Off by default. The
+     * viewer fixes this at load time, so a later change has no effect.
+     */
+    aa?: boolean;
     /** Render with a transparent background for blending with the host page. */
     transparent?: boolean;
     /** Start with animation paused. */
@@ -39,7 +44,10 @@ type EmbedViewerOptions = {
      * determines where content sits relative to the floor in AR (y=0).
      */
     position?: [number, number, number];
-    /** Scale for the content entity (real-world size in AR). */
+    /**
+     * Scale for the content entity (real-world size in AR). Uniform scales
+     * are exact; .sogst motion follows the world transform's lossy scale.
+     */
     scale?: [number, number, number];
 };
 
@@ -128,7 +136,7 @@ const createEmbedViewer = async (options: EmbedViewerOptions): Promise<EmbedView
         ministats: false,
         colorize: false,
         fullload: false,
-        aa: false,
+        aa: !!options.aa,
         renderer: options.renderer ?? 'webgpu',
         heatmap: false,
         debug: false

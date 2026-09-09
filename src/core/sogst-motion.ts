@@ -1,4 +1,4 @@
-import { PIXELFORMAT_R32F, PIXELFORMAT_RGBA32F } from 'playcanvas';
+import { PIXELFORMAT_R32F, PIXELFORMAT_RGBA32F, Vec3 } from 'playcanvas';
 import type { Entity, GSplatResource } from 'playcanvas';
 
 import { uploadTextureRows } from './gsplat-range-sync';
@@ -12,7 +12,7 @@ import type { SogstData } from './sogst-data';
 // component's work-buffer modifier hook then evaluates the model at the time
 // uniform `sogstTime`:
 //
-//   center(t) = center + R_model * velocity * (t - t_center)
+//   center(t) = center + R_model * (S_model * velocity * (t - t_center))
 //   alpha(t)  = alpha * exp(-0.5 * ((t - t_center) / t_sigma)^2)
 //
 // The two textures hold:
@@ -20,10 +20,22 @@ import type { SogstData } from './sogst-data';
 //   splatMotion   (RGBA32F): xyz = velocity (units/sec), w = t_center (sec)
 //   splatTemporal (R32F)   : r = t_sigma (sec)
 //
-// The work-buffer pass works on world-space centers. The shader therefore
-// rotates the model-space velocity by the entity's world rotation, which
-// arrives in the `sogstModelRotation` quaternion uniform. The shader ignores
-// scale, because the viewer never scales the splat entity.
+// The work-buffer pass works on world-space centers: the engine has already
+// applied the model matrix, so both the center and the splat's own size carry
+// the entity's scale. The displacement must therefore make the same trip. The
+// shader scales the model-space velocity by `sogstModelScale` and then rotates
+// it by `sogstModelRotation`, which is the order the model matrix composes
+// them in.
+//
+// Scale used to be ignored here on the grounds that the viewer never scaled
+// the splat entity. The embed API's `scale` option makes that false: an entity
+// at scale s shrinks the body but left the motion at full size, so every splat
+// travelled 1/s too far — 1.67x at scale 0.6 — and sprayed off the subject as
+// soon as it moved.
+//
+// `sogstModelScale` is the world transform's lossy scale, which is exact for
+// the uniform scales embedders use and approximate for a non-uniform scale
+// under a rotated parent.
 //
 // The modifier runs in the work-buffer pass, so depth sorting uses the
 // motion-displaced centers without any further work.
@@ -46,6 +58,7 @@ uniform highp sampler2D splatAccel;
 #endif // SOGST_ACCEL
 uniform float sogstTime;
 uniform vec4 sogstModelRotation;   // entity world rotation (x, y, z, w)
+uniform vec3 sogstModelScale;      // entity world scale
 uniform vec4 sogstCamRot;          // camera world rotation (x, y, z, w)
 uniform vec3 sogstCamPos;          // camera world position
 #ifdef SOGST_SEG_CULL
@@ -97,7 +110,7 @@ void modifySplatCenter(inout vec3 center) {
 #ifdef SOGST_ACCEL
     sogstDisp += texelFetch(splatAccel, splat.uv, 0).xyz * (sogstDt * sogstDt);
 #endif // SOGST_ACCEL
-    center += sogstQuatRotate(sogstModelRotation, sogstDisp);
+    center += sogstQuatRotate(sogstModelRotation, sogstDisp * sogstModelScale);
 }
 void modifySplatRotationScale(vec3 originalCenter, vec3 modifiedCenter, inout vec4 rotation, inout vec3 scale) {
 #ifdef SOGST_SEG_CULL
@@ -182,6 +195,7 @@ var splatAccel: texture_2d<f32>;
 #endif // SOGST_ACCEL
 uniform sogstTime: f32;
 uniform sogstModelRotation: vec4f;
+uniform sogstModelScale: vec3f;
 uniform sogstCamRot: vec4f;
 uniform sogstCamPos: vec3f;
 #ifdef SOGST_SEG_CULL
@@ -234,7 +248,7 @@ fn modifySplatCenter(center: ptr<function, vec3f>) {
 #ifdef SOGST_ACCEL
     sogstDisp += textureLoad(splatAccel, splat.uv, 0).xyz * (sogstDt * sogstDt);
 #endif // SOGST_ACCEL
-    *center += sogstQuatRotate(uniform.sogstModelRotation, sogstDisp);
+    *center += sogstQuatRotate(uniform.sogstModelRotation, sogstDisp * uniform.sogstModelScale);
 }
 fn modifySplatRotationScale(originalCenter: vec3f, modifiedCenter: vec3f, rotation: ptr<function, vec4f>, scale: ptr<function, vec3f>) {
 #ifdef SOGST_SEG_CULL
@@ -448,7 +462,9 @@ const bindSogstModifier = (
     });
 };
 
-// Update the time / rotation uniforms. Setting a parameter marks the
+const scratchScale = new Vec3();
+
+// Update the time / transform uniforms. Setting a parameter marks the
 // placement render-dirty, so only call when a value actually changed.
 // `cullRanges` = (persistentEnd, dynamicStart, dynamicEnd) splat-index
 // bounds for segmented content (see the chunk comment above).
@@ -463,8 +479,11 @@ const setSogstParams = (
         return;
     }
     const q = entity.getRotation();
+    // getScale() allocates without a target, and this runs every frame.
+    const s = entity.getWorldTransform().getScale(scratchScale);
     component.setParameter('sogstTime', time);
     component.setParameter('sogstModelRotation', [q.x, q.y, q.z, q.w]);
+    component.setParameter('sogstModelScale', [s.x, s.y, s.z]);
     const c = camera?.getRotation();
     component.setParameter('sogstCamRot', c ? [c.x, c.y, c.z, c.w] : [0, 0, 0, 1]);
     const p = camera?.getPosition();
