@@ -1,9 +1,15 @@
-import { GSplatData, GSplatSogData, Quat, Vec3, Vec4 } from 'playcanvas';
+import { GSplatSogData, Quat, Vec3, Vec4 } from 'playcanvas';
 import type { AppBase, Texture } from 'playcanvas';
 
 import type { SogstMeta } from '../parsers/sogst';
 
+import { packGsplatRange, packGsplatSHRange } from './gsplat-range-sync';
+import type { SplatSource } from './gsplat-range-sync';
 import { SogstData } from './sogst-data';
+import { packSogstMotion } from './sogst-motion';
+import type { SogstMotionSource } from './sogst-motion';
+import { SH_COEFFS_PER_CHANNEL, shRestCount } from './sogst-target';
+import type { SogstTarget } from './sogst-target';
 import { decodeTexture, readTexels, texelsOf, WebpTexelWorker } from './sogst-texels';
 import type { TexelImage } from './sogst-texels';
 
@@ -30,15 +36,6 @@ const SH_DC_OFFSET = 0.5;
 // the band count. Bands 1 to 3 hold 3 + 5 + 7 = 15 coefficients per channel.
 const SH_ITER_COEFFS = 45;
 const SH_ITER_CHANNEL_STRIDE = 15;
-
-// Coefficients per colour channel for each band count (see updateSHRange in
-// gsplat-range-sync.ts, which reads the same table).
-const SH_COEFFS_PER_CHANNEL: Record<number, number> = { 1: 3, 2: 8, 3: 15 };
-
-// Per-splat f_rest_* arrays use the compact layout the engine's repack reads:
-// channel c, coefficient k lives at f_rest_{c * coeffs + k}. A 2-band clip
-// therefore holds 24 arrays, not 45. At 11M splats that is 940 MB less.
-const shRestCount = (bands: number) => 3 * (SH_COEFFS_PER_CHANNEL[bands] ?? 0);
 
 // The decoder stores opacity as a logit. It pins two kinds of splat to plus
 // or minus this magnitude: splats it has not decoded yet, and splats whose
@@ -144,32 +141,36 @@ const groupFileList = (meta: SogstMeta): string[] => {
     return meta.shN ? [...base, 'shN_labels.webp'] : base;
 };
 
-// Incremental decoder. It allocates the full-length attribute arrays first
-// and prefills them invisible. It then fills index ranges as group payloads
-// arrive.
+// Splats per decode chunk. The decoder never holds more than one chunk of
+// decoded attributes: it decodes a chunk into scratch arrays, packs it into
+// the target, and reuses the arrays. The scratch costs about 64 floats per
+// splat (about 8 MB at this size); the value only trades that against loop
+// overhead.
+const DECODE_CHUNK_SPLATS = 32768;
+
+// Splats per pack call. Packing is several times the per-splat cost of
+// decoding (half-float conversion, SH quantisation), so it checks the clock
+// after every call of this many splats.
+const PACK_STEP_SPLATS = 256;
+
+// Incremental decoder. It decodes one group's payloads at a time and packs
+// the result straight into a SogstTarget at a destination index, a chunk at
+// a time. It holds no whole-clip arrays.
 //
-// The same arrays back the GSplatData. A streaming caller can therefore
-// create the GPU resource after the first groups arrive, and refresh it as
-// later groups decode. A caller with a complete buffer uses the same class
-// and decodes all groups at once.
+// A streaming caller decodes groups as they arrive; a caller with a complete
+// buffer uses the same class and decodes all groups in turn.
 class SogstDecoder {
     private app: AppBase;
 
     readonly meta: SogstMeta;
 
-    readonly n: number;
+    readonly target: SogstTarget;
 
-    private members: string[];
+    private scratch: SplatSource;
 
-    readonly arrays: Record<string, Float32Array>;
+    private scratchMotion: SogstMotionSource;
 
-    readonly velocity: [Float32Array, Float32Array, Float32Array];
-
-    readonly accel: [Float32Array, Float32Array, Float32Array] | null;
-
-    readonly tCenter: Float32Array;
-
-    readonly tSigma: Float32Array;
+    private restCount: number;
 
     private centroidsBytes: Uint8Array | null = null;
 
@@ -179,11 +180,12 @@ class SogstDecoder {
 
     private texelWorkerBroken = false;
 
-    constructor(app: AppBase, meta: SogstMeta) {
+    constructor(app: AppBase, meta: SogstMeta, target: SogstTarget) {
         this.app = app;
         this.meta = meta;
-        this.n = meta.count;
-        this.members = [
+        this.target = target;
+        this.restCount = meta.shN ? shRestCount(meta.shN.bands) : 0;
+        const names = [
             'x',
             'y',
             'z',
@@ -199,29 +201,25 @@ class SogstDecoder {
             'rot_2',
             'rot_3'
         ];
-        if (meta.shN) {
-            for (let i = 0; i < shRestCount(meta.shN.bands); i++) {
-                this.members.push(`f_rest_${i}`);
-            }
+        for (let i = 0; i < this.restCount; i++) {
+            names.push(`f_rest_${i}`);
         }
-        this.arrays = {};
-        this.members.forEach((name) => {
-            this.arrays[name] = new Float32Array(this.n);
+        const chunk = () => new Float32Array(DECODE_CHUNK_SPLATS);
+        this.scratch = {};
+        names.forEach((name) => {
+            this.scratch[name] = chunk();
         });
-        // Splats that are not decoded yet must be invisible. Sigmoid of a
-        // deeply negative logit is zero to float precision.
-        this.arrays.opacity.fill(-OPACITY_LOGIT_LIMIT);
-        this.velocity = [new Float32Array(this.n), new Float32Array(this.n), new Float32Array(this.n)];
-        this.accel = meta.accel ? [new Float32Array(this.n), new Float32Array(this.n), new Float32Array(this.n)] : null;
-        this.tCenter = new Float32Array(this.n);
-        this.tSigma = new Float32Array(this.n);
-        this.tSigma.fill(1);
+        this.scratchMotion = {
+            velocity: [chunk(), chunk(), chunk()],
+            accel: meta.accel ? [chunk(), chunk(), chunk()] : null,
+            tCenter: chunk(),
+            tSigma: chunk()
+        };
     }
 
-    // The compact f_rest_* arrays, in index order.
+    // The compact f_rest_* scratch arrays, in index order.
     private restArrays(): Float32Array[] {
-        const count = this.meta.shN ? shRestCount(this.meta.shN.bands) : 0;
-        return Array.from({ length: count }, (_, j) => this.arrays[`f_rest_${j}`]);
+        return Array.from({ length: this.restCount }, (_, j) => this.scratch[`f_rest_${j}`]);
     }
 
     setCentroids(bytes: Uint8Array) {
@@ -244,11 +242,41 @@ class SogstDecoder {
         return texture;
     }
 
-    // Decode one group's texture payloads into [range[0], range[1]) of the
-    // full arrays. The payload map is keyed by bare canonical name.
-    async decodeGroup(group: SogstGroup, files: Map<string, Uint8Array>, onProgress?: (frac: number) => void) {
-        const [a, b] = group.range;
-        const m = b - a;
+    // Pack scratch splats [0, n) into the target at [dest, dest + n), in
+    // time-budgeted slices. `withSH` packs the f_rest scratch too; a group
+    // decoded without its SH labels must not, or it would pack stale values.
+    private async packChunk(dest: number, n: number, withSH: boolean) {
+        const resource = this.target.resource;
+        for (let j = 0; j < n;) {
+            const sliceStart = performance.now();
+            while (j < n) {
+                if (this.target.destroyed) {
+                    return;
+                }
+                const k = Math.min(n - j, PACK_STEP_SPLATS);
+                packGsplatRange(resource, this.scratch, j, dest + j, k, withSH);
+                packSogstMotion(resource, this.scratchMotion, j, dest + j, k);
+                j += k;
+                if (performance.now() - sliceStart >= DECODE_SLICE_MS) {
+                    break;
+                }
+            }
+
+            await yieldToUi();
+        }
+    }
+
+    // Decode one group's texture payloads and pack them into the target at
+    // [dest, dest + group size), then upload those rows. `dest` defaults to
+    // the group's file range, the fully resident layout. The payload map is
+    // keyed by bare canonical name.
+    async decodeGroup(
+        group: SogstGroup,
+        files: Map<string, Uint8Array>,
+        onProgress?: (frac: number) => void,
+        dest = group.range[0]
+    ) {
+        const m = group.range[1] - group.range[0];
         if (m <= 0) {
             return;
         }
@@ -305,77 +333,6 @@ class SogstDecoder {
         }
         (sog as unknown as SogCodebookPatch)._patchCodebooks?.();
 
-        const p = new Vec3();
-        const r = new Quat();
-        const s = new Vec3();
-        const c = new Vec4();
-        const sh = sog.shBands > 0 ? new Float32Array(SH_ITER_COEFFS) : null;
-        const iter = sog.createIter(p, r, s, c, sh);
-        const arrays = this.arrays;
-        const restArrays = sh ? this.restArrays() : null;
-        const coeffs = SH_COEFFS_PER_CHANNEL[sog.shBands] ?? 0;
-
-        // Time-budgeted slices, not a fixed chunk size. On streaming loads
-        // the decode runs behind live playback, so no slice may hold the
-        // main thread for more than a few milliseconds.
-        //
-        // A count-based chunk cannot meet that bound. Segment sizes vary
-        // widely, up to tens of thousands of splats on a dense scene. A fixed
-        // count therefore yields either too rarely, which causes stutter, or
-        // too often, which wastes time.
-        for (let i = 0; i < m;) {
-            const sliceStart = performance.now();
-            while (i < m) {
-                iter.read(i);
-                const o = a + i;
-                arrays.x[o] = p.x;
-                arrays.y[o] = p.y;
-                arrays.z[o] = p.z;
-                arrays.rot_0[o] = r.w;
-                arrays.rot_1[o] = r.x;
-                arrays.rot_2[o] = r.y;
-                arrays.rot_3[o] = r.z;
-                arrays.scale_0[o] = s.x;
-                arrays.scale_1[o] = s.y;
-                arrays.scale_2[o] = s.z;
-                // The spec lets an encoder lose the RGB of any texel whose
-                // alpha is zero. libwebp can rewrite a fully-transparent
-                // block when the `exact` flag is not available. Nothing may
-                // therefore *depend* on the colour this line reads.
-                //
-                // Storing the colour unconditionally is safe only because the
-                // splat stays invisible. Opacity saturates to
-                // -OPACITY_LOGIT_LIMIT below, and the temporal factor in
-                // sogst-motion.ts multiplies alpha by exp(-0.5*dt^2), which
-                // is never above 1. Do not add a path that scales alpha up
-                // unless it first tests c.w > 0 here.
-                arrays.f_dc_0[o] = (c.x - SH_DC_OFFSET) / SH_C0;
-                arrays.f_dc_1[o] = (c.y - SH_DC_OFFSET) / SH_C0;
-                arrays.f_dc_2[o] = (c.z - SH_DC_OFFSET) / SH_C0;
-                arrays.opacity[o] =
-                    c.w <= 0 ? -OPACITY_LOGIT_LIMIT : c.w >= 1 ? OPACITY_LOGIT_LIMIT : -Math.log(1 / c.w - 1);
-                if (sh && restArrays) {
-                    for (let ch = 0; ch < 3; ch++) {
-                        for (let k = 0; k < coeffs; k++) {
-                            restArrays[ch * coeffs + k][o] = sh[ch * SH_ITER_CHANNEL_STRIDE + k];
-                        }
-                    }
-                }
-                i++;
-                if ((i & (STATIC_CLOCK_STRIDE - 1)) === 0 && performance.now() - sliceStart >= DECODE_SLICE_MS) {
-                    break;
-                }
-            }
-            onProgress?.(i / m);
-
-            await yieldToUi();
-        }
-
-        // The groups share the centroids texture. Detach it so that the
-        // shim's destroy() releases the group-local textures only.
-        sog.sh_centroids = null;
-        sog.destroy();
-
         // Temporal attributes, which the engine's SOG model does not cover.
         // The batch above already read their texels back, so only the
         // textures remain to free.
@@ -390,7 +347,7 @@ class SogstDecoder {
         let accelU: Uint8Array | null = null;
         const aMins = this.meta.accel?.mins as number[] | undefined;
         const aMaxs = this.meta.accel?.maxs as number[] | undefined;
-        if (this.accel) {
+        if (this.meta.accel) {
             accelL = texelsOf(tex.get('accel_l.webp'));
             accelU = texelsOf(tex.get('accel_u.webp'));
             tex.get('accel_l.webp')!.destroy();
@@ -401,37 +358,120 @@ class SogstDecoder {
         const vMaxs = this.meta.motion.maxs as number[];
         const centerCodebook = this.meta.trbf.center.codebook as number[];
         const sigmaCodebook = this.meta.trbf.sigma.codebook as number[];
-        for (let i = 0; i < m;) {
-            const sliceStart = performance.now();
-            while (i < m) {
-                const o = a + i;
-                for (let ch = 0; ch < 3; ch++) {
-                    this.velocity[ch][o] = decodeSplit16(motionL, motionU, i, ch, vMins[ch], vMaxs[ch]);
-                }
-                if (this.accel && accelL && accelU && aMins && aMaxs) {
-                    for (let ch = 0; ch < 3; ch++) {
-                        this.accel[ch][o] = decodeSplit16(accelL, accelU, i, ch, aMins[ch], aMaxs[ch]);
+
+        const p = new Vec3();
+        const r = new Quat();
+        const s = new Vec3();
+        const c = new Vec4();
+        const sh = sog.shBands > 0 ? new Float32Array(SH_ITER_COEFFS) : null;
+        const iter = sog.createIter(p, r, s, c, sh);
+        const arrays = this.scratch;
+        const restArrays = sh ? this.restArrays() : null;
+        const coeffs = SH_COEFFS_PER_CHANNEL[sog.shBands] ?? 0;
+        const { velocity, accel, tCenter, tSigma } = this.scratchMotion;
+
+        // Each loop below runs in time-budgeted slices, not a fixed count. On
+        // streaming loads the decode runs behind live playback, so no slice
+        // may hold the main thread for more than a few milliseconds.
+        //
+        // A count-based slice cannot meet that bound. Segment sizes vary
+        // widely, up to hundreds of thousands of splats on a dense scene. A
+        // fixed count therefore yields either too rarely, which causes
+        // stutter, or too often, which wastes time.
+        for (let c0 = 0; c0 < m; c0 += DECODE_CHUNK_SPLATS) {
+            const n = Math.min(DECODE_CHUNK_SPLATS, m - c0);
+
+            for (let j = 0; j < n;) {
+                const sliceStart = performance.now();
+                while (j < n) {
+                    iter.read(c0 + j);
+                    arrays.x[j] = p.x;
+                    arrays.y[j] = p.y;
+                    arrays.z[j] = p.z;
+                    arrays.rot_0[j] = r.w;
+                    arrays.rot_1[j] = r.x;
+                    arrays.rot_2[j] = r.y;
+                    arrays.rot_3[j] = r.z;
+                    arrays.scale_0[j] = s.x;
+                    arrays.scale_1[j] = s.y;
+                    arrays.scale_2[j] = s.z;
+                    // The spec lets an encoder lose the RGB of any texel
+                    // whose alpha is zero. libwebp can rewrite a
+                    // fully-transparent block when the `exact` flag is not
+                    // available. Nothing may therefore *depend* on the colour
+                    // this line reads.
+                    //
+                    // Storing the colour unconditionally is safe only because
+                    // the splat stays invisible. Opacity saturates to
+                    // -OPACITY_LOGIT_LIMIT below, and the temporal factor in
+                    // sogst-motion.ts multiplies alpha by exp(-0.5*dt^2),
+                    // which is never above 1. Do not add a path that scales
+                    // alpha up unless it first tests c.w > 0 here.
+                    arrays.f_dc_0[j] = (c.x - SH_DC_OFFSET) / SH_C0;
+                    arrays.f_dc_1[j] = (c.y - SH_DC_OFFSET) / SH_C0;
+                    arrays.f_dc_2[j] = (c.z - SH_DC_OFFSET) / SH_C0;
+                    arrays.opacity[j] =
+                        c.w <= 0 ? -OPACITY_LOGIT_LIMIT : c.w >= 1 ? OPACITY_LOGIT_LIMIT : -Math.log(1 / c.w - 1);
+                    if (sh && restArrays) {
+                        for (let ch = 0; ch < 3; ch++) {
+                            for (let k = 0; k < coeffs; k++) {
+                                restArrays[ch * coeffs + k][j] = sh[ch * SH_ITER_CHANNEL_STRIDE + k];
+                            }
+                        }
+                    }
+                    j++;
+                    if ((j & (STATIC_CLOCK_STRIDE - 1)) === 0 && performance.now() - sliceStart >= DECODE_SLICE_MS) {
+                        break;
                     }
                 }
-                this.tCenter[o] = centerCodebook[trbf[i * RGBA_STRIDE + TRBF_CENTER_CHANNEL]];
-                this.tSigma[o] = sigmaCodebook[trbf[i * RGBA_STRIDE + TRBF_SIGMA_CHANNEL]];
-                i++;
-                if ((i & (TEMPORAL_CLOCK_STRIDE - 1)) === 0 && performance.now() - sliceStart >= DECODE_SLICE_MS) {
-                    break;
-                }
+
+                await yieldToUi();
             }
 
-            await yieldToUi();
+            for (let j = 0; j < n;) {
+                const sliceStart = performance.now();
+                while (j < n) {
+                    const i = c0 + j;
+                    for (let ch = 0; ch < 3; ch++) {
+                        velocity[ch][j] = decodeSplit16(motionL, motionU, i, ch, vMins[ch], vMaxs[ch]);
+                    }
+                    if (accel && accelL && accelU && aMins && aMaxs) {
+                        for (let ch = 0; ch < 3; ch++) {
+                            accel[ch][j] = decodeSplit16(accelL, accelU, i, ch, aMins[ch], aMaxs[ch]);
+                        }
+                    }
+                    tCenter[j] = centerCodebook[trbf[i * RGBA_STRIDE + TRBF_CENTER_CHANNEL]];
+                    tSigma[j] = sigmaCodebook[trbf[i * RGBA_STRIDE + TRBF_SIGMA_CHANNEL]];
+                    j++;
+                    if ((j & (TEMPORAL_CLOCK_STRIDE - 1)) === 0 && performance.now() - sliceStart >= DECODE_SLICE_MS) {
+                        break;
+                    }
+                }
+
+                await yieldToUi();
+            }
+
+            await this.packChunk(dest + c0, n, !!sh);
+            if (this.target.destroyed) {
+                break;
+            }
+            onProgress?.((c0 + n) / m);
         }
+
+        // The groups share the centroids texture. Detach it so that the
+        // shim's destroy() releases the group-local textures only.
+        sog.sh_centroids = null;
+        sog.destroy();
+
+        await this.target.upload(dest, dest + m);
     }
 
-    // Decode a deferred SH labels payload for one group into the f_rest
-    // arrays. An sh-deferred archive writes all labels after the geometry, so
-    // the scene can appear with DC colour only and add view dependence
-    // later.
-    async decodeGroupSH(group: SogstGroup, labelsBytes: Uint8Array) {
-        const [a, b] = group.range;
-        const m = b - a;
+    // Decode a deferred SH labels payload for one group and pack it into the
+    // target at [dest, dest + group size). An sh-deferred archive writes all
+    // labels after the geometry, so the scene can appear with DC colour only
+    // and add view dependence later.
+    async decodeGroupSH(group: SogstGroup, labelsBytes: Uint8Array, dest = group.range[0]) {
+        const m = group.range[1] - group.range[0];
         if (m <= 0 || !this.meta.shN) {
             return;
         }
@@ -457,43 +497,53 @@ class SogstDecoder {
         const iter = sog.createIter(null, null, null, null, sh);
         const restArrays = this.restArrays();
         const coeffs = SH_COEFFS_PER_CHANNEL[sog.shBands] ?? 0;
-        for (let i = 0; i < m;) {
-            const sliceStart = performance.now();
-            while (i < m) {
-                iter.read(i);
-                const o = a + i;
-                for (let ch = 0; ch < 3; ch++) {
-                    for (let k = 0; k < coeffs; k++) {
-                        restArrays[ch * coeffs + k][o] = sh[ch * SH_ITER_CHANNEL_STRIDE + k];
+        const resource = this.target.resource;
+        for (let c0 = 0; c0 < m; c0 += DECODE_CHUNK_SPLATS) {
+            const n = Math.min(DECODE_CHUNK_SPLATS, m - c0);
+            for (let j = 0; j < n;) {
+                const sliceStart = performance.now();
+                while (j < n) {
+                    iter.read(c0 + j);
+                    for (let ch = 0; ch < 3; ch++) {
+                        for (let k = 0; k < coeffs; k++) {
+                            restArrays[ch * coeffs + k][j] = sh[ch * SH_ITER_CHANNEL_STRIDE + k];
+                        }
+                    }
+                    j++;
+                    if ((j & (STATIC_CLOCK_STRIDE - 1)) === 0 && performance.now() - sliceStart >= DECODE_SLICE_MS) {
+                        break;
                     }
                 }
-                i++;
-                if ((i & (STATIC_CLOCK_STRIDE - 1)) === 0 && performance.now() - sliceStart >= DECODE_SLICE_MS) {
-                    break;
-                }
+
+                await yieldToUi();
             }
 
-            await yieldToUi();
+            for (let j = 0; j < n;) {
+                const sliceStart = performance.now();
+                while (j < n) {
+                    if (this.target.destroyed) {
+                        return;
+                    }
+                    const k = Math.min(n - j, PACK_STEP_SPLATS);
+                    packGsplatSHRange(resource, this.scratch, j, dest + c0 + j, k);
+                    j += k;
+                    if (performance.now() - sliceStart >= DECODE_SLICE_MS) {
+                        break;
+                    }
+                }
+
+                await yieldToUi();
+            }
         }
 
         sog.sh_centroids = null;
         sog.destroy();
+
+        await this.target.upload(dest, dest + m, true);
     }
 
     buildData(): SogstData {
-        const gsplatData = new GSplatData([
-            {
-                name: 'vertex',
-                count: this.n,
-                properties: this.members.map((name) => ({
-                    name,
-                    type: 'float' as const,
-                    byteSize: 4,
-                    storage: this.arrays[name]
-                }))
-            }
-        ]);
-        return new SogstData(this.meta, gsplatData, this.velocity, this.tCenter, this.tSigma, this.accel);
+        return new SogstData(this.meta, this.target.resource);
     }
 
     destroy() {

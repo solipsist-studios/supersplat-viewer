@@ -5,6 +5,7 @@ import type { SogstMeta } from '../parsers/sogst';
 
 import type { SogstData } from './sogst-data';
 import { SogstDecoder, enumerateSogstGroups, groupFileList } from './sogst-decoder';
+import { SogstTarget } from './sogst-target';
 import { inflateRaw, parseZipEntries, ZIP_LOCAL_MAGIC } from './zip';
 
 // .sogst loading: SOG-compressed temporal splats. parsers/sogst.ts describes
@@ -31,8 +32,9 @@ import { inflateRaw, parseZipEntries, ZIP_LOCAL_MAGIC } from './zip';
 //                       G = index into trbf.sigma codebook (t_sigma, s)
 //
 // The other pieces are next door. zip.ts reads the container, sogst-texels.ts
-// decodes the webp payloads, sogst-decoder.ts fills the attribute arrays, and
-// sogst-data.ts holds the decoded result the playback path reads.
+// decodes the webp payloads, sogst-decoder.ts decodes the attributes,
+// sogst-target.ts owns the GPU resource the decoder packs into, and
+// sogst-data.ts holds the result the playback path reads.
 
 // True if the buffer starts with the ZIP local-file magic, because the
 // container is a ZIP.
@@ -73,28 +75,36 @@ const loadSogst = async (
     }
 
     const meta = parseSogstMeta(files.get('meta.json'));
-    const decoder = new SogstDecoder(app, meta);
-    if (meta.shN) {
-        const centroidsName = meta.streams ? 'shN_centroids.webp' : meta.shN.files[0];
-        decoder.setCentroids(files.get(centroidsName)!);
-    }
-
-    const groups = enumerateSogstGroups(meta);
-    const names = groupFileList(meta);
-    let done = 0;
-    for (const group of groups) {
-        const groupBytes = new Map<string, Uint8Array>();
-        for (const name of names) {
-            const stored = files.get(group.prefix ? `${group.prefix}/${name}` : name);
-            if (stored) {
-                groupBytes.set(name, stored);
-            }
+    const target = new SogstTarget(app, meta, meta.count);
+    const decoder = new SogstDecoder(app, meta, target);
+    try {
+        if (meta.shN) {
+            const centroidsName = meta.streams ? 'shN_centroids.webp' : meta.shN.files[0];
+            decoder.setCentroids(files.get(centroidsName)!);
         }
-        const m = group.range[1] - group.range[0];
-        const base = done;
 
-        await decoder.decodeGroup(group, groupBytes, (frac) => report(((base + frac * m) / meta.count) * 100));
-        done += m;
+        const groups = enumerateSogstGroups(meta);
+        const names = groupFileList(meta);
+        let done = 0;
+        for (const group of groups) {
+            const groupBytes = new Map<string, Uint8Array>();
+            for (const name of names) {
+                const stored = files.get(group.prefix ? `${group.prefix}/${name}` : name);
+                if (stored) {
+                    groupBytes.set(name, stored);
+                }
+            }
+            const m = group.range[1] - group.range[0];
+            const base = done;
+
+            await decoder.decodeGroup(group, groupBytes, (frac) => report(((base + frac * m) / meta.count) * 100));
+            done += m;
+        }
+    } catch (err) {
+        // nothing else holds the resource yet
+        decoder.destroy();
+        target.destroy();
+        throw err;
     }
 
     const data = decoder.buildData();
@@ -103,9 +113,9 @@ const loadSogst = async (
     return data;
 };
 
-// Set exact scene bounds from the archive's global means range. A streaming
-// load fills the attribute arrays only in part, so bounds computed from those
-// arrays would understate the scene. The mins and maxs are in the SOG
+// Set exact scene bounds from the archive's global means range. The resource
+// is built from empty placeholder data before any splat decodes, so the
+// engine's own bounds describe nothing. The mins and maxs are in the SOG
 // log-transformed space. Invert them with sign(v) * (e^|v| - 1).
 const setAabbFromMeta = (meta: SogstMeta, aabb: BoundingBox) => {
     const mins = meta.means.mins as number[];

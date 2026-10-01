@@ -49,7 +49,7 @@ class SogstSplatAnimation {
     bind(entity: Entity, cov2dScale: [number, number] | null = null) {
         this.entity = entity;
         this.cov2dScale = cov2dScale;
-        bindSogstModifier(entity, cov2dScale, !!this.data.segments, !!this.data.accelX);
+        bindSogstModifier(entity, cov2dScale, !!this.data.segments, this.data.hasAccel);
     }
 
     // Active splat-index bounds for segmented content at an absolute clip
