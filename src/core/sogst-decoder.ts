@@ -25,9 +25,20 @@ const SOG_META_VERSION = 2;
 const SH_C0 = 0.28209479177387814;
 const SH_DC_OFFSET = 0.5;
 
-// Higher-order SH coefficients per splat. Bands 1 to 3 hold 3 + 5 + 7 = 15
-// coefficients, one set per colour channel.
-const SH_REST_COEFFS = 45;
+// The engine's SOG iterator writes higher-order SH into a 45-float scratch
+// buffer with a fixed stride of 15 coefficients per colour channel, whatever
+// the band count. Bands 1 to 3 hold 3 + 5 + 7 = 15 coefficients per channel.
+const SH_ITER_COEFFS = 45;
+const SH_ITER_CHANNEL_STRIDE = 15;
+
+// Coefficients per colour channel for each band count (see updateSHRange in
+// gsplat-range-sync.ts, which reads the same table).
+const SH_COEFFS_PER_CHANNEL: Record<number, number> = { 1: 3, 2: 8, 3: 15 };
+
+// Per-splat f_rest_* arrays use the compact layout the engine's repack reads:
+// channel c, coefficient k lives at f_rest_{c * coeffs + k}. A 2-band clip
+// therefore holds 24 arrays, not 45. At 11M splats that is 940 MB less.
+const shRestCount = (bands: number) => 3 * (SH_COEFFS_PER_CHANNEL[bands] ?? 0);
 
 // The decoder stores opacity as a logit. It pins two kinds of splat to plus
 // or minus this magnitude: splats it has not decoded yet, and splats whose
@@ -189,7 +200,7 @@ class SogstDecoder {
             'rot_3'
         ];
         if (meta.shN) {
-            for (let i = 0; i < SH_REST_COEFFS; i++) {
+            for (let i = 0; i < shRestCount(meta.shN.bands); i++) {
                 this.members.push(`f_rest_${i}`);
             }
         }
@@ -205,6 +216,12 @@ class SogstDecoder {
         this.tCenter = new Float32Array(this.n);
         this.tSigma = new Float32Array(this.n);
         this.tSigma.fill(1);
+    }
+
+    // The compact f_rest_* arrays, in index order.
+    private restArrays(): Float32Array[] {
+        const count = this.meta.shN ? shRestCount(this.meta.shN.bands) : 0;
+        return Array.from({ length: count }, (_, j) => this.arrays[`f_rest_${j}`]);
     }
 
     setCentroids(bytes: Uint8Array) {
@@ -292,10 +309,11 @@ class SogstDecoder {
         const r = new Quat();
         const s = new Vec3();
         const c = new Vec4();
-        const sh = sog.shBands > 0 ? new Float32Array(SH_REST_COEFFS) : null;
+        const sh = sog.shBands > 0 ? new Float32Array(SH_ITER_COEFFS) : null;
         const iter = sog.createIter(p, r, s, c, sh);
         const arrays = this.arrays;
-        const restArrays = sh ? Array.from({ length: SH_REST_COEFFS }, (_, j) => arrays[`f_rest_${j}`]) : null;
+        const restArrays = sh ? this.restArrays() : null;
+        const coeffs = SH_COEFFS_PER_CHANNEL[sog.shBands] ?? 0;
 
         // Time-budgeted slices, not a fixed chunk size. On streaming loads
         // the decode runs behind live playback, so no slice may hold the
@@ -337,8 +355,10 @@ class SogstDecoder {
                 arrays.opacity[o] =
                     c.w <= 0 ? -OPACITY_LOGIT_LIMIT : c.w >= 1 ? OPACITY_LOGIT_LIMIT : -Math.log(1 / c.w - 1);
                 if (sh && restArrays) {
-                    for (let j = 0; j < SH_REST_COEFFS; j++) {
-                        restArrays[j][o] = sh[j];
+                    for (let ch = 0; ch < 3; ch++) {
+                        for (let k = 0; k < coeffs; k++) {
+                            restArrays[ch * coeffs + k][o] = sh[ch * SH_ITER_CHANNEL_STRIDE + k];
+                        }
                     }
                 }
                 i++;
@@ -433,17 +453,19 @@ class SogstDecoder {
         sog.shBands = this.meta.shN.bands;
         (sog as unknown as SogCodebookPatch)._patchCodebooks?.();
 
-        const sh = new Float32Array(SH_REST_COEFFS);
+        const sh = new Float32Array(SH_ITER_COEFFS);
         const iter = sog.createIter(null, null, null, null, sh);
-        const arrays = this.arrays;
-        const restArrays = Array.from({ length: SH_REST_COEFFS }, (_, j) => arrays[`f_rest_${j}`]);
+        const restArrays = this.restArrays();
+        const coeffs = SH_COEFFS_PER_CHANNEL[sog.shBands] ?? 0;
         for (let i = 0; i < m;) {
             const sliceStart = performance.now();
             while (i < m) {
                 iter.read(i);
                 const o = a + i;
-                for (let j = 0; j < SH_REST_COEFFS; j++) {
-                    restArrays[j][o] = sh[j];
+                for (let ch = 0; ch < 3; ch++) {
+                    for (let k = 0; k < coeffs; k++) {
+                        restArrays[ch * coeffs + k][o] = sh[ch * SH_ITER_CHANNEL_STRIDE + k];
+                    }
                 }
                 i++;
                 if ((i & (STATIC_CLOCK_STRIDE - 1)) === 0 && performance.now() - sliceStart >= DECODE_SLICE_MS) {
