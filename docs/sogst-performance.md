@@ -179,6 +179,25 @@ Segments took 2–15 pages laid out in 1–3 runs, so a placement costs one to
 three passes or row copies. The configuration that stalled within 25 s with
 contiguous slots played without a hold.
 
+### Loop Modes
+
+Same build and clip, 4.5M budget, cache replay. The window plans installs
+from each segment's next use along the playhead's path, so each loop mode
+should evict differently.
+
+| Test                          | Decoder / renderer                | Result                                                                          |
+| ----------------------------- | --------------------------------- | ------------------------------------------------------------------------------- |
+| `pingpong`, 35 s              | GPU / WebGL2                      | real time, 7 turnarounds, no holds, 59.8 fps                                    |
+| `pingpong`, 35 s              | CPU workers + CPU sorter / WebGL2 | ~0.97×, no held samples, 59.9 fps                                               |
+| `none`, from 0                | GPU / WebGL2                      | played once to 5.0 s in real time, paused at the end; no installs after the end |
+| `repeat` → `pingpong` mid-leg | GPU / WebGL2                      | no disturbance                                                                  |
+| Scrub into unloaded segments  | GPU / WebGL2                      | target ready 162 ms after the scrub; play resumed without a hold                |
+
+At the `pingpong` turnarounds the window kept the segments it was about to
+replay: after descending `…2 1 0` the next install was segment 10 (0–9
+kept), and after ascending to 49 it was segment 43 (44–49 kept). No segment
+was re-installed within a second of its previous install.
+
 **Measurement trap:** a Chrome window that is visible but not focused can
 be paced to about 1 fps on this Linux desktop (`document.visibilityState`
 still reports `visible`; `document.hasFocus()` is false). The engine caps a
