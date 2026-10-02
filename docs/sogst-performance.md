@@ -12,7 +12,8 @@ the same configuration (see [Method](#method)) before comparing numbers.
 | Phase 3 window, pack workers       | 4 workers                 | `thrroog`        | 4.5M   | **~0.9× real time** | **none**               |
 | Phase 3 window, GPU decode (spike) | fragment passes on GPU    | `thrroog`        | 4.5M   | **1.0× real time**¹ | **none**               |
 
-¹ Until the window stalls on arena fragmentation (see [Known Issues](#known-issues)).
+¹ Before the paged arena, until the window stalled on arena fragmentation
+(see [Paged Arena](#paged-arena-2026-10-02)); with it, sustained.
 
 Moving unpack and pack off the main thread made windowed playback usable;
 the remaining limit there is worker compute, dominated by SH packing. Doing
@@ -158,9 +159,35 @@ Cost per million splats:
 - **Not yet measured:** WebGPU (needs WGSL versions of the passes) and the
   Vision Pro.
 
+## Paged Arena (2026-10-02)
+
+Code: `feature/sogst-window` with the arena split into 16,384-splat pages and
+a per-page cull mask (uncommitted), fixing the fragmentation stall below.
+`thrroog`, 4.5M budget (79 pages), desktop, cold cache, window focused. 35 s
+of playback each.
+
+|                         | GPU decode (WebGL2) | CPU pack workers (WebGPU) |
+| ----------------------- | ------------------- | ------------------------- |
+| Reveal after navigation | 2.38 s              | 3.87 s                    |
+| Playback rate           | **1.0×**, 7 loops   | ~0.85×, 7 loops           |
+| Longest playhead hold   | 0 ms                | 0 ms                      |
+| Frame rate              | 59.7 fps            | 59.8 fps                  |
+| Installs / average      | 358 / 70 ms         | 306 / 280 ms              |
+| Failed installs         | 0                   | 0                         |
+
+Segments took 2–15 pages laid out in 1–3 runs, so a placement costs one to
+three passes or row copies. The configuration that stalled within 25 s with
+contiguous slots played without a hold.
+
+**Measurement trap:** a Chrome window that is visible but not focused can
+be paced to about 1 fps on this Linux desktop (`document.visibilityState`
+still reports `visible`; `document.hasFocus()` is false). The engine caps a
+frame's time step at 0.1 s, so playback then advances 0.1 s per frame and
+looks like a decode stall. Check the frame rate, not only visibility.
+
 ## Known Issues
 
-**Window stall from arena fragmentation.** The window places each segment
+**Window stall from arena fragmentation (fixed by the paged arena).** The window places each segment
 in one contiguous slot and never evicts an active segment. With a tight
 arena the free space can end up split into holes that are each too small.
 Measured with `thrroog` at 4.5M (1.30M-splat arena): at t = 1.06 s three
