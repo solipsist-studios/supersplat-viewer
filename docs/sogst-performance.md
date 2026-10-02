@@ -11,6 +11,7 @@ the same configuration (see [Method](#method)) before comparing numbers.
 | Phase 3 window, main-thread decode | main thread, time-sliced  | `karasuba_rin_4` | 4.5M   | ~0.1× real time     | (not measured)         |
 | Phase 3 window, pack workers       | 4 workers                 | `thrroog`        | 4.5M   | **~0.9× real time** | **none**               |
 | Phase 3 window, GPU decode (spike) | fragment passes on GPU    | `thrroog`        | 4.5M   | **1.0× real time**¹ | **none**               |
+| + patch-aware CPU sorter (WebGL)   | fragment passes on GPU    | `thrroog`        | 4.5M   | **0.99× real time** | **none**, no popping   |
 
 ¹ Before the paged arena, until the window stalled on arena fragmentation
 (see [Paged Arena](#paged-arena-2026-10-02)); with it, sustained.
@@ -203,6 +204,50 @@ be paced to about 1 fps on this Linux desktop (`document.visibilityState`
 still reports `visible`; `document.hasFocus()` is false). The engine caps a
 frame's time step at 0.1 s, so playback then advances 0.1 s per frame and
 looks like a decode stall. Check the frame rate, not only visibility.
+
+## CPU Sorter on WebGL (2026-10-02)
+
+**Problem: popping.** On WebGL the engine sorts splats on the CPU from the
+resource's centers, which it copies to its sort worker only on a
+`centersVersion` bump: the whole buffer, 54 MB for a 4.5M-splat resource.
+The window refreshed it at most every 500 ms, so a newly installed segment
+drew with the previous occupant's sort keys until the next refresh, then
+popped into order, visibly, about twice a second. WebGPU sorts on the GPU
+from the work buffer and was unaffected (confirmed by eye: no popping).
+
+**Interim fix: fence on refreshes.** Hold each new segment back until a
+sort after a refresh that includes its centers lands. Popping gone, but
+playback now waited on refreshes. `thrroog`, 4.5M, CPU workers, WebGL, 15 s:
+
+| Refresh interval | Playback rate | Freezes > 5 frames | Longest freeze      | Long tasks / worst frame |
+| ---------------- | ------------- | ------------------ | ------------------- | ------------------------ |
+| 500 ms           | ~0.63×        | 26                 | 25 frames (~0.42 s) | 0 / 44 ms                |
+| 200 ms           | ~0.78×        | 21                 | 14 frames (~0.23 s) | 0 / 41 ms                |
+
+No frame hitches either way; the stutter was the playhead waiting.
+
+**Fix: a patch-aware sorter** (`sogst-sorter.ts`, uncommitted with Phase
+3). The engine's own sort worker, built from its source with one added
+`patchCenters` message, installed through the unified manager's
+`createSorter()`; no engine fork. An install sends only its pages' centers
+(1–3 MB) and is held back only until the sort that includes them lands.
+Same clip, budget and renderer, 15 s:
+
+| Decoder     | Playback rate | Freezes > 5 frames | Longest freeze     | Fence lag (installs) | Long tasks / worst frame |
+| ----------- | ------------- | ------------------ | ------------------ | -------------------- | ------------------------ |
+| CPU workers | 0.90×         | 5                  | 8 frames (~130 ms) | avg 0.6, max 4       | 0 / 53 ms                |
+| GPU decode  | **0.99×**     | **0**              | 3 frames           | avg 0.7, max 5       | 0 / 34 ms                |
+
+No popping (confirmed by eye on the GPU decode run). The CPU path's
+remaining freezes match its rate before the fence (0.85–0.97×), so they
+are decode throughput, not sorting.
+
+A cold resident load on WebGL (no budget) also uses the patch sorter: each
+streamed group is patched as it lands, replacing the single full refresh at
+the end of the stream. Playback ran at real time after the first pass; one
+58 ms long task and two 70–85 ms frames came during the first pass, the
+likely cause being the one-time full copy when the sorter swaps in (135 MB
+at 11.25M splats).
 
 ## Known Issues
 
