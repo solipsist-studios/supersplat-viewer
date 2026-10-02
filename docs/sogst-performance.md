@@ -10,9 +10,14 @@ the same configuration (see [Method](#method)) before comparing numbers.
 | ---------------------------------- | ------------------------- | ---------------- | ------ | ------------------- | ---------------------- |
 | Phase 3 window, main-thread decode | main thread, time-sliced  | `karasuba_rin_4` | 4.5M   | ~0.1× real time     | (not measured)         |
 | Phase 3 window, pack workers       | 4 workers                 | `thrroog`        | 4.5M   | **~0.9× real time** | **none**               |
+| Phase 3 window, GPU decode (spike) | fragment passes on GPU    | `thrroog`        | 4.5M   | **1.0× real time**¹ | **none**               |
 
-Moving unpack and pack off the main thread made windowed playback usable.
-The remaining limit is worker compute, dominated by SH packing.
+¹ Until the window stalls on arena fragmentation (see [Known Issues](#known-issues)).
+
+Moving unpack and pack off the main thread made windowed playback usable;
+the remaining limit there is worker compute, dominated by SH packing. Doing
+the same work in GPU passes costs a few milliseconds per million splats,
+leaving the browser's WebP decode and the centers readback as the costs.
 
 ## Test Clips
 
@@ -115,6 +120,56 @@ Analysis:
   is why the resident load costs more per splat than windowed installs.
 - **First load is serial by group,** so the workers are partly idle during a
   resident load.
+
+## GPU Decode Spike (2026-10-02)
+
+Code: `feature/sogst-window` plus `sogst-gpu-decode.ts` (uncommitted spike),
+opt-in with the `sogstgpu` URL flag, WebGL2 only (GLSL). The browser decodes
+each WebP into an RGBA8 texture (`createImageBitmap`, no CPU readback), and
+three fragment passes, limited to the destination rows, write the existing
+stream layouts: geometry (colour, transformA, transformB), temporal (motion,
+temporal, accel) and SH (up to four words). The CPU sorter still needs
+centers, so the spike reads transformA's rows back. `thrroog`, desktop,
+`?webgl`, cold cache.
+
+|                                   | CPU pack workers (WebGPU) | GPU decode (WebGL2)             |
+| --------------------------------- | ------------------------- | ------------------------------- |
+| Resident: reveal after navigation | 5.23 s                    | 4.48 s                          |
+| Resident: all groups decoded      | 14.3 s                    | **6.25 s**                      |
+| Windowed 4.5M: playback rate      | ~0.9×                     | **1.0×**, until the stall below |
+| Windowed 4.5M: install throughput | 1.33M splats/s            | 1.53M splats/s                  |
+| Windowed 4.5M: average install    | 180 ms                    | **47 ms**                       |
+| Frame rate / long tasks           | 60 fps / none             | 60 fps / none                   |
+
+Cost per million splats:
+
+| Stage                      | CPU pack workers         | GPU decode              |
+| -------------------------- | ------------------------ | ----------------------- |
+| Unpack and pack            | 1,410 ms per worker      | **3–7 ms** (the passes) |
+| WebP decode                | (inside the worker cost) | 73–102 ms (browser)     |
+| Centers for the CPU sorter | (inside the worker cost) | 115–120 ms (readback)   |
+
+- **Correctness:** at t = 2.0 s the GPU-decoded frame matches the CPU frame
+  visually. It is not byte-identical: the GPU rounds float to half with its
+  own rounding mode and computes in float32.
+- **What is left:** the WebP decode and the readback. The readback exists
+  only for the CPU sorter (WebGL); WebGPU sorts on the GPU and would not
+  need it.
+- **Not yet measured:** WebGPU (needs WGSL versions of the passes) and the
+  Vision Pro.
+
+## Known Issues
+
+**Window stall from arena fragmentation.** The window places each segment
+in one contiguous slot and never evicts an active segment. With a tight
+arena the free space can end up split into holes that are each too small.
+Measured with `thrroog` at 4.5M (1.30M-splat arena): at t = 1.06 s three
+active segments held 710k splats, and the next segment (242,314 splats)
+needed a slot, but evicting the one evictable segment left holes of
+237,900, 115,013 and 231,875 splats, 585k in total and none large enough.
+`choose()` returns no plan and the playhead waits forever. The CPU run at
+the same budget avoided it only through placement luck; this is a window
+design bug, not a GPU-path bug.
 
 ## Candidate Improvements
 
