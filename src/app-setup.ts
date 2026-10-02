@@ -18,10 +18,10 @@ import { updateGsplatRangeData, updateGsplatSHRange, uploadGsplatRows } from './
 import { loadSogst, setAabbFromMeta } from './core/load-sogst';
 import { setupSplatAnim } from './core/load-splat-anim';
 import { observe } from './core/observe';
-import { idbDeleteByPrefix, idbGetBuffer, idbSetBuffer } from './core/sogst-cache';
+import { idbDeleteByPrefix, idbGetBuffer, idbGetEntryManifest, idbSetBuffer } from './core/sogst-cache';
 import type { SogstData } from './core/sogst-data';
 import { attachSogstMotion, syncSogstMotionRange, uploadSogstMotionRows } from './core/sogst-motion';
-import { streamSogst } from './core/stream-sogst';
+import { replaySogst, streamSogst } from './core/stream-sogst';
 import { isSogstFilename } from './parsers/sogst';
 import type { Config, Global, LoopMode, State } from './types';
 
@@ -84,14 +84,18 @@ const setupSogst = (app: AppBase, config: Config, global: Global, data: SogstDat
 // Progressive load of a streamed archive: reveal the scene once the
 // persistent group and the first temporal segment are decoded, then keep
 // refreshing GPU data as later segments land (playback holds at the loaded
-// boundary via data.loadedThrough if the network falls behind). The
-// complete archive is cached for instant revisits.
+// boundary via data.loadedThrough if the network falls behind).
+//
+// `open` starts the stream: from the network, or as a replay of the entry
+// units an earlier visit cached. The network stream caches itself unit by
+// unit as it goes; only a monolithic archive comes back whole for caching.
 const loadSogstStreaming = async (
     app: AppBase,
     config: Config,
     global: Global,
     cacheKey: string,
-    progressCallback: (progress: number) => void
+    progressCallback: (progress: number) => void,
+    open: (callbacks: Parameters<typeof streamSogst>[2]) => ReturnType<typeof streamSogst>
 ) => {
     let resource: GSplatResource | null = null;
     let data: Awaited<ReturnType<typeof loadSogst>> | null = null;
@@ -250,7 +254,7 @@ const loadSogstStreaming = async (
         }
     };
 
-    const stream = streamSogst(app, config.contentUrl, {
+    const stream = open({
         onProgress: progressCallback,
         onReady: sync,
         onShReady: syncSh
@@ -281,10 +285,11 @@ const loadSogstStreaming = async (
     // (the reveal set itself was picked up at resource creation)
     pump();
 
-    // cache the complete archive in the background for instant revisits
+    // Once the archive is cached, drop copies cached under an older
+    // validator. A monolithic archive still caches as one buffer.
     stream.complete
         .then((buffer) => {
-            idbSetBuffer(cacheKey, buffer)
+            (buffer ? idbSetBuffer(cacheKey, buffer) : Promise.resolve())
                 .then(() => idbDeleteByPrefix(fullFileKeyPrefix(config.contentUrl), cacheKey))
                 .catch(() => {
                     /* cache write is best-effort */
@@ -305,14 +310,37 @@ const loadSogstGsplat = async (
     progressCallback: (progress: number) => void
 ) => {
     const cacheKey = await fullFileCacheKey(config.contentUrl);
+    const fromNetwork = () =>
+        loadSogstStreaming(app, config, global, cacheKey, progressCallback, (callbacks) =>
+            streamSogst(app, config.contentUrl, callbacks, cacheKey)
+        );
+
+    // A streamed archive cached by unit replays through the streaming path,
+    // so a revisit never holds the whole archive in memory either. A replay
+    // that fails before the reveal (the browser evicted part of the store)
+    // falls back to the network.
+    const manifest = await idbGetEntryManifest(cacheKey);
+    if (manifest) {
+        console.debug('SOGST entry cache hit (idb)', cacheKey);
+        try {
+            return await loadSogstStreaming(app, config, global, cacheKey, progressCallback, (callbacks) =>
+                replaySogst(app, cacheKey, manifest, callbacks)
+            );
+        } catch (err) {
+            console.warn('SOGST cache replay failed; streaming from the network instead:', err);
+            return fromNetwork();
+        }
+    }
+
+    // A whole-file entry: a monolithic archive, or one cached by an earlier
+    // build. Decode it straight through.
     const cached = await idbGetBuffer(cacheKey);
     if (cached) {
-        // complete archive available locally — decode straight through
         console.debug('SOGST full-file cache hit (idb)', cacheKey);
         const data = await loadSogst(app, cached, progressCallback);
         return setupSogst(app, config, global, data).entity;
     }
-    return loadSogstStreaming(app, config, global, cacheKey, progressCallback);
+    return fromNetwork();
 };
 
 // Load a static 3DGS scene (PLY / LOD / meta.json etc.)

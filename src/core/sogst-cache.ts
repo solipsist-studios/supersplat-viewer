@@ -180,4 +180,107 @@ const idbDeleteByPrefix = async (prefix: string, keep?: string): Promise<void> =
     });
 };
 
-export { idbGetBuffer, idbSetBuffer, idbDeleteByPrefix };
+// -- streamed archives: entry units ----------------------------------------
+//
+// A streamed archive is not cached as one buffer. Reassembling one in
+// memory, and holding it while the streamer downloads, costs the full file
+// size: 216MB for an 11M-splat clip, which a visionOS tab cannot spare. The
+// streamer instead writes each decode step's archive entries as one unit as
+// soon as that step completes. A unit is the run of entries one group decode
+// needs, or one deferred SH labels entry.
+//
+// Units live at `<key>#u<i>`. The manifest at the base key is written last,
+// so a reader never sees a manifest whose units are missing. A cache hit
+// replays the units in order through the same decoder the network path uses.
+
+type CachedEntry = {
+    name: string;
+    // Byte offset of the entry's local file header in the archive. A later
+    // HTTP Range request can fetch the entry again from this offset.
+    offset: number;
+    bytes: ArrayBuffer;
+};
+
+type EntryManifest = {
+    sogstUnits: number;
+    totalBytes: number;
+};
+
+const isEntryManifest = (value: unknown): value is EntryManifest => {
+    return (
+        !!value &&
+        typeof value === 'object' &&
+        typeof (value as EntryManifest).sogstUnits === 'number' &&
+        typeof (value as EntryManifest).totalBytes === 'number'
+    );
+};
+
+const unitKey = (key: string, index: number) => `${key}#u${index}`;
+
+// The entry manifest for a streamed archive, or null when the key holds no
+// streamed archive (a miss, or a whole-file payload from idbSetBuffer).
+const idbGetEntryManifest = async (key: string): Promise<EntryManifest | null> => {
+    const db = await openSogstDb();
+    if (!db) {
+        return null;
+    }
+    const value = await idbGetValue(db, key);
+    return isEntryManifest(value) ? value : null;
+};
+
+const idbGetEntryUnit = async (key: string, index: number): Promise<CachedEntry[] | null> => {
+    const db = await openSogstDb();
+    if (!db) {
+        return null;
+    }
+    const value = await idbGetValue(db, unitKey(key, index));
+    return Array.isArray(value) ? (value as CachedEntry[]) : null;
+};
+
+// Writes units one transaction at a time, in order. A failed write (quota,
+// private browsing) stops the writer, so finish() writes no manifest and the
+// next visit streams again.
+class EntryUnitWriter {
+    private key: string;
+
+    private count = 0;
+
+    private failed = false;
+
+    private chain: Promise<void> = Promise.resolve();
+
+    constructor(key: string) {
+        this.key = key;
+    }
+
+    add(entries: CachedEntry[]) {
+        if (this.failed || entries.length === 0) {
+            return;
+        }
+        const index = this.count++;
+        this.chain = this.chain.then(async () => {
+            if (this.failed) {
+                return;
+            }
+            const db = await openSogstDb();
+            if (!db || !(await idbPutValue(db, unitKey(this.key, index), entries))) {
+                this.failed = true;
+            }
+        });
+    }
+
+    async finish(totalBytes: number): Promise<boolean> {
+        await this.chain;
+        if (this.failed) {
+            return false;
+        }
+        const db = await openSogstDb();
+        if (!db) {
+            return false;
+        }
+        return idbPutValue(db, this.key, { sogstUnits: this.count, totalBytes } satisfies EntryManifest);
+    }
+}
+
+export { EntryUnitWriter, idbDeleteByPrefix, idbGetBuffer, idbGetEntryManifest, idbGetEntryUnit, idbSetBuffer };
+export type { CachedEntry, EntryManifest };
