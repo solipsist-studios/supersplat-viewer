@@ -13,6 +13,7 @@ import { SogstDecoder } from './sogst-decoder';
 import type { SogstGroup } from './sogst-decoder';
 import { SogstGroupAssembler } from './sogst-group-assembler';
 import type { AssemblerResult } from './sogst-group-assembler';
+import { SogstTarget } from './sogst-target';
 import { ZipStreamReader } from './zip';
 
 // Progressive loader for streamed archives.
@@ -56,25 +57,21 @@ type SogstStreamCallbacks = {
      */
     onProgress: (progress: number) => void;
     /**
-     * A group finished decoding into the shared arrays. This fires once per
-     * group after the reveal.
+     * A group finished decoding, and its [start, end) splat range is packed
+     * and uploaded to the resource. This fires once per group after the
+     * reveal. A null range means no new splats, as in the end-of-stream
+     * notification.
      *
-     * The caller must refresh the GPU data for the given [start, end) splat
-     * range, then set data.loadedThrough to the given value. A null range
-     * means no new splats, as in the end-of-stream notification.
-     *
-     * The driver does not advance data.loadedThrough itself. That is
-     * deliberate: it keeps the playhead out of any segment whose GPU data the
-     * caller has not synced yet.
+     * The caller sets data.loadedThrough to the given value. The driver does
+     * not advance it itself, so the caller controls when the playhead may
+     * enter the new segment (for example, not before the entity exists).
      */
     onReady: (range: [number, number] | null, loadedThrough: number) => void;
     /**
-     * A deferred SH labels payload finished decoding into the f_rest arrays.
-     * This fires for sh-deferred archives only.
-     *
-     * The caller must refresh the GPU SH data for the given [start, end)
-     * splat range. This does not change playback gating. The splats render
-     * with DC colour only until the payload arrives.
+     * A deferred SH labels payload finished decoding, and its SH is packed
+     * and uploaded for the given [start, end) splat range. This fires for
+     * sh-deferred archives only, and does not change playback gating. The
+     * splats render with DC colour only until the payload arrives.
      */
     onShReady?: (range: [number, number]) => void;
 };
@@ -194,8 +191,8 @@ const createSogstDriver = (
             revealPending = true;
         }
         if (!revealed) {
-            // Still buffering: later groups keep decoding into the shared
-            // arrays, and the resource created at the reveal reads them.
+            // Still buffering: later groups keep decoding into the
+            // resource, which the reveal hands over as it stands.
             tryReveal();
         } else if (data) {
             callbacks.onReady(group.range, decodedThrough);
@@ -216,7 +213,7 @@ const createSogstDriver = (
                 if (step.monolithic) {
                     return;
                 }
-                decoder = new SogstDecoder(app, step.meta);
+                decoder = new SogstDecoder(app, step.meta, new SogstTarget(app, step.meta, step.meta.count));
                 const firstSegment = assembler.groups.findIndex((g) => g.segIndex >= 0);
                 revealGroupIdx = firstSegment >= 0 ? firstSegment : assembler.groups.length - 1;
                 return;
@@ -286,6 +283,12 @@ const createSogstDriver = (
 
     const fail = (err: Error) => {
         decoder?.destroy();
+        // Before the reveal nobody else holds the resource, and a caller that
+        // falls back to the network builds a second one. Free this one first,
+        // so a fallback on a memory-constrained device does not hold two.
+        if (!revealed) {
+            decoder?.target.destroy();
+        }
         revealReject(err);
     };
 

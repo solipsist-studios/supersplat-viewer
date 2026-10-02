@@ -2,7 +2,6 @@ import { PIXELFORMAT_R32F, PIXELFORMAT_RGBA32F, Vec3 } from 'playcanvas';
 import type { Entity, GSplatResource } from 'playcanvas';
 
 import { uploadTextureRows } from './gsplat-range-sync';
-import type { SogstData } from './sogst-data';
 
 // GPU evaluation of the .sogst temporal model on the engine's unified gsplat
 // pipeline.
@@ -320,43 +319,38 @@ fn modifySplatColor(center: vec3f, color: ptr<function, vec4f>) {
 }
 `;
 
-// Create the per-splat motion/temporal textures and register them with the
-// resource's stream collection so they are bound to the work-buffer material.
-// Must be called before the entity's gsplat component receives the resource.
-const attachSogstMotion = (resource: GSplatResource, data: SogstData) => {
+// Decoded temporal attributes for a run of splats, in the source layout the
+// decoder fills: per-axis velocity (units/sec), t_center and t_sigma (sec),
+// and the optional degree-2 coefficients.
+type SogstMotionSource = {
+    velocity: [Float32Array, Float32Array, Float32Array];
+    accel: [Float32Array, Float32Array, Float32Array] | null;
+    tCenter: Float32Array;
+    tSigma: Float32Array;
+};
+
+// Create the per-splat motion/temporal textures, empty, and register them with
+// the resource's stream collection so they are bound to the work-buffer
+// material. Must be called before the entity's gsplat component receives the
+// resource. packSogstMotion fills them as splats decode.
+const createSogstMotionTextures = (resource: GSplatResource, accel: boolean) => {
     const streams = resource.streams;
     const dims = streams.textureDimensions;
     const w = dims.x;
     const h = dims.y;
-    const N = data.numSplats;
 
     const motion = new Float32Array(w * h * 4);
     const temporal = new Float32Array(w * h);
-    // Unused texels keep t_sigma = 1 so the shader math stays finite (those
-    // splats are never drawn: numSplats bounds the draw count).
+    // Texels with no splat yet keep t_sigma = 1 so the shader math stays
+    // finite. Those splats are invisible: their opacity is pinned to a large
+    // negative logit until they decode, or they are culled.
     temporal.fill(1);
 
-    for (let i = 0; i < N; i++) {
-        motion[i * 4 + 0] = data.velocityX[i];
-        motion[i * 4 + 1] = data.velocityY[i];
-        motion[i * 4 + 2] = data.velocityZ[i];
-        motion[i * 4 + 3] = data.tCenter[i];
-        temporal[i] = data.tSigma[i];
-    }
-
-    const motionTex = streams.createTexture('splatMotion', PIXELFORMAT_RGBA32F, dims, motion);
-    const temporalTex = streams.createTexture('splatTemporal', PIXELFORMAT_R32F, dims, temporal);
-    streams.textures.set('splatMotion', motionTex);
-    streams.textures.set('splatTemporal', temporalTex);
-
-    if (data.accelX && data.accelY && data.accelZ) {
-        const accel = new Float32Array(w * h * 4);
-        for (let i = 0; i < N; i++) {
-            accel[i * 4 + 0] = data.accelX[i];
-            accel[i * 4 + 1] = data.accelY[i];
-            accel[i * 4 + 2] = data.accelZ[i];
-        }
-        streams.textures.set('splatAccel', streams.createTexture('splatAccel', PIXELFORMAT_RGBA32F, dims, accel));
+    streams.textures.set('splatMotion', streams.createTexture('splatMotion', PIXELFORMAT_RGBA32F, dims, motion));
+    streams.textures.set('splatTemporal', streams.createTexture('splatTemporal', PIXELFORMAT_R32F, dims, temporal));
+    if (accel) {
+        const accelData = new Float32Array(w * h * 4);
+        streams.textures.set('splatAccel', streams.createTexture('splatAccel', PIXELFORMAT_RGBA32F, dims, accelData));
     }
 };
 
@@ -371,38 +365,36 @@ const uploadSogstMotionRows = (resource: GSplatResource, a: number, b: number) =
     }
 };
 
-// Rewrite splats [a, b) of the motion and temporal textures from the
-// textures' persistent CPU copies, then upload the covering rows only. The
-// segment streamer uses this. A full O(numSplats) rewrite for every 0.1s
-// segment would stall a weak device.
-const syncSogstMotionRange = (resource: GSplatResource, data: SogstData, a: number, b: number, upload = true) => {
+// Pack n splats of decoded temporal attributes from source index s into the
+// motion textures' CPU copies at resource index d. Like packGsplatRange, this
+// does not upload; uploadSogstMotionRows sends the rows afterwards.
+const packSogstMotion = (resource: GSplatResource, src: SogstMotionSource, s: number, d: number, n: number) => {
     const streams = resource.streams;
-    const motionTex = streams.textures.get('splatMotion');
-    const temporalTex = streams.textures.get('splatTemporal');
-    const motion = motionTex?._levels?.[0] as Float32Array | undefined;
-    const temporal = temporalTex?._levels?.[0] as Float32Array | undefined;
+    const motion = streams.textures.get('splatMotion')?._levels?.[0] as Float32Array | undefined;
+    const temporal = streams.textures.get('splatTemporal')?._levels?.[0] as Float32Array | undefined;
     if (!motion || !temporal) {
-        return;
+        throw new Error('sogst: motion textures have no CPU copy');
     }
-    const n = Math.min(b, data.numSplats);
-    for (let i = a; i < n; i++) {
-        motion[i * 4 + 0] = data.velocityX[i];
-        motion[i * 4 + 1] = data.velocityY[i];
-        motion[i * 4 + 2] = data.velocityZ[i];
-        motion[i * 4 + 3] = data.tCenter[i];
-        temporal[i] = data.tSigma[i];
+    const [vx, vy, vz] = src.velocity;
+    for (let j = 0; j < n; j++) {
+        const i = s + j;
+        const o = d + j;
+        motion[o * 4 + 0] = vx[i];
+        motion[o * 4 + 1] = vy[i];
+        motion[o * 4 + 2] = vz[i];
+        motion[o * 4 + 3] = src.tCenter[i];
+        temporal[o] = src.tSigma[i];
     }
-    const accelTex = streams.textures.get('splatAccel');
-    const accel = accelTex?._levels?.[0] as Float32Array | undefined;
-    if (accel && data.accelX && data.accelY && data.accelZ) {
-        for (let i = a; i < n; i++) {
-            accel[i * 4 + 0] = data.accelX[i];
-            accel[i * 4 + 1] = data.accelY[i];
-            accel[i * 4 + 2] = data.accelZ[i];
+    const accel = streams.textures.get('splatAccel')?._levels?.[0] as Float32Array | undefined;
+    if (accel && src.accel) {
+        const [ax, ay, az] = src.accel;
+        for (let j = 0; j < n; j++) {
+            const i = s + j;
+            const o = d + j;
+            accel[o * 4 + 0] = ax[i];
+            accel[o * 4 + 1] = ay[i];
+            accel[o * 4 + 2] = az[i];
         }
-    }
-    if (upload) {
-        uploadSogstMotionRows(resource, a, n);
     }
 };
 
@@ -493,4 +485,5 @@ const setSogstParams = (
     }
 };
 
-export { attachSogstMotion, syncSogstMotionRange, uploadSogstMotionRows, bindSogstModifier, setSogstParams };
+export { bindSogstModifier, createSogstMotionTextures, packSogstMotion, setSogstParams, uploadSogstMotionRows };
+export type { SogstMotionSource };

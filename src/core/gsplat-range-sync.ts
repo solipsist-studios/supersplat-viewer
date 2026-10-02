@@ -1,5 +1,5 @@
-import { FloatPacking, Quat, Vec3 } from 'playcanvas';
-import type { GSplatData, GSplatResource, Texture } from 'playcanvas';
+import { FloatPacking, Quat } from 'playcanvas';
+import type { GSplatResource, Texture } from 'playcanvas';
 
 type TypedArray = Uint8Array | Uint16Array | Uint32Array | Float32Array;
 
@@ -11,8 +11,11 @@ type TypedArray = Uint8Array | Uint16Array | Uint32Array | Float32Array;
 // once per decoded ~0.1s segment, and O(numSplats) work per segment freezes a
 // weak device for the whole first playback pass.
 //
-// These variants repack splats [a, b) only, into the textures' persistent CPU
-// copies, and they upload the covering rows only. The packing math stays
+// These variants pack a run of decoded splats into the textures' persistent
+// CPU copies, and upload only the covering rows. The source is a chunk of
+// decoded attributes, not a whole-clip GSplatData, and the destination index
+// is independent of the source index, so a decoder can pack straight from a
+// small scratch buffer into any slot of the resource. The packing math stays
 // byte-identical to the engine's.
 
 // Zeroth-order spherical-harmonic basis function, 1 / (2 * sqrt(pi)).
@@ -67,68 +70,80 @@ const uploadTextureRows = (texture: Texture, elemsPerTexel: number, a: number, b
     }
 };
 
-const updateColorRange = (resource: GSplatResource, gsplatData: GSplatData, a: number, b: number, upload: boolean) => {
-    const texture = resource.streams.getTexture('splatColor');
-    const level = texture?._levels?.[0] as Uint16Array | undefined;
+// Decoded per-splat attributes, keyed by GSplatData property name (x, f_dc_0,
+// opacity, scale_0, rot_0, f_rest_*, and so on). The values use the same
+// conventions as a GSplatData that is not "activated": opacity is a logit and
+// scales are logs. The source can be shorter than the resource: a packer
+// reads n splats from source index `s` and writes them at resource index `d`.
+type SplatSource = Record<string, Float32Array>;
+
+// The CPU copy of a stream texture. Every gsplat stream texture is created
+// from a typed array, so a missing copy means the resource was not built the
+// way these packers assume, and writing nothing would fail silently.
+const levelOf = <T extends TypedArray>(resource: GSplatResource, name: string): T => {
+    const level = resource.streams.getTexture(name)?._levels?.[0] as T | undefined;
     if (!level) {
-        resource.updateColorData(gsplatData);
-        return;
+        throw new Error(`sogst: gsplat stream ${name} has no CPU copy`);
     }
+    return level;
+};
+
+const packColor = (resource: GSplatResource, src: SplatSource, s: number, d: number, n: number) => {
+    const level = levelOf<Uint16Array>(resource, 'splatColor');
     const float2Half = FloatPacking.float2Half;
-    const cr = gsplatData.getProp('f_dc_0') as Float32Array;
-    const cg = gsplatData.getProp('f_dc_1') as Float32Array;
-    const cb = gsplatData.getProp('f_dc_2') as Float32Array;
-    const ca = gsplatData.getProp('opacity') as Float32Array;
-    for (let i = a; i < b; ++i) {
-        level[i * 4 + 0] = float2Half(cr[i] * SH_C0 + 0.5);
-        level[i * 4 + 1] = float2Half(cg[i] * SH_C0 + 0.5);
-        level[i * 4 + 2] = float2Half(cb[i] * SH_C0 + 0.5);
-        level[i * 4 + 3] = float2Half(1 / (1 + Math.exp(-ca[i])));
-    }
-    if (upload) {
-        uploadTextureRows(texture, 4, a, b);
+    const cr = src.f_dc_0;
+    const cg = src.f_dc_1;
+    const cb = src.f_dc_2;
+    const ca = src.opacity;
+    for (let j = 0; j < n; ++j) {
+        const i = s + j;
+        const o = (d + j) * 4;
+        level[o + 0] = float2Half(cr[i] * SH_C0 + 0.5);
+        level[o + 1] = float2Half(cg[i] * SH_C0 + 0.5);
+        level[o + 2] = float2Half(cb[i] * SH_C0 + 0.5);
+        level[o + 3] = float2Half(1 / (1 + Math.exp(-ca[i])));
     }
 };
 
-const updateTransformRange = (
-    resource: GSplatResource,
-    gsplatData: GSplatData,
-    a: number,
-    b: number,
-    upload: boolean
-) => {
-    const transformA = resource.streams.getTexture('transformA');
-    const transformB = resource.streams.getTexture('transformB');
-    const dataA = transformA?._levels?.[0] as Uint32Array | undefined;
-    const dataB = transformB?._levels?.[0] as Uint16Array | undefined;
-    if (!dataA || !dataB) {
-        resource.updateTransformData(gsplatData);
-        return;
-    }
+// The same values the engine's GSplatData iterator produces: rotation as
+// (rot_1, rot_2, rot_3, rot_0) and scale as exp(scale_*).
+const packTransform = (resource: GSplatResource, src: SplatSource, s: number, d: number, n: number) => {
+    const dataA = levelOf<Uint32Array>(resource, 'transformA');
+    const dataB = levelOf<Uint16Array>(resource, 'transformB');
     const float2Half = FloatPacking.float2Half;
     const dataAFloat32 = new Float32Array(dataA.buffer);
-    const p = new Vec3();
     const r = new Quat();
-    const s = new Vec3();
-    const iter = gsplatData.createIter(p, r, s);
-    for (let i = a; i < b; i++) {
-        iter.read(i);
+    for (let j = 0; j < n; j++) {
+        const i = s + j;
+        const o = (d + j) * 4;
+        r.set(src.rot_1[i], src.rot_2[i], src.rot_3[i], src.rot_0[i]);
         r.normalize();
         if (r.w < 0) {
             r.mulScalar(-1);
         }
-        dataAFloat32[i * 4 + 0] = p.x;
-        dataAFloat32[i * 4 + 1] = p.y;
-        dataAFloat32[i * 4 + 2] = p.z;
-        dataA[i * 4 + 3] = float2Half(r.x) | (float2Half(r.y) << 16);
-        dataB[i * 4 + 0] = float2Half(s.x);
-        dataB[i * 4 + 1] = float2Half(s.y);
-        dataB[i * 4 + 2] = float2Half(s.z);
-        dataB[i * 4 + 3] = float2Half(r.z);
+        dataAFloat32[o + 0] = src.x[i];
+        dataAFloat32[o + 1] = src.y[i];
+        dataAFloat32[o + 2] = src.z[i];
+        dataA[o + 3] = float2Half(r.x) | (float2Half(r.y) << 16);
+        dataB[o + 0] = float2Half(Math.exp(src.scale_0[i]));
+        dataB[o + 1] = float2Half(Math.exp(src.scale_1[i]));
+        dataB[o + 2] = float2Half(Math.exp(src.scale_2[i]));
+        dataB[o + 3] = float2Half(r.z);
     }
-    if (upload) {
-        uploadTextureRows(transformA, 4, a, b);
-        uploadTextureRows(transformB, 4, a, b);
+};
+
+// The resource's centers copy, which the CPU sorter (WebGL) reads.
+const packCenters = (resource: GSplatResource, src: SplatSource, s: number, d: number, n: number) => {
+    const centers = resource.centers as Float32Array | undefined;
+    if (!centers) {
+        return;
+    }
+    for (let j = 0; j < n; j++) {
+        const i = s + j;
+        const o = (d + j) * 3;
+        centers[o + 0] = src.x[i];
+        centers[o + 1] = src.y[i];
+        centers[o + 2] = src.z[i];
     }
 };
 
@@ -147,39 +162,48 @@ const uploadSHRows = (resource: GSplatResource, a: number, b: number) => {
     }
 };
 
-const updateSHRange = (resource: GSplatResource, gsplatData: GSplatData, a: number, b: number, upload: boolean) => {
+const packSH = (resource: GSplatResource, src: SplatSource, s: number, d: number, n: number) => {
     const shBands = resource.shBands;
-    const sh1to3Texture = resource.streams.getTexture('splatSH_1to3');
-    const sh4to7Texture = resource.streams.getTexture('splatSH_4to7');
-    const sh8to11Texture = resource.streams.getTexture('splatSH_8to11');
-    const sh12to15Texture = resource.streams.getTexture('splatSH_12to15');
-    const sh1to3Data = sh1to3Texture?._levels?.[0] as Uint32Array | undefined;
-    if (!sh1to3Data) {
-        resource.updateSHData(gsplatData);
+    if (shBands <= 0) {
         return;
     }
-    const sh4to7Data = sh4to7Texture?._levels?.[0] as Uint32Array | undefined;
-    const sh8to11Data = sh8to11Texture?._levels?.[0] as Uint32Array | undefined;
-    const sh12to15Data = sh12to15Texture?._levels?.[0] as Uint32Array | undefined;
+    const sh1to3Data = levelOf<Uint32Array>(resource, 'splatSH_1to3');
+    const sh4to7Data = shBands > 1 ? levelOf<Uint32Array>(resource, 'splatSH_4to7') : undefined;
+    const sh8to11Data = shBands > 1 ? levelOf<Uint32Array>(resource, 'splatSH_8to11') : undefined;
+    const sh12to15Data = shBands > 2 ? levelOf<Uint32Array>(resource, 'splatSH_12to15') : undefined;
     const numCoeffs = ({ 1: 3, 2: 8, 3: 15 } as Record<number, number>)[shBands];
-    const src: Float32Array[] = [];
+    const rest: Float32Array[] = [];
     for (let i = 0; i < numCoeffs * 3; ++i) {
-        src.push(gsplatData.getProp(`f_rest_${i}`) as Float32Array);
+        rest.push(src[`f_rest_${i}`]);
     }
     const float32 = new Float32Array(1);
     const uint32 = new Uint32Array(float32.buffer);
     const c = new Array(numCoeffs * 3).fill(0);
-    for (let i = a; i < b; ++i) {
+    for (let jj = 0; jj < n; ++jj) {
+        const i = s + jj;
+        const t = d + jj;
         for (let j = 0; j < numCoeffs; ++j) {
-            c[j * 3] = src[j][i];
-            c[j * 3 + 1] = src[j + numCoeffs][i];
-            c[j * 3 + 2] = src[j + numCoeffs * 2][i];
+            c[j * 3] = rest[j][i];
+            c[j * 3 + 1] = rest[j + numCoeffs][i];
+            c[j * 3 + 2] = rest[j + numCoeffs * 2][i];
         }
         let max = c[0];
         for (let j = 1; j < numCoeffs * 3; ++j) {
             max = Math.max(max, Math.abs(c[j]));
         }
         if (max === 0) {
+            // The engine skips such a splat and leaves the texel at its
+            // initial zero. A destination slot can hold an earlier splat's
+            // SH here, so clear it instead. A zero scale word decodes every
+            // coefficient to zero.
+            sh1to3Data.fill(0, t * 4, t * 4 + 4);
+            sh4to7Data?.fill(0, t * 4, t * 4 + 4);
+            if (shBands > 2) {
+                sh8to11Data?.fill(0, t * 4, t * 4 + 4);
+                sh12to15Data?.fill(0, t * 4, t * 4 + 4);
+            } else {
+                sh8to11Data?.fill(0, t, t + 1);
+            }
             continue;
         }
         for (let j = 0; j < numCoeffs; ++j) {
@@ -197,64 +221,61 @@ const updateSHRange = (resource: GSplatResource, gsplatData: GSplatData, a: numb
             );
         }
         float32[0] = max;
-        sh1to3Data[i * 4 + 0] = uint32[0];
-        sh1to3Data[i * 4 + 1] = (c[0] << SH_R_SHIFT) | (c[1] << SH_G_SHIFT) | c[2];
-        sh1to3Data[i * 4 + 2] = (c[3] << SH_R_SHIFT) | (c[4] << SH_G_SHIFT) | c[5];
-        sh1to3Data[i * 4 + 3] = (c[6] << SH_R_SHIFT) | (c[7] << SH_G_SHIFT) | c[8];
+        sh1to3Data[t * 4 + 0] = uint32[0];
+        sh1to3Data[t * 4 + 1] = (c[0] << SH_R_SHIFT) | (c[1] << SH_G_SHIFT) | c[2];
+        sh1to3Data[t * 4 + 2] = (c[3] << SH_R_SHIFT) | (c[4] << SH_G_SHIFT) | c[5];
+        sh1to3Data[t * 4 + 3] = (c[6] << SH_R_SHIFT) | (c[7] << SH_G_SHIFT) | c[8];
         if (shBands > 1 && sh4to7Data && sh8to11Data) {
-            sh4to7Data[i * 4 + 0] = (c[9] << SH_R_SHIFT) | (c[10] << SH_G_SHIFT) | c[11];
-            sh4to7Data[i * 4 + 1] = (c[12] << SH_R_SHIFT) | (c[13] << SH_G_SHIFT) | c[14];
-            sh4to7Data[i * 4 + 2] = (c[15] << SH_R_SHIFT) | (c[16] << SH_G_SHIFT) | c[17];
-            sh4to7Data[i * 4 + 3] = (c[18] << SH_R_SHIFT) | (c[19] << SH_G_SHIFT) | c[20];
+            sh4to7Data[t * 4 + 0] = (c[9] << SH_R_SHIFT) | (c[10] << SH_G_SHIFT) | c[11];
+            sh4to7Data[t * 4 + 1] = (c[12] << SH_R_SHIFT) | (c[13] << SH_G_SHIFT) | c[14];
+            sh4to7Data[t * 4 + 2] = (c[15] << SH_R_SHIFT) | (c[16] << SH_G_SHIFT) | c[17];
+            sh4to7Data[t * 4 + 3] = (c[18] << SH_R_SHIFT) | (c[19] << SH_G_SHIFT) | c[20];
             if (shBands > 2 && sh12to15Data) {
-                sh8to11Data[i * 4 + 0] = (c[21] << SH_R_SHIFT) | (c[22] << SH_G_SHIFT) | c[23];
-                sh8to11Data[i * 4 + 1] = (c[24] << SH_R_SHIFT) | (c[25] << SH_G_SHIFT) | c[26];
-                sh8to11Data[i * 4 + 2] = (c[27] << SH_R_SHIFT) | (c[28] << SH_G_SHIFT) | c[29];
-                sh8to11Data[i * 4 + 3] = (c[30] << SH_R_SHIFT) | (c[31] << SH_G_SHIFT) | c[32];
-                sh12to15Data[i * 4 + 0] = (c[33] << SH_R_SHIFT) | (c[34] << SH_G_SHIFT) | c[35];
-                sh12to15Data[i * 4 + 1] = (c[36] << SH_R_SHIFT) | (c[37] << SH_G_SHIFT) | c[38];
-                sh12to15Data[i * 4 + 2] = (c[39] << SH_R_SHIFT) | (c[40] << SH_G_SHIFT) | c[41];
-                sh12to15Data[i * 4 + 3] = (c[42] << SH_R_SHIFT) | (c[43] << SH_G_SHIFT) | c[44];
+                sh8to11Data[t * 4 + 0] = (c[21] << SH_R_SHIFT) | (c[22] << SH_G_SHIFT) | c[23];
+                sh8to11Data[t * 4 + 1] = (c[24] << SH_R_SHIFT) | (c[25] << SH_G_SHIFT) | c[26];
+                sh8to11Data[t * 4 + 2] = (c[27] << SH_R_SHIFT) | (c[28] << SH_G_SHIFT) | c[29];
+                sh8to11Data[t * 4 + 3] = (c[30] << SH_R_SHIFT) | (c[31] << SH_G_SHIFT) | c[32];
+                sh12to15Data[t * 4 + 0] = (c[33] << SH_R_SHIFT) | (c[34] << SH_G_SHIFT) | c[35];
+                sh12to15Data[t * 4 + 1] = (c[36] << SH_R_SHIFT) | (c[37] << SH_G_SHIFT) | c[38];
+                sh12to15Data[t * 4 + 2] = (c[39] << SH_R_SHIFT) | (c[40] << SH_G_SHIFT) | c[41];
+                sh12to15Data[t * 4 + 3] = (c[42] << SH_R_SHIFT) | (c[43] << SH_G_SHIFT) | c[44];
             } else {
-                sh8to11Data[i] = (c[21] << SH_R_SHIFT) | (c[22] << SH_G_SHIFT) | c[23];
+                sh8to11Data[t] = (c[21] << SH_R_SHIFT) | (c[22] << SH_G_SHIFT) | c[23];
             }
         }
     }
-    if (upload) {
-        uploadSHRows(resource, a, b);
-    }
 };
 
-// Repack GPU splat data for splats [a, b). With upload=false this writes the
-// CPU level copies only.
-//
-// A caller that cuts a large range into many small repack chunks should pass
-// false, then make one uploadGsplatRows call over the whole range. It then
-// pays the upload cost once instead of once per chunk.
-const updateGsplatRangeData = (
+// Pack n decoded splats from source index s into the resource at index d:
+// colour, transform, centers and, with `withSH`, SH. This writes
+// the CPU copies only; uploadGsplatRows sends the covering rows afterwards,
+// so a caller that packs many small chunks pays the upload once.
+const packGsplatRange = (
     resource: GSplatResource,
-    gsplatData: GSplatData,
-    a: number,
-    b: number,
-    upload = true
+    src: SplatSource,
+    s: number,
+    d: number,
+    n: number,
+    withSH: boolean
 ) => {
-    if (b <= a) {
+    if (n <= 0) {
         return;
     }
-    updateColorRange(resource, gsplatData, a, b, upload);
-    updateTransformRange(resource, gsplatData, a, b, upload);
-    if (resource.shBands > 0) {
-        updateSHRange(resource, gsplatData, a, b, upload);
+    packColor(resource, src, s, d, n);
+    packTransform(resource, src, s, d, n);
+    packCenters(resource, src, s, d, n);
+    if (withSH && resource.shBands > 0) {
+        packSH(resource, src, s, d, n);
     }
 };
 
-// SH-only repack for splats [a, b) — used when deferred SH coefficients
-// arrive after a range's geometry is already live.
-const updateGsplatSHRange = (resource: GSplatResource, gsplatData: GSplatData, a: number, b: number, upload = true) => {
-    if (b <= a || resource.shBands <= 0) {
+// SH-only pack, for deferred SH labels that arrive after a range's geometry
+// is already live.
+const packGsplatSHRange = (resource: GSplatResource, src: SplatSource, s: number, d: number, n: number) => {
+    if (n <= 0 || resource.shBands <= 0) {
         return;
     }
-    updateSHRange(resource, gsplatData, a, b, upload);
+    packSH(resource, src, s, d, n);
 };
 
 // Upload the texture rows covering [a, b) for the streams repacked above.
@@ -270,4 +291,5 @@ const uploadGsplatRows = (resource: GSplatResource, a: number, b: number, shOnly
     uploadSHRows(resource, a, b);
 };
 
-export { updateGsplatRangeData, updateGsplatSHRange, uploadGsplatRows, uploadTextureRows };
+export { packGsplatRange, packGsplatSHRange, uploadGsplatRows, uploadTextureRows };
+export type { SplatSource };

@@ -1,26 +1,14 @@
-import {
-    Asset,
-    Color,
-    createGraphicsDevice,
-    Entity,
-    GSplatResource,
-    Keyboard,
-    Mouse,
-    platform,
-    TouchDevice
-} from 'playcanvas';
-import type { AppBase, EventHandler, TextureHandler } from 'playcanvas';
+import { Asset, Color, createGraphicsDevice, Entity, Keyboard, Mouse, platform, TouchDevice } from 'playcanvas';
+import type { AppBase, EventHandler, GSplatResource, TextureHandler } from 'playcanvas';
 
 import { SogstSplatAnimation } from './animation/sogst-splat-animation';
 import { App } from './app';
 import { fullFileCacheKey, fullFileKeyPrefix } from './core/fetch-splat-anim-buffer';
-import { updateGsplatRangeData, updateGsplatSHRange, uploadGsplatRows } from './core/gsplat-range-sync';
 import { loadSogst, setAabbFromMeta } from './core/load-sogst';
 import { setupSplatAnim } from './core/load-splat-anim';
 import { observe } from './core/observe';
 import { idbDeleteByPrefix, idbGetBuffer, idbGetEntryManifest, idbSetBuffer } from './core/sogst-cache';
 import type { SogstData } from './core/sogst-data';
-import { attachSogstMotion, syncSogstMotionRange, uploadSogstMotionRows } from './core/sogst-motion';
 import { replaySogst, streamSogst } from './core/stream-sogst';
 import { isSogstFilename } from './parsers/sogst';
 import type { Config, Global, LoopMode, State } from './types';
@@ -66,11 +54,14 @@ const loadGsplat = async (app: AppBase, config: Config, progressCallback: (progr
     });
 };
 
-// Create resource + entity + animation for decoded archive data (shared by
-// full-buffer and streaming paths).
+// Put a decoded clip's resource on an entity and attach its animation driver
+// (shared by the full-buffer and streaming paths).
 const setupSogst = (app: AppBase, config: Config, global: Global, data: SogstData) => {
-    const resource = new GSplatResource(app.graphicsDevice, data.gsplatData);
-    attachSogstMotion(resource, data);
+    const resource = data.resource;
+    // Exact bounds from the global meta range. The resource was built from
+    // empty placeholder data before any splat decoded, so the engine's own
+    // bounds describe nothing.
+    setAabbFromMeta(data.meta, resource.aabb);
 
     const animation = new SogstSplatAnimation(data);
     const entity = setupSplatAnim(app, config, global, resource, animation, {
@@ -82,8 +73,8 @@ const setupSogst = (app: AppBase, config: Config, global: Global, data: SogstDat
 };
 
 // Progressive load of a streamed archive: reveal the scene once the
-// persistent group and the first temporal segment are decoded, then keep
-// refreshing GPU data as later segments land (playback holds at the loaded
+// persistent group and the first temporal segment are decoded, then let
+// playback advance as later segments land (playback holds at the loaded
 // boundary via data.loadedThrough if the network falls behind).
 //
 // `open` starts the stream: from the network, or as a replay of the entry
@@ -98,19 +89,17 @@ const loadSogstStreaming = async (
     open: (callbacks: Parameters<typeof streamSogst>[2]) => ReturnType<typeof streamSogst>
 ) => {
     let resource: GSplatResource | null = null;
-    let data: Awaited<ReturnType<typeof loadSogst>> | null = null;
+    let data: SogstData | null = null;
 
-    // GPU repack runs in small chunks against a per-slice time budget —
-    // chunk counts alone can't bound task length on weak devices (the SH
-    // pass dominates at ~45 coeffs per splat, and a throttled CPU can
-    // spend >100ms on a chunk that takes 5ms on a fast one). Uploads are
-    // NOT per repack chunk: slices only write the CPU level copies, and
-    // each queue item ends with row-upload passes bounded to about a
-    // megabyte per task — a single multi-MB texSubImage2D batch into
-    // actively-sampled textures can stall the driver for a frame or more.
-    const SYNC_CHUNK_SPLATS = 256;
-    const SYNC_SLICE_MS = 6;
-    const UPLOAD_CHUNK_SPLATS = 16384;
+    // Teardown guard for the reveal continuation below. An app.destroy()
+    // (an embed host switching scenes while this one is still streaming)
+    // can land while the stream is decoding. The decoder and SogstTarget
+    // guard their own writes and uploads; this flag keeps the code here from
+    // touching a destroyed app.
+    let destroyed = false;
+    app.on('destroy', () => {
+        destroyed = true;
+    });
 
     // Refreshing the depth sorter (centersVersion) re-clones the whole
     // centers buffer to the sort worker and rebuilds the sorted order —
@@ -119,139 +108,39 @@ const loadSogstStreaming = async (
     // cadence during streaming. So the sorter is refreshed exactly once,
     // when the stream completes: until then newly streamed splats render
     // at their correct positions but blend in slightly stale depth order.
-    const bumpCenters = () => {
-        if (resource) {
-            resource.centersVersion++;
-            app.renderNextFrame = true;
-        }
-    };
-
-    // Per-segment GPU refreshes run through a FIFO queue processed in
-    // small slices with yields in between: segments decode behind live
-    // playback, and a whole-segment repack in one task reads as a visible
-    // hitch on weak devices. data.loadedThrough only advances once a
-    // segment's slices have all been pushed to the GPU, so the playhead
-    // can never enter a segment that isn't fully renderable yet.
-    const queue: { range: [number, number] | null; loadedThrough: number | null; sh: boolean }[] = [];
-    let pumping = false;
-
-    // Teardown guard. The pump yields to the UI between slices, so an
-    // app.destroy() — an embed host switching scenes while this one is
-    // still streaming — lands mid-loop and the continuation runs against a
-    // destroyed device. AppBase fires 'destroy' before tearing the device
-    // down, so the flag is set while the loop can still observe it. Every
-    // resumption point below must re-check it: passing the entry check
-    // proves nothing about the state after the next await.
     //
-    // The upload half of that is currently absorbed by accident —
-    // app.destroy() tears down the gsplat resource first, so the textures
-    // are gone and uploadTextureRows() bails on its `!level` check before
-    // touching GL. Don't rely on that: it is incidental ordering, not a
-    // guard, and removing the `!level` early-return would expose a null-GL
-    // write (reported from an embed host as a TypeError on activeTexture).
-    let destroyed = false;
-    app.on('destroy', () => {
-        destroyed = true;
-        queue.length = 0;
-    });
-
-    const yieldToUi = () =>
-        new Promise((resolve) => {
-            setTimeout(resolve, 0);
-        });
-
-    const drain = async () => {
-        while (queue.length > 0) {
-            if (destroyed) {
-                return;
-            }
-            const item = queue.shift()!;
-            if (item.range && resource && data) {
-                const [a, b] = item.range;
-                const centers = resource.centers as Float32Array | undefined;
-                const x = data.gsplatData.getProp('x') as Float32Array;
-                const y = data.gsplatData.getProp('y') as Float32Array;
-                const z = data.gsplatData.getProp('z') as Float32Array;
-                let s = a;
-                while (s < b) {
-                    const sliceStart = performance.now();
-                    while (s < b) {
-                        const e = Math.min(b, s + SYNC_CHUNK_SPLATS);
-                        if (item.sh) {
-                            // deferred SH arrival: geometry for this range
-                            // is already live, only the SH textures change
-                            updateGsplatSHRange(resource, data.gsplatData, s, e, false);
-                        } else {
-                            updateGsplatRangeData(resource, data.gsplatData, s, e, false);
-                            syncSogstMotionRange(resource, data, s, e, false);
-                            if (centers) {
-                                for (let i = s; i < e; i++) {
-                                    centers[i * 3 + 0] = x[i];
-                                    centers[i * 3 + 1] = y[i];
-                                    centers[i * 3 + 2] = z[i];
-                                }
-                            }
-                        }
-                        s = e;
-                        if (performance.now() - sliceStart >= SYNC_SLICE_MS) {
-                            break;
-                        }
-                    }
-
-                    await yieldToUi();
-                    if (destroyed) {
-                        return;
-                    }
-                }
-                for (let u = a; u < b; u += UPLOAD_CHUNK_SPLATS) {
-                    const e = Math.min(b, u + UPLOAD_CHUNK_SPLATS);
-                    uploadGsplatRows(resource, u, e, item.sh);
-                    if (!item.sh) {
-                        uploadSogstMotionRows(resource, u, e);
-                    }
-
-                    await yieldToUi();
-                    if (destroyed) {
-                        return;
-                    }
-                }
-            }
-            if (data && item.loadedThrough !== null) {
-                data.loadedThrough = item.loadedThrough;
-            }
-            if (!item.range) {
-                // end of stream: single sorter refresh over the full scene
-                bumpCenters();
-            }
-            app.renderNextFrame = true;
-        }
-    };
-
-    // Sync wrapper: callers fire and forget. `pumping` is released in a
-    // finally so an early bail-out on teardown cannot strand it set, which
-    // would silently wedge a later pump.
-    const pump = () => {
-        if (pumping || destroyed) {
+    // The decoder packs and uploads each group before it reports the group
+    // ready, so a ready group only moves the playhead limit. A report can
+    // arrive before the entity exists; it is held and applied once it does.
+    let pendingLoadedThrough: number | null = null;
+    let streamEnded = false;
+    let centersRefreshed = false;
+    const apply = () => {
+        if (destroyed || !data || !resource) {
             return;
         }
-        pumping = true;
-        drain().finally(() => {
-            pumping = false;
-        });
+        if (pendingLoadedThrough !== null) {
+            data.loadedThrough = pendingLoadedThrough;
+            pendingLoadedThrough = null;
+        }
+        if (streamEnded && !centersRefreshed) {
+            centersRefreshed = true;
+            resource.centersVersion++;
+        }
+        app.renderNextFrame = true;
     };
 
     const sync = (range: [number, number] | null, loadedThrough: number) => {
-        queue.push({ range, loadedThrough, sh: false });
-        if (resource && data) {
-            pump();
+        pendingLoadedThrough = loadedThrough;
+        if (!range) {
+            streamEnded = true;
         }
+        apply();
     };
 
-    const syncSh = (range: [number, number]) => {
-        queue.push({ range, loadedThrough: null, sh: true });
-        if (resource && data) {
-            pump();
-        }
+    // Deferred SH is already uploaded too; it only needs a redraw.
+    const syncSh = () => {
+        apply();
     };
 
     const stream = open({
@@ -262,12 +151,11 @@ const loadSogstStreaming = async (
 
     data = await stream.reveal;
 
-    // Same teardown race as the pump, but on the reveal continuation and
-    // with a louder failure: setupSogst builds a GSplatResource against
-    // app.graphicsDevice, which app.destroy() has already set to null
-    // (TypeError reading 'isWebGPU'). Nothing downstream of a destroyed app
-    // can do anything useful, so leave the load promise unsettled rather
-    // than handing the caller a scene that belongs to a dead device.
+    // A destroy that lands while the reveal is pending: setupSogst would put
+    // the resource on an entity of a dead app. Nothing downstream of a
+    // destroyed app can do anything useful, so leave the load promise
+    // unsettled rather than handing the caller a scene that belongs to a
+    // dead device.
     if (destroyed) {
         return new Promise<Entity>(() => {
             /* never settles: the app is gone */
@@ -277,13 +165,8 @@ const loadSogstStreaming = async (
     const setup = setupSogst(app, config, global, data);
     resource = setup.resource;
 
-    // exact bounds from the global meta range — the arrays are still
-    // partially filled, so computed bounds would understate the scene
-    setAabbFromMeta(data.meta, resource.aabb);
-
-    // catch up on any groups that decoded while the entity was being set up
-    // (the reveal set itself was picked up at resource creation)
-    pump();
+    // apply any group reports that arrived while the entity was being set up
+    apply();
 
     // Once the archive is cached, drop copies cached under an older
     // validator. A monolithic archive still caches as one buffer.
