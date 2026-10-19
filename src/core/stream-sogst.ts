@@ -66,6 +66,8 @@ type SogstStreamOptions = {
     // Splat budget, in splats. A segmented clip larger than this plays
     // through a segment window (sogst-window.ts) instead of fully resident.
     budget?: number;
+    // Decode on the GPU (sogst-gpu-decode.ts) where supported.
+    gpuDecode?: boolean;
 };
 
 type SogstStreamCallbacks = {
@@ -271,7 +273,9 @@ const createSogstDriver = (
                 }
                 const meta = step.meta;
                 const plan = planSogstCapacity(meta, options.budget);
-                decoder = new SogstDecoder(app, meta, new SogstTarget(app, meta, plan.capacity));
+                decoder = new SogstDecoder(app, meta, new SogstTarget(app, meta, plan.capacity), {
+                    gpu: options.gpuDecode
+                });
                 if (plan.windowed) {
                     segmentWindow = new SogstWindow(
                         meta,
@@ -439,10 +443,11 @@ const streamSogst = (
     url: string,
     callbacks: SogstStreamCallbacks,
     cacheKey: string | null = null,
-    budget?: number
+    budget?: number,
+    gpuDecode?: boolean
 ): SogstStream => {
     const writer = cacheKey ? new EntryUnitWriter(cacheKey) : null;
-    return runSogstStream(app, callbacks, writer, { url, cacheKey, budget }, async (driver) => {
+    return runSogstStream(app, callbacks, writer, { url, cacheKey, budget, gpuDecode }, async (driver) => {
         const response = await fetch(url);
         if (!response.ok) {
             throw new Error(`Failed to fetch ${url}: ${response.status} ${response.statusText}`);
@@ -491,9 +496,10 @@ const replaySogst = (
     manifest: EntryManifest,
     callbacks: SogstStreamCallbacks,
     url: string,
-    budget?: number
+    budget?: number,
+    gpuDecode?: boolean
 ): SogstStream => {
-    return runSogstStream(app, callbacks, null, { url, cacheKey, budget }, async (driver) => {
+    return runSogstStream(app, callbacks, null, { url, cacheKey, budget, gpuDecode }, async (driver) => {
         let received = 0;
         for (let i = 0; i < manifest.sogstUnits; i++) {
             await driver.waitForQueuedDecodes(REPLAY_MAX_QUEUED_DECODES);

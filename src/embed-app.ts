@@ -47,6 +47,12 @@ type EmbedViewerOptions = {
      */
     sogstBudget?: number;
     /**
+     * Decode .sogst content on the GPU where supported (WebGL2 for now).
+     * Default true; false forces the CPU pack workers, the fallback that
+     * WebGPU uses anyway.
+     */
+    sogstGpuDecode?: boolean;
+    /**
      * World-space position for the content entity. Splats are authored at
      * arbitrary origins/scales, so each needs its own adjustment — this also
      * determines where content sits relative to the floor in AR (y=0).
@@ -137,6 +143,7 @@ const createEmbedViewer = async (options: EmbedViewerOptions): Promise<EmbedView
         sogstRotationDeg: options.sogstRotationDeg,
         animLoopMode: options.loopMode,
         sogstBudget: options.sogstBudget,
+        sogstGpuDecode: options.sogstGpuDecode ?? true,
         noui: true,
         noanim: !!options.noanim,
         embed: true,

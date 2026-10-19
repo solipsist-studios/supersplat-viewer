@@ -3,6 +3,7 @@ import type { AppBase } from 'playcanvas';
 import type { SogstMeta } from '../parsers/sogst';
 
 import { SogstData } from './sogst-data';
+import { SogstGpuDecoder } from './sogst-gpu-decode';
 import { SogstPackPool } from './sogst-pack-pool';
 import type { PackedRows, PackMeta, RawTexels } from './sogst-pack-worker';
 import type { SogstTarget } from './sogst-target';
@@ -134,22 +135,33 @@ class SogstDecoder {
     // WebP payloads to texels and the workers only unpack and pack.
     private rawTexels = false;
 
-    constructor(app: AppBase, meta: SogstMeta, target: SogstTarget) {
+    // GPU decode (sogst-gpu-decode.ts), when requested and supported.
+    private gpu: SogstGpuDecoder | null = null;
+
+    constructor(app: AppBase, meta: SogstMeta, target: SogstTarget, options: { gpu?: boolean } = {}) {
         this.app = app;
         this.meta = meta;
         this.target = target;
         this.packMeta = packMetaOf(meta);
         this.pool.init(this.packMeta, null);
+        if (options.gpu && SogstGpuDecoder.supported(app.graphicsDevice)) {
+            this.gpu = new SogstGpuDecoder(app.graphicsDevice, meta, this.packMeta, target, (files, count, priority) =>
+                this.decodeTexels(files, count, priority)
+            );
+        }
     }
 
     // Decodes that can usefully run at once: one per pack worker.
     get concurrency(): number {
-        return this.pool.size;
+        // GPU passes run one at a time; two in flight overlap one install's
+        // WebP decode with another's passes
+        return this.gpu ? 2 : this.pool.size;
     }
 
     setCentroids(bytes: Uint8Array) {
         this.centroids = bytes;
         this.pool.init(this.packMeta, bytes);
+        this.gpu?.setCentroids(bytes);
     }
 
     // Main-thread WebP decode, for the no-WebGL2-in-workers fallback.
@@ -188,6 +200,49 @@ class SogstDecoder {
             }
             return this.pool.run({ ...request, files: await this.texelFiles(request.files) }, priority);
         }
+    }
+
+    // Decode WebP payloads to raw texels in the pack workers, for the GPU
+    // path: one job per file, so a group's files decode in parallel, except
+    // the means pair, which shares a job that also computes the group's
+    // `count` centers (the CPU sorter's input) from it.
+    async decodeTexels(
+        files: Map<string, Uint8Array>,
+        count: number,
+        priority: number
+    ): Promise<{ texels: Record<string, RawTexels>; centers: Float32Array | null }> {
+        const means = ['means_l.webp', 'means_u.webp'];
+        const jobs: string[][] = [];
+        if (means.every((name) => files.has(name))) {
+            jobs.push(means);
+        }
+        for (const name of files.keys()) {
+            if (!jobs[0]?.includes(name)) {
+                jobs.push([name]);
+            }
+        }
+        const results = await Promise.all(
+            jobs.map((names) =>
+                this.pack(
+                    {
+                        files: Object.fromEntries(names.map((name) => [name, files.get(name)!])),
+                        start: 0,
+                        count: names === means ? count : 0,
+                        geometry: false,
+                        sh: false,
+                        mode: 'texels'
+                    },
+                    priority
+                )
+            )
+        );
+        const texels: Record<string, RawTexels> = {};
+        let centers: Float32Array | null = null;
+        for (const result of results) {
+            Object.assign(texels, result.texels);
+            centers = result.centers ?? centers;
+        }
+        return { texels, centers };
     }
 
     // Split a group into jobs, and write and upload each job's rows into the
@@ -261,6 +316,9 @@ class SogstDecoder {
         if (sh && !this.centroids) {
             return Promise.reject(new Error('sogst: shN_centroids payload not provided before group decode'));
         }
+        if (this.gpu) {
+            return this.gpu.decodeGroup(group, files, placement, priority).then(() => onProgress?.(1));
+        }
         return this.run(group, files, placement, true, sh, priority, onProgress);
     }
 
@@ -281,6 +339,9 @@ class SogstDecoder {
         if (!this.centroids) {
             return Promise.reject(new Error('sogst: shN_centroids payload must precede deferred labels'));
         }
+        if (this.gpu) {
+            return this.gpu.decodeGroup(group, new Map([[LABELS_NAME, labels]]), placement, priority);
+        }
         return this.run(group, new Map([[LABELS_NAME, labels]]), placement, false, true, priority);
     }
 
@@ -290,6 +351,7 @@ class SogstDecoder {
 
     destroy() {
         this.pool.destroy();
+        this.gpu?.destroy();
     }
 }
 

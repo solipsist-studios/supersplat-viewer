@@ -290,7 +290,7 @@ const loadSogstGsplat = async (
     const cacheKey = await fullFileCacheKey(config.contentUrl);
     const fromNetwork = () =>
         loadSogstStreaming(app, config, global, cacheKey, progressCallback, (callbacks) =>
-            streamSogst(app, config.contentUrl, callbacks, cacheKey, sogstBudgetSplats(config))
+            streamSogst(app, config.contentUrl, callbacks, cacheKey, sogstBudgetSplats(config), config.sogstGpuDecode)
         );
 
     // A streamed archive cached by unit replays through the streaming path,
@@ -302,7 +302,15 @@ const loadSogstGsplat = async (
         console.debug('SOGST entry cache hit (idb)', cacheKey);
         try {
             return await loadSogstStreaming(app, config, global, cacheKey, progressCallback, (callbacks) =>
-                replaySogst(app, cacheKey, manifest, callbacks, config.contentUrl, sogstBudgetSplats(config))
+                replaySogst(
+                    app,
+                    cacheKey,
+                    manifest,
+                    callbacks,
+                    config.contentUrl,
+                    sogstBudgetSplats(config),
+                    config.sogstGpuDecode
+                )
             );
         } catch (err) {
             console.warn('SOGST cache replay failed; streaming from the network instead:', err);

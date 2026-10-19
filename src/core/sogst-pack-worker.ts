@@ -39,6 +39,11 @@ type PackJobMessage = {
     geometry: boolean;
     // unpack SH (needs shN_labels.webp in files)
     sh: boolean;
+    // 'texels': only decode the WebP files and return their texels (plus
+    // centers for [start, start + count) when the means pair is in files),
+    // for the GPU decode path (sogst-gpu-decode.ts), which unpacks and packs
+    // on the GPU
+    mode?: 'pack' | 'texels';
 };
 
 type RawTexels = { width: number; data: Uint8Array };
@@ -61,6 +66,8 @@ type PackedRows = {
     sh4to7?: Uint32Array;
     sh8to11?: Uint32Array;
     sh12to15?: Uint32Array;
+    // 'texels' mode: decoded payloads keyed by file name
+    texels?: Record<string, RawTexels>;
 };
 
 function sogstPackWorker() {
@@ -157,6 +164,31 @@ function sogstPackWorker() {
         const m = meta!;
         const n = job.count;
         const s0 = job.start;
+        if (job.mode === 'texels') {
+            const texels: Record<string, RawTexels> = {};
+            for (const name of Object.keys(job.files)) {
+                texels[name] = await decodeWebp(job.files[name]);
+            }
+            const out: PackedRows = { texels };
+            const meansL = texels['means_l.webp']?.data;
+            const meansU = texels['means_u.webp']?.data;
+            if (meansL && meansU && n > 0) {
+                // the same positions the geometry pass computes, for the CPU
+                // sorter, which reads them from the resource's centers
+                const { mins, maxs } = m.means;
+                const centers = new Float32Array(n * 3);
+                for (let j = 0; j < n; j++) {
+                    const i = (s0 + j) * 4;
+                    for (let ch = 0; ch < 3; ch++) {
+                        centers[j * 3 + ch] = f32(
+                            unlog(lerp(mins[ch], maxs[ch], ((meansU[i + ch] << 8) + meansL[i + ch]) / 65535))
+                        );
+                    }
+                }
+                out.centers = centers;
+            }
+            return out;
+        }
         const tex8: Record<string, Uint8Array> = {};
         for (const name of Object.keys(job.files)) {
             tex8[name] = (await decodeWebp(job.files[name])).data;
@@ -407,8 +439,12 @@ function sogstPackWorker() {
             const rows = await pack(msg);
             const transfer: ArrayBuffer[] = [];
             for (const value of Object.values(rows)) {
-                if (value) {
+                if (ArrayBuffer.isView(value)) {
                     transfer.push(value.buffer as ArrayBuffer);
+                } else if (value) {
+                    for (const texels of Object.values(value as Record<string, RawTexels>)) {
+                        transfer.push(texels.data.buffer as ArrayBuffer);
+                    }
                 }
             }
             ctx.postMessage({ id: msg.id, rows }, transfer);
