@@ -80,6 +80,11 @@ const pagesFor = (splats: number) => Math.ceil(splats / PAGE_SPLATS);
 // and reads them back from the cache when needed.
 const MAX_OFFERED_SEGMENTS = 4;
 
+// How far ahead of its first use a resident segment's sort is requested.
+// Covers a CPU sort on the slower devices measured (~100–200 ms on a Mac or
+// Vision Pro) plus the frame that applies it.
+const SORT_LEAD_S = 0.4;
+
 // Wait before retrying a segment whose install failed. A failure is usually
 // transient: its cache unit not committed yet, or a network error.
 const RETRY_AFTER_MS = 2000;
@@ -248,6 +253,18 @@ class SogstWindow {
 
     private visible(slot: Slot) {
         return slot.seq <= this.sortedSeq;
+    }
+
+    // True when a resident segment still waiting for its sort is needed
+    // within SORT_LEAD_S (or is needed now, holding the playhead), so the
+    // sort fence should ask for a sort instead of letting patches batch.
+    needsSortSoon(): boolean {
+        for (const [seg, slot] of this.resident) {
+            if (!this.visible(slot) && this.nextUse(seg) < SORT_LEAD_S) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private changed() {

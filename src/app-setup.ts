@@ -9,7 +9,8 @@ import { setupSplatAnim } from './core/load-splat-anim';
 import { observe } from './core/observe';
 import { idbDeleteByPrefix, idbGetBuffer, idbGetEntryManifest, idbSetBuffer } from './core/sogst-cache';
 import type { SogstData } from './core/sogst-data';
-import { SogstSortFence } from './core/sogst-sort-fence';
+import { SogstPatchFence, SogstSortFence } from './core/sogst-sort-fence';
+import { installSogstSorter } from './core/sogst-sorter';
 import { replaySogst, streamSogst } from './core/stream-sogst';
 import { isSogstFilename } from './parsers/sogst';
 import type { Config, Global, LoopMode, State } from './types';
@@ -117,6 +118,10 @@ const loadSogstStreaming = async (
         destroyed = true;
     });
 
+    // The patch-aware CPU sorter's fence (WebGL), once installed: groups and
+    // window installs then reach the sorter as center patches.
+    let patchFence: SogstPatchFence | null = null;
+
     // Refreshing the depth sorter (centersVersion) re-clones the whole
     // centers buffer to the sort worker and rebuilds the sorted order —
     // measured at ~90ms of main-thread + driver-sync work per refresh on
@@ -124,6 +129,9 @@ const loadSogstStreaming = async (
     // cadence during streaming. So the sorter is refreshed exactly once,
     // when the stream completes: until then newly streamed splats render
     // at their correct positions but blend in slightly stale depth order.
+    // Once the patch-aware sorter is installed (WebGL, see below), each
+    // group's centers reach the sorter as it lands instead, and the final
+    // refresh is skipped.
     //
     // The decoder packs and uploads each group before it reports the group
     // ready, so a ready group only moves the playhead limit. A report can
@@ -139,7 +147,9 @@ const loadSogstStreaming = async (
             data.loadedThrough = pendingLoadedThrough;
             pendingLoadedThrough = null;
         }
-        if (streamEnded && !centersRefreshed) {
+        // With the patch-aware sorter every group was patched as it landed,
+        // so the one full refresh at the end is not needed.
+        if (streamEnded && !centersRefreshed && !patchFence) {
             centersRefreshed = true;
             resource.centersVersion++;
         }
@@ -148,6 +158,11 @@ const loadSogstStreaming = async (
 
     const sync = (range: [number, number] | null, loadedThrough: number) => {
         pendingLoadedThrough = loadedThrough;
+        // resident streaming: send the group's centers to the sorter now, so
+        // it draws in order without waiting for the end-of-stream refresh
+        if (range && patchFence && resource && !data?.window) {
+            patchFence.install(resource, [{ src: range[0], dest: range[0], count: range[1] - range[0] }], 0);
+        }
         if (!range) {
             streamEnded = true;
         }
@@ -185,32 +200,64 @@ const loadSogstStreaming = async (
     // copies to its worker only on a centersVersion bump (54 MB for a 4.5M
     // splat resource). A segment drawn before a sort includes its centers
     // blends in the wrong order and pops into place when the sort lands, so
-    // the window holds each new segment back until a bump that includes it
-    // has been sorted (SogstSortFence). Bumps are rate-limited. WebGPU sorts
-    // on the GPU from the work buffer and needs none of this.
-    const segmentWindow = data.window;
-    if (global.renderer === 'webgl' && segmentWindow) {
-        segmentWindow.useSortFence();
-        const bumpFence = new SogstSortFence(app, (seq) => segmentWindow.markSorted(seq));
+    // the window holds each new segment back until then.
+    //
+    // The patch-aware sorter (sogst-sorter.ts) sends just an install's
+    // centers and reports the exact sort that includes them. It takes over
+    // after the first frame, once the engine has created its sorter; until
+    // then, or if this engine build lacks the internals it needs, installs
+    // fall back to rate-limited bumps fenced on sort events
+    // (SogstSortFence). WebGPU sorts on the GPU from the work buffer and
+    // needs none of this.
+    if (global.renderer === 'webgl') {
+        const segmentWindow = data.window;
+        segmentWindow?.useSortFence();
+        const bumpFence = segmentWindow ? new SogstSortFence(app, (seq) => segmentWindow.markSorted(seq)) : null;
         let lastBump = 0;
         let bumpTimer: ReturnType<typeof setTimeout> | null = null;
-        segmentWindow.onInstalled(() => {
+        const scheduleBump = () => {
             if (bumpTimer !== null) {
                 return;
             }
             const wait = Math.max(0, lastBump + MIN_SORTER_REFRESH_MS - performance.now());
             bumpTimer = setTimeout(() => {
                 bumpTimer = null;
-                if (destroyed || !resource) {
+                if (destroyed || !resource || patchFence) {
                     return;
                 }
                 lastBump = performance.now();
                 resource.centersVersion++;
-                bumpFence.fence(segmentWindow.installSeq);
+                bumpFence?.fence(segmentWindow!.installSeq);
                 app.renderNextFrame = true;
             }, wait);
+        };
+        segmentWindow?.onInstalled((placement, installSeq) => {
+            if (patchFence && resource) {
+                patchFence.install(resource, placement, installSeq);
+            } else {
+                scheduleBump();
+            }
         });
-        app.once('destroy', () => bumpFence.destroy());
+        installSogstSorter(app).then((controller) => {
+            if (!controller || destroyed || !resource) {
+                return;
+            }
+            patchFence = new SogstPatchFence(
+                app,
+                controller,
+                (seq) => segmentWindow?.markSorted(seq),
+                () => segmentWindow?.needsSortSoon() ?? false
+            );
+            // the new sorters take the whole centers buffer once, which
+            // covers everything decoded or installed so far
+            resource.centersVersion++;
+            patchFence.fenceAll(segmentWindow?.installSeq ?? 0);
+            app.renderNextFrame = true;
+        });
+        app.once('destroy', () => {
+            bumpFence?.destroy();
+            patchFence?.destroy();
+        });
     }
 
     // apply any group reports that arrived while the entity was being set up
