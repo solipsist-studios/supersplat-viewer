@@ -13,7 +13,9 @@ import { SogstDecoder } from './sogst-decoder';
 import type { SogstGroup } from './sogst-decoder';
 import { SogstGroupAssembler } from './sogst-group-assembler';
 import type { AssemblerResult } from './sogst-group-assembler';
+import { SogstEntryIndex, SogstSegmentSource } from './sogst-segment-source';
 import { SogstTarget } from './sogst-target';
+import { planSogstCapacity, SogstWindow } from './sogst-window';
 import { ZipStreamReader } from './zip';
 
 // Progressive loader for streamed archives.
@@ -49,6 +51,22 @@ import { ZipStreamReader } from './zip';
 // without the limit a replay would queue the whole archive's compressed
 // bytes in memory at once.
 const REPLAY_MAX_QUEUED_DECODES = 2;
+
+// Pack-pool priority of the persistent group's deferred SH in windowed mode,
+// on the window's scale of next-use milliseconds (see SogstWindow): segments
+// the playhead needs within a second go first, since a missing segment
+// stalls playback and missing SH only flattens the shading.
+const PERSISTENT_SH_PRIORITY = 1000;
+
+type SogstStreamOptions = {
+    // Archive URL, for HTTP Range re-fetches of evicted segments.
+    url: string;
+    // IndexedDB key the entry units are (or were) cached under.
+    cacheKey: string | null;
+    // Splat budget, in splats. A segmented clip larger than this plays
+    // through a segment window (sogst-window.ts) instead of fully resident.
+    budget?: number;
+};
 
 type SogstStreamCallbacks = {
     /**
@@ -113,9 +131,16 @@ const createSogstDriver = (
     callbacks: SogstStreamCallbacks,
     revealResolve: (data: SogstData) => void,
     revealReject: (err: Error) => void,
-    writer: EntryUnitWriter | null
+    writer: EntryUnitWriter | null,
+    options: SogstStreamOptions
 ): SogstDriver => {
     const assembler = new SogstGroupAssembler();
+    // Where each cached entry lives (unit and archive offset), for
+    // re-fetching a segment the window evicted. Unit boundaries depend only
+    // on the archive, so a replay numbers the units exactly as the stream
+    // that wrote them did.
+    const index = new SogstEntryIndex();
+    let unitCount = 0;
     // Decode runs on its own queue, so the network loop never waits for it.
     // Running the download behind the decode wastes bandwidth. It also
     // lowers the measured fill rate, and therefore the buffering gate, well
@@ -124,6 +149,11 @@ const createSogstDriver = (
     const fill = new FillHistory();
     let decoder: SogstDecoder | null = null;
     let data: SogstData | null = null;
+    // Set when the clip plays windowed. Segment groups then go to the
+    // window, which decides what to decode and where; only the persistent
+    // group (and its SH) decodes here.
+    let segmentWindow: SogstWindow | null = null;
+    let persistentDone = false;
 
     // reveal state: the group whose decode completes the reveal set (the
     // persistent group plus the first temporal segment), and whether the
@@ -178,7 +208,29 @@ const createSogstDriver = (
         }
     };
 
+    // Windowed reveal: once the persistent group is decoded and the window
+    // holds every segment the first frame needs. The window gates the
+    // playhead from then on, so there is no buffer gate here.
+    const checkWindowReveal = () => {
+        if (segmentWindow && !revealed && persistentDone && segmentWindow.isReady(assembler.meta?.time?.min ?? 0)) {
+            doReveal();
+        }
+    };
+
+    const onPersistentDecoded = () => {
+        persistentDone = true;
+        decodedThrough = Infinity;
+        data = decoder!.buildData();
+        data.window = segmentWindow;
+        checkWindowReveal();
+    };
+
     const onGroupDecoded = (index: number, group: SogstGroup) => {
+        if (segmentWindow) {
+            // windowed, only the persistent group decodes here
+            onPersistentDecoded();
+            return;
+        }
         const meta = assembler.meta!;
         if (index >= revealGroupIdx) {
             decodedThrough = loadedThroughAfter(meta, assembler.groups, index);
@@ -203,6 +255,10 @@ const createSogstDriver = (
     // needs.
     const apply = ({ step, unit }: AssemblerResult) => {
         if (unit) {
+            index.record(
+                unitCount++,
+                unit.map((e) => ({ name: e.name, offset: e.offset, size: e.bytes.byteLength }))
+            );
             writer?.add(unit);
         }
         if (!step) {
@@ -213,7 +269,24 @@ const createSogstDriver = (
                 if (step.monolithic) {
                     return;
                 }
-                decoder = new SogstDecoder(app, step.meta, new SogstTarget(app, step.meta, step.meta.count));
+                const meta = step.meta;
+                const plan = planSogstCapacity(meta, options.budget);
+                decoder = new SogstDecoder(app, meta, new SogstTarget(app, meta, plan.capacity));
+                if (plan.windowed) {
+                    segmentWindow = new SogstWindow(
+                        meta,
+                        decoder,
+                        decoder.target,
+                        new SogstSegmentSource(options.url, options.cacheKey, index),
+                        meta.segments.persistent[1]
+                    );
+                    segmentWindow.onChange(checkWindowReveal);
+                    app.once('destroy', () => segmentWindow?.destroy());
+                    if (!assembler.groups.some((g) => g.segIndex < 0)) {
+                        // no persistent splats to wait for
+                        onPersistentDecoded();
+                    }
+                }
                 const firstSegment = assembler.groups.findIndex((g) => g.segIndex >= 0);
                 revealGroupIdx = firstSegment >= 0 ? firstSegment : assembler.groups.length - 1;
                 return;
@@ -222,14 +295,27 @@ const createSogstDriver = (
                 decoder!.setCentroids(step.bytes);
                 return;
             case 'labels':
+                if (segmentWindow && step.group.segIndex >= 0) {
+                    segmentWindow.offerLabels(step.group.segIndex, step.bytes);
+                    return;
+                }
                 // trailing SH pass: the group's geometry is long since
                 // decoded and possibly playing DC-only
                 decodes.push(async () => {
-                    await decoder!.decodeGroupSH(step.group, step.bytes);
+                    await decoder!.decodeGroupSH(
+                        step.group,
+                        step.bytes,
+                        step.group.range[0],
+                        segmentWindow ? PERSISTENT_SH_PRIORITY : 0
+                    );
                     callbacks.onShReady?.(step.group.range);
                 });
                 return;
             case 'group':
+                if (segmentWindow && step.group.segIndex >= 0) {
+                    segmentWindow.offer(step.group.segIndex, step.files);
+                    return;
+                }
                 decodes.push(async () => {
                     await decoder!.decodeGroup(step.group, step.files);
                     onGroupDecoded(step.index, step.group);
@@ -258,6 +344,11 @@ const createSogstDriver = (
         apply(assembler.finish());
         // drain all queued decodes; this also raises any decode error
         await decodes.drain();
+        if (segmentWindow && persistentDone && !revealed) {
+            // Nothing more will arrive to wait for; the window holds the
+            // playhead until the first segments are installed.
+            doReveal();
+        }
         if (revealPending && !revealed) {
             // the download finished, so there is nothing left to buffer
             // against
@@ -269,7 +360,11 @@ const createSogstDriver = (
         if (data) {
             callbacks.onReady(null, Infinity);
         }
-        decoder?.destroy();
+        // A window keeps decoding segments for the life of the clip, and
+        // destroys the decoder with itself.
+        if (!segmentWindow) {
+            decoder?.destroy();
+        }
         // The manifest goes last, so a stream that failed above leaves no
         // cache hit behind.
         await writer?.finish(totalBytes);
@@ -282,6 +377,9 @@ const createSogstDriver = (
     };
 
     const fail = (err: Error) => {
+        if (!revealed) {
+            segmentWindow?.destroy();
+        }
         decoder?.destroy();
         // Before the reveal nobody else holds the resource, and a caller that
         // falls back to the network builds a second one. Free this one first,
@@ -310,6 +408,7 @@ const runSogstStream = (
     app: AppBase,
     callbacks: SogstStreamCallbacks,
     writer: EntryUnitWriter | null,
+    options: SogstStreamOptions,
     source: (driver: SogstDriver) => Promise<ArrayBuffer | null>
 ): SogstStream => {
     let revealResolve: (data: SogstData) => void;
@@ -319,7 +418,7 @@ const runSogstStream = (
         revealReject = reject;
     });
 
-    const driver = createSogstDriver(app, callbacks, revealResolve, revealReject, writer);
+    const driver = createSogstDriver(app, callbacks, revealResolve, revealReject, writer, options);
     const complete = source(driver).catch((err: Error) => {
         driver.fail(err);
         throw err;
@@ -339,10 +438,11 @@ const streamSogst = (
     app: AppBase,
     url: string,
     callbacks: SogstStreamCallbacks,
-    cacheKey: string | null = null
+    cacheKey: string | null = null,
+    budget?: number
 ): SogstStream => {
     const writer = cacheKey ? new EntryUnitWriter(cacheKey) : null;
-    return runSogstStream(app, callbacks, writer, async (driver) => {
+    return runSogstStream(app, callbacks, writer, { url, cacheKey, budget }, async (driver) => {
         const response = await fetch(url);
         if (!response.ok) {
             throw new Error(`Failed to fetch ${url}: ${response.status} ${response.statusText}`);
@@ -389,9 +489,11 @@ const replaySogst = (
     app: AppBase,
     cacheKey: string,
     manifest: EntryManifest,
-    callbacks: SogstStreamCallbacks
+    callbacks: SogstStreamCallbacks,
+    url: string,
+    budget?: number
 ): SogstStream => {
-    return runSogstStream(app, callbacks, null, async (driver) => {
+    return runSogstStream(app, callbacks, null, { url, cacheKey, budget }, async (driver) => {
         let received = 0;
         for (let i = 0; i < manifest.sogstUnits; i++) {
             await driver.waitForQueuedDecodes(REPLAY_MAX_QUEUED_DECODES);

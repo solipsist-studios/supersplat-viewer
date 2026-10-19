@@ -49,6 +49,7 @@ By default the viewer uses WebGPU when available (falling back automatically whe
 | `nofx` | Disable post effects |
 | `hpr` | Override `highPrecisionRendering` from settings (`?hpr`, `?hpr=1`, `?hpr=true`, `?hpr=enable` to enable) |
 | `budget` | Override the splat budget, in millions of splats |
+| `sogstbudget` | Splat budget for `.sogst` content, in millions of splats. A segmented clip larger than this keeps only the segments near the playhead decoded, and re-reads the rest from the cache (or the network) as playback reaches them. Unset, clips play fully resident. |
 | `colorize` | Render with LOD colorization |
 | `fullload` | Load all streaming LOD data before the first frame |
 | `heatmap` | Use heatmap mode for the voxel collision debug overlay. Requires WebGPU and voxel collision data; press `V` or use the collision toolbar button to show the overlay. |

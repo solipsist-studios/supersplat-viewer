@@ -110,7 +110,7 @@ class SogstTarget {
         });
         // A lost graphics context takes the resource's GPU data with it, and
         // every later upload or pass only adds errors. Stop decoding and
-        // uploading, and say why once.
+        // uploading (the window stops installing too), and say why once.
         app.graphicsDevice.once('devicelost', () => {
             this.destroyed = true;
             console.error('sogst: graphics context lost; .sogst decoding stopped (reload to recover)');
@@ -170,6 +170,25 @@ class SogstTarget {
             }
             await yieldToUi();
         }
+    }
+
+    // Zero the SH of [a, b) and upload it. For a slot that is getting a
+    // segment without its SH: the slot may hold an earlier segment's SH, and
+    // a zero scale word decodes every coefficient to zero.
+    clearSH(a: number, b: number) {
+        if (this.destroyed || this.resource.shBands <= 0) {
+            return Promise.resolve();
+        }
+        const streams = this.resource.streams;
+        const clear = (name: string, words: number) => {
+            const level = streams.getTexture(name)?._levels?.[0] as Uint32Array | undefined;
+            level?.fill(0, a * words, b * words);
+        };
+        clear('splatSH_1to3', 4);
+        clear('splatSH_4to7', 4);
+        clear('splatSH_8to11', this.resource.shBands > 2 ? 4 : 1);
+        clear('splatSH_12to15', 4);
+        return this.upload(a, b, true);
     }
 
     // Release the GPU resource. Only for a load that failed before the

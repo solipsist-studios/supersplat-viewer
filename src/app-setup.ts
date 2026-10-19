@@ -9,6 +9,7 @@ import { setupSplatAnim } from './core/load-splat-anim';
 import { observe } from './core/observe';
 import { idbDeleteByPrefix, idbGetBuffer, idbGetEntryManifest, idbSetBuffer } from './core/sogst-cache';
 import type { SogstData } from './core/sogst-data';
+import { SogstSortFence } from './core/sogst-sort-fence';
 import { replaySogst, streamSogst } from './core/stream-sogst';
 import { isSogstFilename } from './parsers/sogst';
 import type { Config, Global, LoopMode, State } from './types';
@@ -70,6 +71,21 @@ const setupSogst = (app: AppBase, config: Config, global: Global, data: SogstDat
     });
     animation.bind(entity, data.cov2dScale);
     return { resource, entity };
+};
+
+// Least time between CPU-sorter refreshes while a segment window installs
+// segments. A refresh costs ~90 ms (see loadSogstStreaming), so this bounds
+// that cost to a fraction of playback time. A new segment waits for the
+// next refresh to be sorted before it draws, so this also adds up to this
+// long to an install's latency.
+const MIN_SORTER_REFRESH_MS = 200;
+
+// The .sogst splat budget in splats, from the config's millions.
+const sogstBudgetSplats = (config: Config): number | undefined => {
+    const millions = config.sogstBudget;
+    return millions !== undefined && Number.isFinite(millions) && millions > 0
+        ? Math.round(millions * 1000000)
+        : undefined;
 };
 
 // Progressive load of a streamed archive: reveal the scene once the
@@ -165,6 +181,38 @@ const loadSogstStreaming = async (
     const setup = setupSogst(app, config, global, data);
     resource = setup.resource;
 
+    // The CPU sorter (WebGL) sorts from the resource's centers, which it
+    // copies to its worker only on a centersVersion bump (54 MB for a 4.5M
+    // splat resource). A segment drawn before a sort includes its centers
+    // blends in the wrong order and pops into place when the sort lands, so
+    // the window holds each new segment back until a bump that includes it
+    // has been sorted (SogstSortFence). Bumps are rate-limited. WebGPU sorts
+    // on the GPU from the work buffer and needs none of this.
+    const segmentWindow = data.window;
+    if (global.renderer === 'webgl' && segmentWindow) {
+        segmentWindow.useSortFence();
+        const bumpFence = new SogstSortFence(app, (seq) => segmentWindow.markSorted(seq));
+        let lastBump = 0;
+        let bumpTimer: ReturnType<typeof setTimeout> | null = null;
+        segmentWindow.onInstalled(() => {
+            if (bumpTimer !== null) {
+                return;
+            }
+            const wait = Math.max(0, lastBump + MIN_SORTER_REFRESH_MS - performance.now());
+            bumpTimer = setTimeout(() => {
+                bumpTimer = null;
+                if (destroyed || !resource) {
+                    return;
+                }
+                lastBump = performance.now();
+                resource.centersVersion++;
+                bumpFence.fence(segmentWindow.installSeq);
+                app.renderNextFrame = true;
+            }, wait);
+        });
+        app.once('destroy', () => bumpFence.destroy());
+    }
+
     // apply any group reports that arrived while the entity was being set up
     apply();
 
@@ -195,7 +243,7 @@ const loadSogstGsplat = async (
     const cacheKey = await fullFileCacheKey(config.contentUrl);
     const fromNetwork = () =>
         loadSogstStreaming(app, config, global, cacheKey, progressCallback, (callbacks) =>
-            streamSogst(app, config.contentUrl, callbacks, cacheKey)
+            streamSogst(app, config.contentUrl, callbacks, cacheKey, sogstBudgetSplats(config))
         );
 
     // A streamed archive cached by unit replays through the streaming path,
@@ -207,7 +255,7 @@ const loadSogstGsplat = async (
         console.debug('SOGST entry cache hit (idb)', cacheKey);
         try {
             return await loadSogstStreaming(app, config, global, cacheKey, progressCallback, (callbacks) =>
-                replaySogst(app, cacheKey, manifest, callbacks)
+                replaySogst(app, cacheKey, manifest, callbacks, config.contentUrl, sogstBudgetSplats(config))
             );
         } catch (err) {
             console.warn('SOGST cache replay failed; streaming from the network instead:', err);
