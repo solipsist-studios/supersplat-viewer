@@ -5,6 +5,7 @@ import type { SogstMeta } from '../parsers/sogst';
 
 import { uploadGsplatRows } from './gsplat-range-sync';
 import { createSogstMotionTextures, uploadSogstMotionRows } from './sogst-motion';
+import type { PackedRows } from './sogst-pack-worker';
 
 // The GPU-side destination of a .sogst decode: one GSplatResource of a fixed
 // splat capacity, plus the motion textures, created before any splat
@@ -107,6 +108,52 @@ class SogstTarget {
         app.once('destroy', () => {
             this.destroyed = true;
         });
+        // A lost graphics context takes the resource's GPU data with it, and
+        // every later upload or pass only adds errors. Stop decoding and
+        // uploading, and say why once.
+        app.graphicsDevice.once('devicelost', () => {
+            this.destroyed = true;
+            console.error('sogst: graphics context lost; .sogst decoding stopped (reload to recover)');
+        });
+    }
+
+    // Copy a pack job's rows (sogst-pack-worker.ts) into the textures' CPU
+    // copies, and the centers, at splat index `d`: the job's splats
+    // [from, from + count), or all of them. upload() sends them.
+    writeRows(d: number, rows: PackedRows, from = 0, count?: number) {
+        if (this.destroyed) {
+            return;
+        }
+        const textures = this.resource.streams.textures;
+        const put = (name: string, data: ArrayLike<number> | undefined, perSplat: number) => {
+            if (!data) {
+                return;
+            }
+            const level = textures.get(name)?._levels?.[0] as Uint16Array | Uint32Array | Float32Array | undefined;
+            if (!level) {
+                throw new Error(`sogst: stream ${name} has no CPU copy`);
+            }
+            const view = data as Uint16Array | Uint32Array | Float32Array;
+            const n = count ?? view.length / perSplat - from;
+            level.set(view.subarray(from * perSplat, (from + n) * perSplat), d * perSplat);
+        };
+        put('splatColor', rows.color, 4);
+        put('transformA', rows.transformA, 4);
+        put('transformB', rows.transformB, 4);
+        put('splatSH_1to3', rows.sh1to3, 4);
+        put('splatSH_4to7', rows.sh4to7, 4);
+        put('splatSH_8to11', rows.sh8to11, this.resource.shBands > 2 ? 4 : 1);
+        put('splatSH_12to15', rows.sh12to15, 4);
+        put('splatMotion', rows.motion, 4);
+        put('splatTemporal', rows.temporal, 1);
+        put('splatAccel', rows.accel, 4);
+        if (rows.centers) {
+            const n = count ?? rows.centers.length / 3 - from;
+            (this.resource.centers as Float32Array | undefined)?.set(
+                rows.centers.subarray(from * 3, (from + n) * 3),
+                d * 3
+            );
+        }
     }
 
     // Upload the rows covering [a, b) of every stream, in bounded passes.

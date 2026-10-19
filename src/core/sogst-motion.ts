@@ -319,20 +319,10 @@ fn modifySplatColor(center: vec3f, color: ptr<function, vec4f>) {
 }
 `;
 
-// Decoded temporal attributes for a run of splats, in the source layout the
-// decoder fills: per-axis velocity (units/sec), t_center and t_sigma (sec),
-// and the optional degree-2 coefficients.
-type SogstMotionSource = {
-    velocity: [Float32Array, Float32Array, Float32Array];
-    accel: [Float32Array, Float32Array, Float32Array] | null;
-    tCenter: Float32Array;
-    tSigma: Float32Array;
-};
-
 // Create the per-splat motion/temporal textures, empty, and register them with
 // the resource's stream collection so they are bound to the work-buffer
 // material. Must be called before the entity's gsplat component receives the
-// resource. packSogstMotion fills them as splats decode.
+// resource. The decoder fills them as splats decode.
 const createSogstMotionTextures = (resource: GSplatResource, accel: boolean) => {
     const streams = resource.streams;
     const dims = streams.textureDimensions;
@@ -362,39 +352,6 @@ const uploadSogstMotionRows = (resource: GSplatResource, a: number, b: number) =
     const accelTex = streams.textures.get('splatAccel');
     if (accelTex) {
         uploadTextureRows(accelTex, 4, a, b);
-    }
-};
-
-// Pack n splats of decoded temporal attributes from source index s into the
-// motion textures' CPU copies at resource index d. Like packGsplatRange, this
-// does not upload; uploadSogstMotionRows sends the rows afterwards.
-const packSogstMotion = (resource: GSplatResource, src: SogstMotionSource, s: number, d: number, n: number) => {
-    const streams = resource.streams;
-    const motion = streams.textures.get('splatMotion')?._levels?.[0] as Float32Array | undefined;
-    const temporal = streams.textures.get('splatTemporal')?._levels?.[0] as Float32Array | undefined;
-    if (!motion || !temporal) {
-        throw new Error('sogst: motion textures have no CPU copy');
-    }
-    const [vx, vy, vz] = src.velocity;
-    for (let j = 0; j < n; j++) {
-        const i = s + j;
-        const o = d + j;
-        motion[o * 4 + 0] = vx[i];
-        motion[o * 4 + 1] = vy[i];
-        motion[o * 4 + 2] = vz[i];
-        motion[o * 4 + 3] = src.tCenter[i];
-        temporal[o] = src.tSigma[i];
-    }
-    const accel = streams.textures.get('splatAccel')?._levels?.[0] as Float32Array | undefined;
-    if (accel && src.accel) {
-        const [ax, ay, az] = src.accel;
-        for (let j = 0; j < n; j++) {
-            const i = s + j;
-            const o = d + j;
-            accel[o * 4 + 0] = ax[i];
-            accel[o * 4 + 1] = ay[i];
-            accel[o * 4 + 2] = az[i];
-        }
     }
 };
 
@@ -485,5 +442,4 @@ const setSogstParams = (
     }
 };
 
-export { bindSogstModifier, createSogstMotionTextures, packSogstMotion, setSogstParams, uploadSogstMotionRows };
-export type { SogstMotionSource };
+export { bindSogstModifier, createSogstMotionTextures, setSogstParams, uploadSogstMotionRows };
