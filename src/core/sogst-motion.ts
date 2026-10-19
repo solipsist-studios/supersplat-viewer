@@ -186,11 +186,19 @@ void modifySplatColor(vec3 center, inout vec4 color) {
 }
 `;
 
+// The motion, temporal and accel textures are 32-bit float, which core
+// WebGPU treats as unfilterable unless the adapter has the optional
+// float32-filterable feature. The engine builds each bind group from these
+// declarations, and a plain texture_2d<f32> asks for a filterable binding:
+// on an adapter without the feature (most mobile ones) the bind group fails
+// validation and nothing renders. The engine's 'uff' type declares them
+// unfilterable; the chunk only reads them with textureLoad, which needs no
+// filtering.
 const wgslModifyChunk = /* wgsl */ `
-var splatMotion: texture_2d<f32>;
-var splatTemporal: texture_2d<f32>;
+var splatMotion: texture_2d<uff>;
+var splatTemporal: texture_2d<uff>;
 #ifdef SOGST_ACCEL
-var splatAccel: texture_2d<f32>;
+var splatAccel: texture_2d<uff>;
 #endif // SOGST_ACCEL
 uniform sogstTime: f32;
 uniform sogstModelRotation: vec4f;
