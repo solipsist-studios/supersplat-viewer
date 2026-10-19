@@ -31,7 +31,7 @@ type Config = {
     aa: boolean; // render with antialiasing
     budget?: number; // override splat budget in millions (overrides platform + performanceMode table)
     sogstBudget?: number; // .sogst splat budget in millions: a segmented clip larger than this plays through a segment window
-    sogstGpuDecode: boolean; // decode .sogst groups on the GPU where supported (WebGL2); false forces the CPU pack workers
+    sogstGpuDecode: boolean; // decode .sogst groups on the GPU (WebGL2 or WebGPU); false forces the CPU pack workers
     renderer: 'webgl' | 'webgpu'; // requested renderer; the actual one (after engine fallback) is exposed as Global.renderer
     heatmap: boolean; // render heatmap debug overlay (WebGPU only)
     debug: boolean; // auto-open the developer debug panel; can also be toggled with Ctrl+Shift+D

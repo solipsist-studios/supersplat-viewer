@@ -1,6 +1,10 @@
 import {
     drawQuadWithShader,
     PIXELFORMAT_R32F,
+    PIXELFORMAT_R32U,
+    PIXELFORMAT_RGBA16F,
+    PIXELFORMAT_RGBA32F,
+    PIXELFORMAT_RGBA32U,
     PIXELFORMAT_RGBA8,
     RenderTarget,
     SEMANTIC_POSITION,
@@ -12,6 +16,7 @@ import type { GraphicsDevice, Shader } from 'playcanvas';
 
 import type { SogstMeta } from '../parsers/sogst';
 
+import { writeTexelBlock } from './gsplat-range-sync';
 import { SH_TEXTURES, shCoefficients, shTextureCount, shWords, WORDS_PER_TEXEL } from './sh-textures';
 import type { SogstGroup, SplatPlacement } from './sogst-decoder';
 import type { PackMeta, RawTexels } from './sogst-pack-worker';
@@ -32,8 +37,20 @@ import type { SogstTarget } from './sogst-target';
 //
 // The CPU sorter (WebGL) still needs the centers on the CPU; the worker that
 // decodes the means pair computes them, so nothing is read back from the
-// GPU. The passes are GLSL, so this runs on WebGL2 only; WebGPU uses the
-// CPU path until they have WGSL versions.
+// GPU. (WebGPU sorts on the GPU and ignores them.)
+//
+// Each pass exists in GLSL (WebGL2) and WGSL (WebGPU). Two WebGPU rules
+// shape the WGSL side:
+//
+// - A pass's outputs together may write at most the device's
+//   maxColorAttachmentBytesPerSample per pixel: 32 bytes unless the adapter
+//   allows more. The temporal pass with accel writes 36 and the SH3 pass 64,
+//   so on WebGPU a pass whose outputs exceed the limit is split into
+//   several, each writing the outputs that fit (passGroups).
+// - Staging textures are rewritten through the queue, which runs at once,
+//   while the passes are only recorded until the device submits. The
+//   decoder therefore submits after each group's passes, before another
+//   group can rewrite the staging textures.
 //
 // An earlier version decoded with createImageBitmap on the main thread and
 // read centers back with readPixels: on Vision Pro those cost ~1.2 s and
@@ -240,6 +257,241 @@ void main(void) {
 `;
 };
 
+const COMMON_WGSL = /* wgsl */ `
+uniform uDest: i32;
+uniform uCount: i32;
+uniform uSrcStart: i32;
+uniform uSrcWidth: i32;
+uniform uDstWidth: i32;
+var codebooks: texture_2d<uff>;
+
+// constants as in COMMON_GLSL
+const BYTE_MAX: f32 = 255.0;
+const U16_MAX: f32 = 65535.0;
+
+fn byteOf(v: f32) -> i32 {
+    return i32(v * BYTE_MAX + 0.5);
+}
+
+// Source textures are reused staging textures, often larger than the
+// group, so the group's own width comes in as a uniform.
+fn srcUV(s: i32) -> vec2i {
+    return vec2i(s % uniform.uSrcWidth, s / uniform.uSrcWidth);
+}
+
+fn cb(row: i32, v: f32) -> f32 {
+    return textureLoad(codebooks, vec2i(byteOf(v), row), 0).r;
+}
+
+fn unlog(v: vec3f) -> vec3f {
+    return sign(v) * (exp(abs(v)) - 1.0);
+}
+
+fn split16(lo: vec3f, hi: vec3f, mins: vec3f, maxs: vec3f) -> vec3f {
+    let lo8 = floor(lo * BYTE_MAX + 0.5);
+    let hi8 = floor(hi * BYTE_MAX + 0.5);
+    return unlog(mix(mins, maxs, (lo8 + hi8 * 256.0) / U16_MAX));
+}
+`;
+
+// A WGSL pass: module-scope declarations, and a body that computes the
+// pass's outputs as o0, o1, ... for the source texel `uv`. The entry point
+// writes the outputs listed in `outs`, in order, to color, color1, ...
+const wgslPass = (decls: string, body: string, outs: number[]) => /* wgsl */ `
+${COMMON_WGSL}
+${decls}
+
+@fragment
+fn fragmentMain(input: FragmentInput) -> FragmentOutput {
+    var output: FragmentOutput;
+    // the pass writes the run [uDest, uDest + uCount) from source
+    // [uSrcStart, ...)
+    let p = vec2i(input.position.xy);
+    let local = p.x + p.y * uniform.uDstWidth - uniform.uDest;
+    if (local < 0 || local >= uniform.uCount) {
+        discard;
+        return output;
+    }
+    let uv = srcUV(local + uniform.uSrcStart);
+${body}
+${outs.map((o, i) => `    output.color${i > 0 ? i : ''} = o${o};`).join('\n')}
+    return output;
+}
+`;
+
+const GEOMETRY_WGSL_DECLS = /* wgsl */ `
+var means_l: texture_2d<f32>;
+var means_u: texture_2d<f32>;
+var quats: texture_2d<f32>;
+var scales: texture_2d<f32>;
+var sh0: texture_2d<f32>;
+uniform means_mins: vec3f;
+uniform means_maxs: vec3f;
+
+// as in GEOMETRY_GLSL
+const QUAT_RANGE: f32 = 1.41421356237; // sqrt(2)
+const QUAT_MODE_BASE: i32 = 252;
+const SH_C0: f32 = 0.28209479177387814;
+`;
+
+const GEOMETRY_WGSL_BODY = /* wgsl */ `
+    let pos = split16(
+        textureLoad(means_l, uv, 0).xyz,
+        textureLoad(means_u, uv, 0).xyz,
+        uniform.means_mins,
+        uniform.means_maxs
+    );
+
+    let q = textureLoad(quats, uv, 0);
+    let a = (q.r - 0.5) * QUAT_RANGE;
+    let b = (q.g - 0.5) * QUAT_RANGE;
+    let c = (q.b - 0.5) * QUAT_RANGE;
+    let d = sqrt(max(0.0, 1.0 - (a * a + b * b + c * c)));
+    let mode = byteOf(q.a) - QUAT_MODE_BASE;
+    var r = vec4f(b, c, d, a);
+    if (mode == 0) {
+        r = vec4f(a, b, c, d);
+    } else if (mode == 1) {
+        r = vec4f(d, b, c, a);
+    } else if (mode == 2) {
+        r = vec4f(b, d, c, a);
+    }
+    let len = length(r);
+    if (len == 0.0) {
+        r = vec4f(0.0, 0.0, 0.0, 1.0);
+    } else {
+        r = r / len;
+    }
+    if (r.w < 0.0) {
+        r = -r;
+    }
+
+    let sc = textureLoad(scales, uv, 0);
+    let col = textureLoad(sh0, uv, 0);
+
+    let o0 = vec4f(0.5 + vec3f(cb(${CB_SH0}, col.r), cb(${CB_SH0}, col.g), cb(${CB_SH0}, col.b)) * SH_C0, col.a);
+    let o1 = vec4u(bitcast<vec3u>(pos), pack2x16float(r.xy));
+    let o2 = vec4f(exp(vec3f(cb(${CB_SCALES}, sc.r), cb(${CB_SCALES}, sc.g), cb(${CB_SCALES}, sc.b))), r.z);
+`;
+
+const temporalWgslDecls = (accel: boolean) => /* wgsl */ `
+var motion_l: texture_2d<f32>;
+var motion_u: texture_2d<f32>;
+var trbf: texture_2d<f32>;
+uniform motion_mins: vec3f;
+uniform motion_maxs: vec3f;
+${accel ? 'var accel_l: texture_2d<f32>;\nvar accel_u: texture_2d<f32>;\nuniform accel_mins: vec3f;\nuniform accel_maxs: vec3f;' : ''}
+`;
+
+const temporalWgslBody = (accel: boolean) => /* wgsl */ `
+    let t = textureLoad(trbf, uv, 0);
+    let motion = split16(
+        textureLoad(motion_l, uv, 0).xyz,
+        textureLoad(motion_u, uv, 0).xyz,
+        uniform.motion_mins,
+        uniform.motion_maxs
+    );
+    let o0 = vec4f(motion, cb(${CB_TCENTER}, t.r));
+    let o1 = vec4f(cb(${CB_TSIGMA}, t.g), 0.0, 0.0, 0.0);
+    ${
+        accel
+            ? `let o2 = vec4f(split16(
+        textureLoad(accel_l, uv, 0).xyz,
+        textureLoad(accel_u, uv, 0).xyz,
+        uniform.accel_mins,
+        uniform.accel_maxs
+    ), 0.0);`
+            : ''
+    }
+`;
+
+const SH_WGSL_DECLS = /* wgsl */ `
+var sh_labels: texture_2d<f32>;
+var sh_centroids: texture_2d<f32>;
+
+// as in shGlsl
+const CENTROIDS_PER_ROW: i32 = 64;
+const SH_R_MAX: f32 = 2047.0;
+const SH_G_MAX: f32 = 1023.0;
+const SH_B_MAX: f32 = 2047.0;
+const SH_R_SHIFT: u32 = 21u;
+const SH_G_SHIFT: u32 = 11u;
+
+fn quantize(v: f32, mx: f32, levels: f32) -> u32 {
+    return u32(clamp(floor((v / mx * 0.5 + 0.5) * levels + 0.5), 0.0, levels));
+}
+
+fn word(r: f32, g: f32, b: f32, mx: f32) -> u32 {
+    return (quantize(r, mx, SH_R_MAX) << SH_R_SHIFT) | (quantize(g, mx, SH_G_MAX) << SH_G_SHIFT) | quantize(b, mx, SH_B_MAX);
+}
+`;
+
+const shWgslBody = (bands: number) => {
+    const coeffs = shCoefficients(bands);
+    return /* wgsl */ `
+    let l = textureLoad(sh_labels, uv, 0);
+    let label = byteOf(l.r) + byteOf(l.g) * 256;
+    let u = (label % CENTROIDS_PER_ROW) * ${coeffs};
+    let v = label / CENTROIDS_PER_ROW;
+    var c: array<f32, ${coeffs * 3}>;
+    for (var k = 0; k < ${coeffs}; k++) {
+        let t = textureLoad(sh_centroids, vec2i(u + k, v), 0);
+        c[k * 3] = cb(${CB_SHN}, t.r);
+        c[k * 3 + 1] = cb(${CB_SHN}, t.g);
+        c[k * 3 + 2] = cb(${CB_SHN}, t.b);
+    }
+    var mx = c[0];
+    for (var j = 1; j < ${coeffs * 3}; j++) {
+        mx = max(mx, abs(c[j]));
+    }
+    // the scale word, then one word per coefficient (sh-textures.ts)
+    var w: array<u32, ${shWords(bands)}>;
+    if (mx != 0.0) {
+        w[0] = bitcast<u32>(mx);
+        for (var k = 0; k < ${coeffs}; k++) {
+            w[k + 1] = word(c[k * 3], c[k * 3 + 1], c[k * 3 + 2], mx);
+        }
+    }
+    ${shOutputs(bands, (t, lanes) => `let o${t} = vec4u(${lanes});`)}
+`;
+};
+
+// Bytes per pixel each stream format adds to a pass's color attachments
+// (WebGPU's render target pixel byte cost).
+const ATTACHMENT_BYTES: Record<number, number> = {
+    [PIXELFORMAT_RGBA16F]: 8,
+    [PIXELFORMAT_RGBA32F]: 16,
+    [PIXELFORMAT_R32F]: 4,
+    [PIXELFORMAT_RGBA32U]: 16,
+    [PIXELFORMAT_R32U]: 4
+};
+
+// Split a pass's outputs (by attachment size) into consecutive groups that
+// each fit `limit` bytes per pixel. One group when they all fit.
+const passGroups = (bytes: number[], limit: number): number[][] => {
+    const groups: number[][] = [];
+    let used = 0;
+    bytes.forEach((size, i) => {
+        if (groups.length === 0 || used + size > limit) {
+            groups.push([]);
+            used = 0;
+        }
+        groups[groups.length - 1].push(i);
+        used += size;
+    });
+    return groups;
+};
+
+// One decode pass: the stream textures it writes, their fragment output
+// types, and its source in each shading language.
+type DecodePass = {
+    key: string;
+    names: string[];
+    types: string[];
+    glsl: string;
+    wgsl: (outs: number[]) => string;
+};
+
 type DecodeTexels = (
     files: Map<string, Uint8Array>,
     count: number,
@@ -286,21 +538,56 @@ class SogstGpuDecoder {
     }
 
     static supported(device: GraphicsDevice) {
-        return device.isWebGL2;
+        return device.isWebGL2 || device.isWebGPU;
+    }
+
+    // The most bytes per pixel a pass may write across its outputs: WebGPU's
+    // limit, or no limit on WebGL2, where every pass already fits.
+    private get attachmentBytes(): number {
+        if (!this.device.isWebGPU) {
+            return Infinity;
+        }
+        const limits = (this.device as unknown as { wgpu?: { limits?: { maxColorAttachmentBytesPerSample?: number } } })
+            .wgpu?.limits;
+        return limits?.maxColorAttachmentBytesPerSample ?? 32;
+    }
+
+    // Draw a pass over texel rows [rowA, rowB) of the stream textures, split
+    // into as many draws as the attachment limit needs.
+    private drawPass(pass: DecodePass, rowA: number, rowB: number) {
+        const textures = this.target.resource.streams.textures;
+        const bytes = pass.names.map((name) => ATTACHMENT_BYTES[textures.get(name)!.format] ?? 16);
+        const { width, height } = textures.get(pass.names[0])!;
+        // WebGPU flips the rect vertically for a render target, so mirror it
+        // first: the draw then covers the same texel rows as on WebGL
+        const y = this.device.isWebGPU ? height - rowB : rowA;
+        const rect = new Vec4(0, y, width, rowB - rowA);
+        for (const outs of passGroups(bytes, this.attachmentBytes)) {
+            const key = `${pass.key}:${outs.join('')}`;
+            const names = outs.map((i) => pass.names[i]);
+            const shader = this.shader(
+                key,
+                pass.glsl,
+                pass.wgsl(outs),
+                outs.map((i) => pass.types[i])
+            );
+            drawQuadWithShader(this.device, this.renderTarget(key, names), shader, rect);
+        }
     }
 
     setCentroids(bytes: Uint8Array) {
         this.centroidsBytes = bytes;
     }
 
-    private shader(key: string, fragment: string, outputs: string[]): Shader {
+    private shader(key: string, glsl: string, wgsl: string, outputs: string[]): Shader {
         let shader = this.shaders.get(key);
         if (!shader) {
             shader = ShaderUtils.createShader(this.device, {
                 uniqueName: `SogstGpuDecode-${key}`,
                 attributes: { vertex_position: SEMANTIC_POSITION },
                 vertexChunk: 'fullscreenQuadVS',
-                fragmentGLSL: fragment,
+                fragmentGLSL: glsl,
+                fragmentWGSL: wgsl,
                 fragmentOutputTypes: outputs
             });
             this.shaders.set(key, shader);
@@ -327,7 +614,7 @@ class SogstGpuDecoder {
         const height = texels.data.length / (width * 4);
         let texture = this.staging.get(name);
         if (texture && texture.width >= width && texture.height >= height) {
-            texture.write(0, 0, width, height, texels.data);
+            writeTexelBlock(texture, width, height, texels.data);
             return texture;
         }
         texture?.destroy();
@@ -383,11 +670,12 @@ class SogstGpuDecoder {
         }
 
         const width = this.target.resource.streams.textureDimensions.x;
+        const accel = !!this.packMeta.accel;
+        const bands = this.meta.shN?.bands ?? 0;
         for (const run of placement) {
             const dest = run.dest;
             const rowA = Math.floor(dest / width);
             const rowB = Math.ceil((dest + run.count) / width);
-            const rect = new Vec4(0, rowA, width, rowB - rowA);
             const common = {
                 uDest: dest,
                 uCount: run.count,
@@ -403,13 +691,17 @@ class SogstGpuDecoder {
                     means_mins: this.packMeta.means.mins,
                     means_maxs: this.packMeta.means.maxs
                 });
-                drawQuadWithShader(
-                    this.device,
-                    this.renderTarget('geometry', ['splatColor', 'transformA', 'transformB']),
-                    this.shader('geometry', GEOMETRY_GLSL, ['vec4', 'uvec4', 'vec4']),
-                    rect
+                this.drawPass(
+                    {
+                        key: 'geometry',
+                        names: ['splatColor', 'transformA', 'transformB'],
+                        types: ['vec4', 'uvec4', 'vec4'],
+                        glsl: GEOMETRY_GLSL,
+                        wgsl: (outs) => wgslPass(GEOMETRY_WGSL_DECLS, GEOMETRY_WGSL_BODY, outs)
+                    },
+                    rowA,
+                    rowB
                 );
-                const accel = !!this.packMeta.accel;
                 this.setUniforms({
                     ...common,
                     ...tex,
@@ -417,33 +709,33 @@ class SogstGpuDecoder {
                     motion_maxs: this.packMeta.motion.maxs,
                     ...(accel ? { accel_mins: this.packMeta.accel!.mins, accel_maxs: this.packMeta.accel!.maxs } : {})
                 });
-                drawQuadWithShader(
-                    this.device,
-                    this.renderTarget(
-                        'temporal',
-                        accel ? ['splatMotion', 'splatTemporal', 'splatAccel'] : ['splatMotion', 'splatTemporal']
-                    ),
-                    this.shader(
-                        `temporal${accel ? '-accel' : ''}`,
-                        temporalGlsl(accel),
-                        accel ? ['vec4', 'vec4', 'vec4'] : ['vec4', 'vec4']
-                    ),
-                    rect
+                this.drawPass(
+                    {
+                        key: `temporal${accel ? '-accel' : ''}`,
+                        names: accel
+                            ? ['splatMotion', 'splatTemporal', 'splatAccel']
+                            : ['splatMotion', 'splatTemporal'],
+                        types: accel ? ['vec4', 'vec4', 'vec4'] : ['vec4', 'vec4'],
+                        glsl: temporalGlsl(accel),
+                        wgsl: (outs) => wgslPass(temporalWgslDecls(accel), temporalWgslBody(accel), outs)
+                    },
+                    rowA,
+                    rowB
                 );
             }
             if (sh && this.centroids) {
-                const bands = this.meta.shN!.bands;
                 const names = SH_TEXTURES.slice(0, shTextureCount(bands));
                 this.setUniforms({ ...common, sh_labels: tex.shN_labels, sh_centroids: this.centroids });
-                drawQuadWithShader(
-                    this.device,
-                    this.renderTarget(`sh${bands}`, names),
-                    this.shader(
-                        `sh${bands}`,
-                        shGlsl(bands),
-                        names.map(() => 'uvec4')
-                    ),
-                    rect
+                this.drawPass(
+                    {
+                        key: `sh${bands}`,
+                        names,
+                        types: names.map(() => 'uvec4'),
+                        glsl: shGlsl(bands),
+                        wgsl: (outs) => wgslPass(SH_WGSL_DECLS, shWgslBody(bands), outs)
+                    },
+                    rowA,
+                    rowB
                 );
             }
             // centers for the CPU sorter, from the worker
@@ -452,6 +744,9 @@ class SogstGpuDecoder {
                 centers.set(groupCenters.subarray(run.src * 3, (run.src + run.count) * 3), dest * 3);
             }
         }
+        // WebGPU: run the recorded passes now, before another group can
+        // rewrite the staging textures they read
+        (this.device as unknown as { submit?: () => void }).submit?.();
     }
 
     destroy() {
