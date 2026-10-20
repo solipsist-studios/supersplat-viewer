@@ -62,6 +62,9 @@ type PackedRows = {
     motion?: Float32Array;
     temporal?: Float32Array;
     accel?: Float32Array;
+    // One per engine SH stream texture (splatSH_1to3 ... splatSH_12to15).
+    // Degree 3, the highest SOG stores, fills all four; lower degrees leave
+    // the later ones unset.
     sh1to3?: Uint32Array;
     sh4to7?: Uint32Array;
     sh8to11?: Uint32Array;
@@ -115,37 +118,61 @@ function sogstPackWorker() {
         return { width: w, data };
     };
 
-    // -- engine FloatPacking.float2Half, verbatim ------------------------
+    // -- float32 to float16 bits ------------------------------------------
+    // The engine's FloatPacking.float2Half, with its constants named: the
+    // main thread packs halves with the engine's own function, and this
+    // worker must produce the same bits but cannot import (see the header).
+    // Rounds to nearest, ties away from zero, from the first dropped bit.
     const floatView = new Float32Array(1);
     const int32View = new Int32Array(floatView.buffer);
+    // float32 exponent bias (127) minus float16's (15)
+    const EXP_REBIAS = 112;
+    const HALF_SIGN = 0x8000;
+    const HALF_INFINITY = 0x7c00;
+    const HALF_MANTISSA_BITS = 10;
+    const FLOAT_MANTISSA_BITS = 23;
+    const FLOAT_MANTISSA_MASK = 0x7fffff;
+    const FLOAT_EXP_NAN = 255;
+    // Biased float32 exponents: below this the value rounds to zero, at or
+    // below this it is subnormal as a half, above this it overflows.
+    const HALF_ZERO_BELOW = EXP_REBIAS - HALF_MANTISSA_BITS + 1;
+    const HALF_SUBNORMAL_MAX = EXP_REBIAS;
+    const HALF_NORMAL_MAX = EXP_REBIAS + 30;
     const float2Half = (value: number) => {
         floatView[0] = value;
         const x = int32View[0];
-        let bits = (x >> 16) & 32768;
-        let m = (x >> 12) & 2047;
-        const e = (x >> 23) & 255;
-        if (e < 103) {
-            return bits;
+        const sign = (x >> 16) & HALF_SIGN;
+        const e = (x >> FLOAT_MANTISSA_BITS) & 0xff;
+        // the half's 10 mantissa bits plus one rounding bit below them
+        let m = (x >> (FLOAT_MANTISSA_BITS - HALF_MANTISSA_BITS - 1)) & 0x7ff;
+        if (e < HALF_ZERO_BELOW) {
+            return sign;
         }
-        if (e > 142) {
-            bits |= 31744;
-            bits |= (e === 255 ? 0 : 1) && x & 8388607;
-            return bits;
+        if (e > HALF_NORMAL_MAX) {
+            // Infinity. Like the engine, a finite overflow also keeps the
+            // float's low mantissa bits, and NaN becomes infinity.
+            return sign | HALF_INFINITY | (e === FLOAT_EXP_NAN ? 0 : x & FLOAT_MANTISSA_MASK);
         }
-        if (e < 113) {
-            m |= 2048;
-            bits |= (m >> (114 - e)) + ((m >> (113 - e)) & 1);
-            return bits;
+        if (e <= HALF_SUBNORMAL_MAX) {
+            // subnormal: restore the implicit leading 1, then shift right
+            // by how far the exponent is below the half's normal range
+            m |= 1 << (HALF_MANTISSA_BITS + 1);
+            const shift = HALF_SUBNORMAL_MAX + 2 - e;
+            return sign | ((m >> shift) + ((m >> (shift - 1)) & 1));
         }
-        bits |= ((e - 112) << 10) | (m >> 1);
-        bits += m & 1;
-        return bits;
+        return (sign | ((e - EXP_REBIAS) << HALF_MANTISSA_BITS) | (m >> 1)) + (m & 1);
     };
 
     const f32 = Math.fround;
     const SH_C0 = 0.28209479177387814;
     const OPACITY_LOGIT_LIMIT = 40;
     const SH_COEFFS: Record<number, number> = { 1: 3, 2: 8, 3: 15 };
+    // smallest-three rotation; see QUAT_MODE_BASE in sogst-gpu-decode.ts
+    const QUAT_MODE_BASE = 252;
+    // split-16 attributes: a 16-bit fraction as low and high bytes
+    const U16_MAX = 65535;
+    // shN_centroids.webp: centroids per row, one texel per coefficient
+    const CENTROIDS_PER_ROW = 64;
     // 11:10:11 SH word layout (see gsplat-range-sync.ts)
     const SH_R_MAX = 2047;
     const SH_G_MAX = 1023;
@@ -181,7 +208,7 @@ function sogstPackWorker() {
                     const i = (s0 + j) * 4;
                     for (let ch = 0; ch < 3; ch++) {
                         centers[j * 3 + ch] = f32(
-                            unlog(lerp(mins[ch], maxs[ch], ((meansU[i + ch] << 8) + meansL[i + ch]) / 65535))
+                            unlog(lerp(mins[ch], maxs[ch], ((meansU[i + ch] << 8) + meansL[i + ch]) / U16_MAX))
                         );
                     }
                 }
@@ -212,9 +239,9 @@ function sogstPackWorker() {
             for (let j = 0; j < n; j++) {
                 const i = (s0 + j) * 4;
                 // position
-                const x = f32(unlog(lerp(mins[0], maxs[0], ((meansU[i] << 8) + meansL[i]) / 65535)));
-                const y = f32(unlog(lerp(mins[1], maxs[1], ((meansU[i + 1] << 8) + meansL[i + 1]) / 65535)));
-                const z = f32(unlog(lerp(mins[2], maxs[2], ((meansU[i + 2] << 8) + meansL[i + 2]) / 65535)));
+                const x = f32(unlog(lerp(mins[0], maxs[0], ((meansU[i] << 8) + meansL[i]) / U16_MAX)));
+                const y = f32(unlog(lerp(mins[1], maxs[1], ((meansU[i + 1] << 8) + meansL[i + 1]) / U16_MAX)));
+                const z = f32(unlog(lerp(mins[2], maxs[2], ((meansU[i + 2] << 8) + meansL[i + 2]) / U16_MAX)));
                 // rotation, smallest-three
                 const a = (quats[i] / 255 - 0.5) * Math.SQRT2;
                 const b = (quats[i + 1] / 255 - 0.5) * Math.SQRT2;
@@ -224,7 +251,7 @@ function sogstPackWorker() {
                 let qy = 0;
                 let qz = 0;
                 let qw = 0;
-                switch (quats[i + 3] - 252) {
+                switch (quats[i + 3] - QUAT_MODE_BASE) {
                     case 0:
                         qx = a;
                         qy = b;
@@ -306,7 +333,7 @@ function sogstPackWorker() {
             // temporal attributes: split-16 velocity (and accel), log space
             const split16 = (lo: Uint8Array, hi: Uint8Array, i: number, ch: number, min: number, max: number) => {
                 const o = i * 4 + ch;
-                return f32(unlog(min + ((max - min) * ((hi[o] << 8) + lo[o])) / 65535));
+                return f32(unlog(min + ((max - min) * ((hi[o] << 8) + lo[o])) / U16_MAX));
             };
             const motionL = tex8['motion_l.webp'];
             const motionU = tex8['motion_u.webp'];
@@ -358,8 +385,8 @@ function sogstPackWorker() {
             for (let j = 0; j < n; j++) {
                 const i = (s0 + j) * 4;
                 const label = labels[i] + (labels[i + 1] << 8);
-                const u = (label % 64) * coeffs;
-                const v = Math.floor(label / 64);
+                const u = (label % CENTROIDS_PER_ROW) * coeffs;
+                const v = Math.floor(label / CENTROIDS_PER_ROW);
                 // channel-interleaved, as the repack reads it: c[k*3 + ch]
                 for (let ch = 0; ch < 3; ch++) {
                     for (let k = 0; k < coeffs; k++) {

@@ -18,19 +18,12 @@ import { Playhead } from './playhead';
 // modifier runs before the work buffer is sorted.
 class SogstSplatAnimation {
     private data: SogstData;
-
     private entity: Entity | null = null;
-
     private camera: Entity | null = null;
-
     private cov2dScale: [number, number] | null = null;
-
     private lastTime = NaN;
-
     private lastRotation = new Quat(NaN, NaN, NaN, NaN);
-
     private lastCamRotation = new Quat(NaN, NaN, NaN, NaN);
-
     private lastCamPosition = new Vec3(NaN, NaN, NaN);
 
     // Windowed clips: the active pages last pushed to the shader, as a

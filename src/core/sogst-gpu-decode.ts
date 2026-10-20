@@ -59,6 +59,15 @@ uniform highp int uSrcWidth;
 uniform highp int uDstWidth;
 uniform highp sampler2D codebooks;
 
+// The payloads are RGBA8 WebP images, so every channel arrives as a byte
+// normalised to [0, 1].
+const float BYTE_MAX = 255.0;
+
+// the byte a channel stores
+int byteOf(float v) {
+    return int(v * BYTE_MAX + 0.5);
+}
+
 // source index of this fragment's destination splat, or discard: the pass
 // writes the run [uDest, uDest + uCount) from source [uSrcStart, ...)
 int srcIndex() {
@@ -76,17 +85,23 @@ ivec2 srcUV(int s) {
     return ivec2(s % uSrcWidth, s / uSrcWidth);
 }
 
+// codebook entry for a byte index
 float cb(int row, float v) {
-    return texelFetch(codebooks, ivec2(int(v * 255.0 + 0.5), row), 0).r;
+    return texelFetch(codebooks, ivec2(byteOf(v), row), 0).r;
 }
 
 vec3 unlog(vec3 v) {
     return sign(v) * (exp(abs(v)) - 1.0);
 }
 
+// A split-16 attribute stores a 16-bit fraction of [mins, maxs] (log space)
+// as its low byte in one texture and its high byte in another.
+const float U16_MAX = 65535.0;
+
 vec3 split16(highp sampler2D lo, highp sampler2D hi, ivec2 uv, vec3 mins, vec3 maxs) {
-    vec3 n = (texelFetch(lo, uv, 0).xyz + texelFetch(hi, uv, 0).xyz * 256.0) / 257.0;
-    return unlog(mix(mins, maxs, n));
+    vec3 lo8 = floor(texelFetch(lo, uv, 0).xyz * BYTE_MAX + 0.5);
+    vec3 hi8 = floor(texelFetch(hi, uv, 0).xyz * BYTE_MAX + 0.5);
+    return unlog(mix(mins, maxs, (lo8 + hi8 * 256.0) / U16_MAX));
 }
 `;
 
@@ -100,17 +115,26 @@ uniform highp sampler2D sh0;
 uniform vec3 means_mins;
 uniform vec3 means_maxs;
 
+// Smallest-three rotation: quats.webp stores three components, each mapped
+// from [-1/sqrt(2), 1/sqrt(2)] to a byte, and drops the largest, which unit
+// length recovers. Alpha holds QUAT_MODE_BASE + the dropped component's
+// index (0 = w, 1 = x, 2 = y, 3 = z).
+const float QUAT_RANGE = 1.41421356237; // sqrt(2)
+const int QUAT_MODE_BASE = 252;
+
+const float SH_C0 = 0.28209479177387814;
+
 void main(void) {
     int s = srcIndex();
     ivec2 uv = srcUV(s);
     vec3 pos = split16(means_l, means_u, uv, means_mins, means_maxs);
 
     vec4 q = texelFetch(quats, uv, 0);
-    float a = (q.r - 0.5) * 1.41421356237;
-    float b = (q.g - 0.5) * 1.41421356237;
-    float c = (q.b - 0.5) * 1.41421356237;
+    float a = (q.r - 0.5) * QUAT_RANGE;
+    float b = (q.g - 0.5) * QUAT_RANGE;
+    float c = (q.b - 0.5) * QUAT_RANGE;
     float d = sqrt(max(0.0, 1.0 - (a * a + b * b + c * c)));
-    int mode = int(q.a * 255.0 + 0.5) - 252;
+    int mode = byteOf(q.a) - QUAT_MODE_BASE;
     vec4 r = mode == 0 ? vec4(a, b, c, d) : mode == 1 ? vec4(d, b, c, a) : mode == 2 ? vec4(b, d, c, a) : vec4(b, c, d, a);
     float len = length(r);
     r = len == 0.0 ? vec4(0.0, 0.0, 0.0, 1.0) : r / len;
@@ -120,7 +144,6 @@ void main(void) {
 
     vec4 sc = texelFetch(scales, uv, 0);
     vec4 col = texelFetch(sh0, uv, 0);
-    const float SH_C0 = 0.28209479177387814;
 
     pcFragColor0 = vec4(0.5 + vec3(cb(${CB_SH0}, col.r), cb(${CB_SH0}, col.g), cb(${CB_SH0}, col.b)) * SH_C0, col.a);
     pcFragColor1 = uvec4(floatBitsToUint(pos), packHalf2x16(r.xy));
@@ -154,20 +177,35 @@ ${COMMON_GLSL}
 uniform highp sampler2D sh_labels;
 uniform highp sampler2D sh_centroids;
 
+// shN_labels.webp stores each splat's 16-bit centroid label in its R (low)
+// and G (high) bytes. shN_centroids.webp holds this many centroids per row,
+// each a run of one texel per coefficient.
+const int CENTROIDS_PER_ROW = 64;
+
+// The stream layout packs each coefficient's RGB, divided by the splat's
+// largest magnitude, into one 11:10:11 word (gsplat-range-sync.ts).
+const float SH_R_MAX = 2047.0;
+const float SH_G_MAX = 1023.0;
+const float SH_B_MAX = 2047.0;
+const uint SH_R_SHIFT = 21u;
+const uint SH_G_SHIFT = 11u;
+
+// v in [-mx, mx] to an integer in [0, levels]
+uint quantize(float v, float mx, float levels) {
+    return uint(clamp(floor((v / mx * 0.5 + 0.5) * levels + 0.5), 0.0, levels));
+}
+
 uint word(float r, float g, float b, float mx) {
-    uint qr = uint(clamp(floor((r / mx * 0.5 + 0.5) * 2047.0 + 0.5), 0.0, 2047.0));
-    uint qg = uint(clamp(floor((g / mx * 0.5 + 0.5) * 1023.0 + 0.5), 0.0, 1023.0));
-    uint qb = uint(clamp(floor((b / mx * 0.5 + 0.5) * 2047.0 + 0.5), 0.0, 2047.0));
-    return (qr << 21u) | (qg << 11u) | qb;
+    return (quantize(r, mx, SH_R_MAX) << SH_R_SHIFT) | (quantize(g, mx, SH_G_MAX) << SH_G_SHIFT) | quantize(b, mx, SH_B_MAX);
 }
 
 void main(void) {
     int s = srcIndex();
     ivec2 uv = srcUV(s);
     vec4 l = texelFetch(sh_labels, uv, 0);
-    int label = int(l.r * 255.0 + 0.5) + int(l.g * 255.0 + 0.5) * 256;
-    int u = (label % 64) * ${coeffs};
-    int v = label / 64;
+    int label = byteOf(l.r) + byteOf(l.g) * 256;
+    int u = (label % CENTROIDS_PER_ROW) * ${coeffs};
+    int v = label / CENTROIDS_PER_ROW;
     float c[${coeffs * 3}];
     for (int k = 0; k < ${coeffs}; k++) {
         vec4 t = texelFetch(sh_centroids, ivec2(u + k, v), 0);
@@ -179,7 +217,7 @@ void main(void) {
     for (int j = 1; j < ${coeffs * 3}; j++) {
         mx = max(mx, abs(c[j]));
     }
-    uint w[${Math.ceil((coeffs * 3) / 3)}];
+    uint w[${coeffs}];
     for (int k = 0; k < ${coeffs}; k++) {
         w[k] = mx == 0.0 ? 0u : word(c[k * 3], c[k * 3 + 1], c[k * 3 + 2], mx);
     }
@@ -200,19 +238,12 @@ type DecodeTexels = (
 
 class SogstGpuDecoder {
     private device: GraphicsDevice;
-
     private meta: SogstMeta;
-
     private packMeta: PackMeta;
-
     private target: SogstTarget;
-
     private codebooks: Texture;
-
     private centroids: Texture | null = null;
-
     private centroidsBytes: Uint8Array | null = null;
-
     private decodeTexels: DecodeTexels;
 
     // staging textures for source payloads, by bare name; reused while big
@@ -220,7 +251,6 @@ class SogstGpuDecoder {
     private staging = new Map<string, Texture>();
 
     private shaders = new Map<string, Shader>();
-
     private targets = new Map<string, RenderTarget>();
 
     constructor(

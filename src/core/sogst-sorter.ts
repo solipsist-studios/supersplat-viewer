@@ -95,11 +95,8 @@ const managersOf = (app: AppBase): EngineManager[] => {
 
 class SogstSorterController {
     private app: AppBase;
-
     private managers: EngineManager[];
-
     private seq = 0;
-
     private listeners: ((seq: number) => void)[] = [];
 
     constructor(app: AppBase, managers: EngineManager[]) {

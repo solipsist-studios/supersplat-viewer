@@ -242,11 +242,8 @@ const idbGetEntryUnit = async (key: string, index: number): Promise<CachedEntry[
 // next visit streams again.
 class EntryUnitWriter {
     private key: string;
-
     private count = 0;
-
     private failed = false;
-
     private chain: Promise<void> = Promise.resolve();
 
     constructor(key: string) {

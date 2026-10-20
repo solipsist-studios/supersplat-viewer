@@ -56,7 +56,6 @@ const jobsInFlight = (app: AppBase): number | null => {
 
 class SogstSortFence {
     private app: AppBase;
-
     private onSorted: (seq: number) => void;
 
     // fences in bump order: the install sequence each covers, and the sorted
@@ -64,7 +63,6 @@ class SogstSortFence {
     private pending: { seq: number; remaining: number }[] = [];
 
     private warned = false;
-
     private handler = () => this.sorted();
 
     constructor(app: AppBase, onSorted: (seq: number) => void) {
@@ -124,9 +122,7 @@ class SogstSortFence {
 const MAX_SORT_DEFER_MS = 500;
 class SogstPatchFence {
     private app: AppBase;
-
     private controller: SogstSorterController;
-
     private onSorted: (installSeq: number) => void;
 
     // fences in order: the patch sequence a sort must include, the install

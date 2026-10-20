@@ -33,9 +33,7 @@ class SogstEntryIndex {
 
 class SogstSegmentSource {
     private url: string;
-
     private cacheKey: string | null;
-
     readonly index: SogstEntryIndex;
 
     constructor(url: string, cacheKey: string | null, index: SogstEntryIndex) {

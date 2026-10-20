@@ -33,9 +33,7 @@ const LABELS_SUFFIX = '/shN_labels.webp';
 
 class SogstGroupAssembler {
     meta: SogstMeta | null = null;
-
     monolithic = false;
-
     groups: SogstGroup[] = [];
 
     // index of the group whose entries are arriving
@@ -45,7 +43,6 @@ class SogstGroupAssembler {
     private needed: string[] = [];
 
     private pending = new Map<string, Uint8Array>();
-
     private unit: CachedEntry[] = [];
 
     private takeUnit(): CachedEntry[] | null {

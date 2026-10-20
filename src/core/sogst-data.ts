@@ -21,17 +21,11 @@ class SogstData {
     loadedThrough = Infinity;
 
     readonly meta: SogstMeta;
-
     readonly numSplats: number;
-
     readonly timeMin: number;
-
     readonly timeMax: number;
-
     readonly fps: number;
-
     cov2dScale: [number, number] | null = null;
-
     readonly resource: GSplatResource;
 
     // Degree-2 motion present (meta.accel), which selects the shader variant.

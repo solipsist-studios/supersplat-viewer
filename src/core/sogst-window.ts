@@ -44,6 +44,7 @@ import type { SogstTarget } from './sogst-target';
 type WindowPlayback = {
     // absolute clip time
     time: number;
+
     direction: 1 | -1;
     speed: number;
     mode: LoopMode;
@@ -145,30 +146,20 @@ const planSogstCapacity = (meta: SogstMeta, budget?: number): { capacity: number
 
 class SogstWindow {
     readonly persistentEnd: number;
-
     readonly capacity: number;
-
     private meta: SogstMeta;
-
     private decoder: SogstDecoder;
-
     private target: SogstTarget;
-
     private source: SogstSegmentSource;
-
     private groups = new Map<number, SogstGroup>();
-
     private baseNames: string[];
-
     private resident = new Map<number, Slot>();
-
     readonly pageCount: number;
 
     // free arena pages, ascending
     private freePages: number[];
 
     private offered = new Map<number, Map<string, Uint8Array>>();
-
     private pendingLabels = new Map<number, Uint8Array>();
 
     // segments whose install failed (fetch or decode), and when to retry
@@ -181,13 +172,9 @@ class SogstWindow {
     private inflight = 0;
 
     private playback: WindowPlayback;
-
     private running = false;
-
     private destroyed = false;
-
     private listeners: (() => void)[] = [];
-
     private installListeners: ((placement: SplatPlacement, installSeq: number) => void)[] = [];
 
     // Sequence number of the latest completed install.

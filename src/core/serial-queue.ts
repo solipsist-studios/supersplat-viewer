@@ -5,9 +5,7 @@
 // rejects with that first failure.
 class SerialQueue {
     private tail: Promise<void> = Promise.resolve();
-
     private firstError: Error | null = null;
-
     private waiters: (() => void)[] = [];
 
     // queued tasks not yet finished

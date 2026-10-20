@@ -120,15 +120,10 @@ const groupFileList = (meta: SogstMeta): string[] => {
 // jobs in priority order.
 class SogstDecoder {
     private app: AppBase;
-
     readonly meta: SogstMeta;
-
     readonly target: SogstTarget;
-
     private pool = new SogstPackPool();
-
     private packMeta: PackMeta;
-
     private centroids: Uint8Array | null = null;
 
     // Set once a worker reports no WebGL2: the main thread then decodes the

@@ -89,7 +89,6 @@ const placeholderData = (meta: SogstMeta, count: number, storageLength: number) 
 
 class SogstTarget {
     readonly resource: GSplatResource;
-
     readonly capacity: number;
 
     // Set when the app is destroyed. The decoder yields between slices, so a

@@ -40,15 +40,10 @@ const poolSize = () => {
 
 class SogstPackPool {
     readonly size: number;
-
     private workers: PoolWorker[] = [];
-
     private queue: QueuedJob[] = [];
-
     private seq = 0;
-
     private url: string;
-
     private destroyed = false;
 
     constructor() {
