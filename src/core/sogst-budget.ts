@@ -32,9 +32,10 @@ const APPLE_TOUCH_ALLOWANCE = 1.5e9;
 // Android and other mobile devices.
 const MOBILE_ALLOWANCE = 1e9;
 
-// Desktops and laptops. Large enough that an 11M-splat SH3 clip plays fully
-// resident; only larger clips play windowed.
-const DESKTOP_ALLOWANCE = 4e9;
+// Desktops and laptops. Sized for an 8 GB laptop with integrated graphics,
+// the smallest common desktop: an 11M-splat SH3 clip fully resident (about
+// 3.2 GB by this model) crashed the tab on one, while it plays windowed.
+const DESKTOP_ALLOWANCE = 1.5e9;
 
 // -- per-splat cost model --------------------------------------------------
 
