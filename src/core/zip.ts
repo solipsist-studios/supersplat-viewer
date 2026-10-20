@@ -143,16 +143,13 @@ const ZIP_STREAM_INITIAL_BYTES = 1 << 20;
 // sizes are zero.
 class ZipStreamReader {
     retainAll = false;
-
     private bytes = new Uint8Array(ZIP_STREAM_INITIAL_BYTES);
 
     // unread bytes are bytes[start, end); bytes[0] is archive offset `base`
     private start = 0;
 
     private end = 0;
-
     private base = 0;
-
     private done = false;
 
     // Total bytes appended so far.

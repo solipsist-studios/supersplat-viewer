@@ -90,6 +90,8 @@
 
             const budgetParam = url.searchParams.get('budget');
             const budget = budgetParam !== null ? Number(budgetParam) : undefined;
+            const sogstBudgetParam = url.searchParams.get('sogstbudget');
+            const sogstBudget = sogstBudgetParam !== null ? Number(sogstBudgetParam) : undefined;
 
             // Only the static 3DGS path consumes the eager `contents` prefetch.
             // 4DGS archives manage their own streaming/cached fetches, and an
@@ -122,6 +124,8 @@
                 renderer,
                 aa: url.searchParams.has('aa'),
                 budget,
+                sogstBudget,
+                sogstGpuDecode: !url.searchParams.has('sogstcpu'),
                 heatmap: url.searchParams.has('heatmap'),
                 fullload: url.searchParams.has('fullload'),
                 debug: url.searchParams.has('debug'),

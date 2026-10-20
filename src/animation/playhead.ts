@@ -64,6 +64,23 @@ class Playhead {
     resetDirection() {
         this.direction = 1;
     }
+
+    // pingpong playback direction, for planning which segments come next
+    get playDirection(): 1 | -1 {
+        return this.direction < 0 ? -1 : 1;
+    }
+
+    // Snapshot and restore of the whole playhead, so a driver can undo an
+    // advance into content that is not loaded yet (direction included: an
+    // advance can bounce a pingpong).
+    save(): { time: number; direction: number } {
+        return { time: this.time, direction: this.direction };
+    }
+
+    restore(saved: { time: number; direction: number }) {
+        this.time = saved.time;
+        this.direction = saved.direction;
+    }
 }
 
 export { Playhead };

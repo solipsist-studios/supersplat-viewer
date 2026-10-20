@@ -1,4 +1,4 @@
-import { PIXELFORMAT_R32F, PIXELFORMAT_RGBA32F, Vec3 } from 'playcanvas';
+import { PIXELFORMAT_R32F, PIXELFORMAT_RGBA32F, Vec2, Vec3 } from 'playcanvas';
 import type { Entity, GSplatResource } from 'playcanvas';
 
 import { uploadTextureRows } from './gsplat-range-sync';
@@ -44,10 +44,17 @@ import { uploadTextureRows } from './gsplat-range-sync';
 // animation driver pushes sogstCullRanges = (persistentEnd, dynamicStart,
 // dynamicEnd, 0).
 //
-// A splat outside [0, persistentEnd) ∪ [dynamicStart, dynamicEnd) has a
-// temporal opacity near 0 at the current time. The shader collapses it to
-// zero scale and alpha, which saves its motion math, its blending and its
-// fill.
+// A windowed clip (sogst-window.ts) keeps the persistent splats at
+// [0, persistentEnd) but places segments in fixed-size arena pages after
+// them, in no particular order, so it culls by page instead: splatPageMask
+// holds one texel per page, 1 where the page belongs to an active segment,
+// and sogstPageSize is the page size (0 selects the range test).
+//
+// A splat outside the persistent range and the active range or pages is
+// either temporally invisible at the current time, or sits in a page the
+// window has evicted or not filled yet. The shader collapses it to zero
+// scale and alpha, which saves its motion math, its blending and its fill,
+// and keeps an evicted page from drawing without any GPU write.
 
 const glslModifyChunk = /* glsl */ `
 uniform highp sampler2D splatMotion;
@@ -62,10 +69,19 @@ uniform vec4 sogstCamRot;          // camera world rotation (x, y, z, w)
 uniform vec3 sogstCamPos;          // camera world position
 #ifdef SOGST_SEG_CULL
 uniform vec4 sogstCullRanges;      // x = persistent end, y/z = dynamic [start, end)
+uniform highp sampler2D splatPageMask; // one texel per arena page, 1 = draw
+uniform float sogstPageSize;       // windowed clips; 0 = use the dynamic range
 
 bool sogstCulled() {
     float idx = float(splat.uv.y * textureSize(splatMotion, 0).x + splat.uv.x);
-    return idx >= sogstCullRanges.x && (idx < sogstCullRanges.y || idx >= sogstCullRanges.z);
+    if (idx < sogstCullRanges.x) {
+        return false;
+    }
+    if (sogstPageSize > 0.0) {
+        int page = int(floor((idx - sogstCullRanges.x) / sogstPageSize));
+        return texelFetch(splatPageMask, ivec2(page, 0), 0).r < 0.5;
+    }
+    return idx < sogstCullRanges.y || idx >= sogstCullRanges.z;
 }
 #endif // SOGST_SEG_CULL
 
@@ -207,11 +223,22 @@ uniform sogstCamRot: vec4f;
 uniform sogstCamPos: vec3f;
 #ifdef SOGST_SEG_CULL
 uniform sogstCullRanges: vec4f;
+// R32F is unfilterable in core WebGPU; 'uff' declares the binding so, and
+// textureLoad needs no filtering
+var splatPageMask: texture_2d<uff>; // one texel per arena page, 1 = draw
+uniform sogstPageSize: f32;
 
 fn sogstCulled() -> bool {
     let dims = textureDimensions(splatMotion, 0);
     let idx = f32(splat.uv.y * i32(dims.x) + splat.uv.x);
-    return idx >= uniform.sogstCullRanges.x && (idx < uniform.sogstCullRanges.y || idx >= uniform.sogstCullRanges.z);
+    if (idx < uniform.sogstCullRanges.x) {
+        return false;
+    }
+    if (uniform.sogstPageSize > 0.0) {
+        let page = i32(floor((idx - uniform.sogstCullRanges.x) / uniform.sogstPageSize));
+        return textureLoad(splatPageMask, vec2i(page, 0), 0).r < 0.5;
+    }
+    return idx < uniform.sogstCullRanges.y || idx >= uniform.sogstCullRanges.z;
 }
 #endif // SOGST_SEG_CULL
 
@@ -327,20 +354,10 @@ fn modifySplatColor(center: vec3f, color: ptr<function, vec4f>) {
 }
 `;
 
-// Decoded temporal attributes for a run of splats, in the source layout the
-// decoder fills: per-axis velocity (units/sec), t_center and t_sigma (sec),
-// and the optional degree-2 coefficients.
-type SogstMotionSource = {
-    velocity: [Float32Array, Float32Array, Float32Array];
-    accel: [Float32Array, Float32Array, Float32Array] | null;
-    tCenter: Float32Array;
-    tSigma: Float32Array;
-};
-
 // Create the per-splat motion/temporal textures, empty, and register them with
 // the resource's stream collection so they are bound to the work-buffer
 // material. Must be called before the entity's gsplat component receives the
-// resource. packSogstMotion fills them as splats decode.
+// resource. The decoder fills them as splats decode.
 const createSogstMotionTextures = (resource: GSplatResource, accel: boolean) => {
     const streams = resource.streams;
     const dims = streams.textureDimensions;
@@ -356,6 +373,12 @@ const createSogstMotionTextures = (resource: GSplatResource, accel: boolean) => 
 
     streams.textures.set('splatMotion', streams.createTexture('splatMotion', PIXELFORMAT_RGBA32F, dims, motion));
     streams.textures.set('splatTemporal', streams.createTexture('splatTemporal', PIXELFORMAT_R32F, dims, temporal));
+    // Page mask for windowed clips; a placeholder until the window sizes it
+    // (createSogstPageMask).
+    streams.textures.set(
+        'splatPageMask',
+        streams.createTexture('splatPageMask', PIXELFORMAT_R32F, new Vec2(1, 1), new Float32Array(1))
+    );
     if (accel) {
         const accelData = new Float32Array(w * h * 4);
         streams.textures.set('splatAccel', streams.createTexture('splatAccel', PIXELFORMAT_RGBA32F, dims, accelData));
@@ -370,39 +393,6 @@ const uploadSogstMotionRows = (resource: GSplatResource, a: number, b: number) =
     const accelTex = streams.textures.get('splatAccel');
     if (accelTex) {
         uploadTextureRows(accelTex, 4, a, b);
-    }
-};
-
-// Pack n splats of decoded temporal attributes from source index s into the
-// motion textures' CPU copies at resource index d. Like packGsplatRange, this
-// does not upload; uploadSogstMotionRows sends the rows afterwards.
-const packSogstMotion = (resource: GSplatResource, src: SogstMotionSource, s: number, d: number, n: number) => {
-    const streams = resource.streams;
-    const motion = streams.textures.get('splatMotion')?._levels?.[0] as Float32Array | undefined;
-    const temporal = streams.textures.get('splatTemporal')?._levels?.[0] as Float32Array | undefined;
-    if (!motion || !temporal) {
-        throw new Error('sogst: motion textures have no CPU copy');
-    }
-    const [vx, vy, vz] = src.velocity;
-    for (let j = 0; j < n; j++) {
-        const i = s + j;
-        const o = d + j;
-        motion[o * 4 + 0] = vx[i];
-        motion[o * 4 + 1] = vy[i];
-        motion[o * 4 + 2] = vz[i];
-        motion[o * 4 + 3] = src.tCenter[i];
-        temporal[o] = src.tSigma[i];
-    }
-    const accel = streams.textures.get('splatAccel')?._levels?.[0] as Float32Array | undefined;
-    if (accel && src.accel) {
-        const [ax, ay, az] = src.accel;
-        for (let j = 0; j < n; j++) {
-            const i = s + j;
-            const o = d + j;
-            accel[o * 4 + 0] = ax[i];
-            accel[o * 4 + 1] = ay[i];
-            accel[o * 4 + 2] = az[i];
-        }
     }
 };
 
@@ -490,8 +480,57 @@ const setSogstParams = (
     component.setParameter('sogstCamPos', p ? [p.x, p.y, p.z] : [0, 0, 0]);
     if (cullRanges) {
         component.setParameter('sogstCullRanges', [cullRanges[0], cullRanges[1], cullRanges[2], 0]);
+        component.setParameter('sogstPageSize', 0);
     }
 };
 
-export { bindSogstModifier, createSogstMotionTextures, packSogstMotion, setSogstParams, uploadSogstMotionRows };
-export type { SogstMotionSource };
+// Size the page mask for a windowed clip's arena, one texel per page. Must
+// run before the entity's gsplat component receives the resource, like
+// createSogstMotionTextures.
+const createSogstPageMask = (resource: GSplatResource, pageCount: number) => {
+    const streams = resource.streams;
+    streams.textures.get('splatPageMask')?.destroy();
+    streams.textures.set(
+        'splatPageMask',
+        streams.createTexture(
+            'splatPageMask',
+            PIXELFORMAT_R32F,
+            new Vec2(Math.max(1, pageCount), 1),
+            new Float32Array(Math.max(1, pageCount))
+        )
+    );
+};
+
+// Set the cull test for a windowed clip: splats in [0, persistentEnd) and in
+// the listed arena pages draw, all others are culled. Only call when the
+// pages changed: it uploads the page mask.
+const setSogstCullPages = (
+    entity: Entity,
+    resource: GSplatResource,
+    persistentEnd: number,
+    pageSize: number,
+    pages: number[]
+) => {
+    const component = entity.gsplat;
+    const texture = resource.streams.textures.get('splatPageMask');
+    const level = texture?._levels?.[0] as Float32Array | undefined;
+    if (!component || !texture || !level) {
+        return;
+    }
+    level.fill(0);
+    pages.forEach((page) => {
+        level[page] = 1;
+    });
+    texture.upload();
+    component.setParameter('sogstCullRanges', [persistentEnd, 0, 0, 0]);
+    component.setParameter('sogstPageSize', pageSize);
+};
+
+export {
+    bindSogstModifier,
+    createSogstMotionTextures,
+    createSogstPageMask,
+    setSogstCullPages,
+    setSogstParams,
+    uploadSogstMotionRows
+};

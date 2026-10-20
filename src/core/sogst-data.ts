@@ -2,6 +2,8 @@ import type { GSplatResource } from 'playcanvas';
 
 import type { SogstMeta, SogstSegments } from '../parsers/sogst';
 
+import type { SogstWindow } from './sogst-window';
+
 // A playable .sogst clip: its manifest, timing and segment table, and the
 // GSplatResource the decoder packs splats into. The per-splat attributes live
 // only in that resource's textures (and the motion textures attached to it);
@@ -19,21 +21,19 @@ class SogstData {
     loadedThrough = Infinity;
 
     readonly meta: SogstMeta;
-
     readonly numSplats: number;
-
     readonly timeMin: number;
-
     readonly timeMax: number;
-
     readonly fps: number;
-
     cov2dScale: [number, number] | null = null;
-
     readonly resource: GSplatResource;
 
     // Degree-2 motion present (meta.accel), which selects the shader variant.
     readonly hasAccel: boolean;
+
+    // The segment window when the clip plays windowed (it did not fit the
+    // splat budget), or null when every splat is resident.
+    window: SogstWindow | null = null;
 
     constructor(meta: SogstMeta, resource: GSplatResource) {
         this.meta = meta;

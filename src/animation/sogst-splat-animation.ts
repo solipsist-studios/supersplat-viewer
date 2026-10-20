@@ -2,7 +2,8 @@ import { Quat, Vec3 } from 'playcanvas';
 import type { Entity } from 'playcanvas';
 
 import type { SogstData } from '../core/sogst-data';
-import { bindSogstModifier, setSogstParams } from '../core/sogst-motion';
+import { bindSogstModifier, setSogstCullPages, setSogstParams } from '../core/sogst-motion';
+import { PAGE_SPLATS } from '../core/sogst-window';
 import type { Global } from '../types';
 
 import { Playhead } from './playhead';
@@ -17,20 +18,21 @@ import { Playhead } from './playhead';
 // modifier runs before the work buffer is sorted.
 class SogstSplatAnimation {
     private data: SogstData;
-
     private entity: Entity | null = null;
-
     private camera: Entity | null = null;
-
     private cov2dScale: [number, number] | null = null;
-
     private lastTime = NaN;
-
     private lastRotation = new Quat(NaN, NaN, NaN, NaN);
-
     private lastCamRotation = new Quat(NaN, NaN, NaN, NaN);
-
     private lastCamPosition = new Vec3(NaN, NaN, NaN);
+
+    // Windowed clips: the active pages last pushed to the shader, as a
+    // comparable key.
+    private lastPagesKey = '';
+
+    // Set when the segment window's resident set changed, which can change
+    // the active pages without the time changing (an install while paused).
+    private cullDirty = true;
 
     constructor(data: SogstData) {
         this.data = data;
@@ -92,9 +94,10 @@ class SogstSplatAnimation {
             camPosition &&
             (!camRotation.equals(this.lastCamRotation) || !camPosition.equals(this.lastCamPosition))
         );
-        if (animTime === this.lastTime && rotation.equals(this.lastRotation) && !camChanged) {
+        if (animTime === this.lastTime && rotation.equals(this.lastRotation) && !camChanged && !this.cullDirty) {
             return false;
         }
+        this.cullDirty = false;
         this.lastTime = animTime;
         this.lastRotation.copy(rotation);
         if (camRotation) {
@@ -104,7 +107,20 @@ class SogstSplatAnimation {
             this.lastCamPosition.copy(camPosition);
         }
         const absTime = this.data.timeMin + animTime;
-        setSogstParams(this.entity, absTime, this.camera ?? undefined, this.cullRanges(absTime));
+        const segmentWindow = this.data.window;
+        if (segmentWindow) {
+            // windowed: cull by arena page, uploading the mask only when the
+            // active pages change
+            setSogstParams(this.entity, absTime, this.camera ?? undefined);
+            const pages = segmentWindow.activePages(absTime);
+            const key = pages.join(',');
+            if (key !== this.lastPagesKey) {
+                this.lastPagesKey = key;
+                setSogstCullPages(this.entity, this.data.resource, segmentWindow.persistentEnd, PAGE_SPLATS, pages);
+            }
+        } else {
+            setSogstParams(this.entity, absTime, this.camera ?? undefined, this.cullRanges(absTime));
+        }
         return true;
     }
 
@@ -112,11 +128,24 @@ class SogstSplatAnimation {
         const { app, state, events } = global;
         this.camera = global.camera;
         const playhead = new Playhead();
+        const segmentWindow = this.data.window;
+        segmentWindow?.onChange(() => {
+            this.cullDirty = true;
+            app.renderNextFrame = true;
+        });
 
         const onUpdate = (dt: number) => {
             if (!state.animationPaused) {
+                const before = playhead.save();
                 if (playhead.advance(dt, this.duration, state)) {
                     state.animationPaused = true;
+                }
+                // Windowed clips: hold the playhead where it was while the
+                // segments at the new time are still being installed. This
+                // covers both pingpong directions, since the window answers
+                // for any time.
+                if (segmentWindow && !segmentWindow.isReady(this.data.timeMin + playhead.time)) {
+                    playhead.restore(before);
                 }
                 // Streaming loads: hold the playhead at the last fully decoded
                 // time until the next segment arrives. Clamp the playhead
@@ -132,6 +161,12 @@ class SogstSplatAnimation {
                 // Honour external scrubs that write to state.animationTime directly.
                 playhead.time = state.animationTime;
             }
+            segmentWindow?.setPlayback({
+                time: this.data.timeMin + playhead.time,
+                direction: playhead.playDirection,
+                speed: state.animationSpeed ?? 1,
+                mode: state.animationLoopMode
+            });
             if (this.apply(playhead.time)) {
                 app.renderNextFrame = true;
             }
