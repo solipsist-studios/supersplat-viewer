@@ -119,9 +119,9 @@ function sogstPackWorker() {
     };
 
     // -- float32 to float16 bits ------------------------------------------
-    // The engine's FloatPacking.float2Half, with its constants named: the
-    // main thread packs halves with the engine's own function, and this
-    // worker must produce the same bits but cannot import (see the header).
+    // The engine's FloatPacking.float2Half, with its constants named. The
+    // worker must produce the same bits as the engine's own packing, but
+    // cannot import it (see the header).
     // Rounds to nearest, ties away from zero, from the first dropped bit.
     const floatView = new Float32Array(1);
     const int32View = new Int32Array(floatView.buffer);
