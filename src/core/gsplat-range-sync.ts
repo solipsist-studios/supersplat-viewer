@@ -1,5 +1,7 @@
 import type { GSplatResource, Texture } from 'playcanvas';
 
+import { SH_TEXTURES, shTextureCount, shTextureWords } from './sh-textures';
+
 type TypedArray = Uint8Array | Uint16Array | Uint32Array | Float32Array;
 
 // Ranged uploads of a GSplatResource's stream textures. The engine's own
@@ -63,17 +65,9 @@ const uploadTextureRows = (texture: Texture, elemsPerTexel: number, a: number, b
 };
 
 const uploadSHRows = (resource: GSplatResource, a: number, b: number) => {
-    const shBands = resource.shBands;
-    if (shBands <= 0) {
-        return;
-    }
-    uploadTextureRows(resource.streams.getTexture('splatSH_1to3'), 4, a, b);
-    if (shBands > 1) {
-        uploadTextureRows(resource.streams.getTexture('splatSH_4to7'), 4, a, b);
-        uploadTextureRows(resource.streams.getTexture('splatSH_8to11'), shBands > 2 ? 4 : 1, a, b);
-        if (shBands > 2) {
-            uploadTextureRows(resource.streams.getTexture('splatSH_12to15'), 4, a, b);
-        }
+    const bands = resource.shBands;
+    for (let i = 0; i < shTextureCount(bands); i++) {
+        uploadTextureRows(resource.streams.getTexture(SH_TEXTURES[i]), shTextureWords(bands, i), a, b);
     }
 };
 

@@ -62,13 +62,9 @@ type PackedRows = {
     motion?: Float32Array;
     temporal?: Float32Array;
     accel?: Float32Array;
-    // One per engine SH stream texture (splatSH_1to3 ... splatSH_12to15).
-    // Degree 3, the highest SOG stores, fills all four; lower degrees leave
-    // the later ones unset.
-    sh1to3?: Uint32Array;
-    sh4to7?: Uint32Array;
-    sh8to11?: Uint32Array;
-    sh12to15?: Uint32Array;
+    // packed SH words, one array per SH texture the degree uses, in
+    // SH_TEXTURES order (sh-textures.ts)
+    sh?: Uint32Array[];
     // 'texels' mode: decoded payloads keyed by file name
     texels?: Record<string, RawTexels>;
 };
@@ -166,7 +162,9 @@ function sogstPackWorker() {
     const f32 = Math.fround;
     const SH_C0 = 0.28209479177387814;
     const OPACITY_LOGIT_LIMIT = 40;
-    const SH_COEFFS: Record<number, number> = { 1: 3, 2: 8, 3: 15 };
+    // the SH texture layout of sh-textures.ts, which this worker cannot import
+    const SH_WORDS_PER_TEXEL = 4;
+    const shCoefficients = (bands: number) => (bands + 1) * (bands + 1) - 1;
     // smallest-three rotation; see QUAT_MODE_BASE in sogst-gpu-decode.ts
     const QUAT_MODE_BASE = 252;
     // split-16 attributes: a 16-bit fraction as low and high bytes
@@ -370,15 +368,22 @@ function sogstPackWorker() {
                 centroids = await decodeWebp(centroidsBytes!);
             }
             const bands = m.shN.bands;
-            const coeffs = SH_COEFFS[bands];
+            const coeffs = shCoefficients(bands);
+            // the scale word, then one word per coefficient
+            const words = 1 + coeffs;
             const labels = tex8['shN_labels.webp'];
             const cb = m.shN.codebook;
             const cw = centroids.width;
             const cdata = centroids.data;
-            const sh1to3 = new Uint32Array(n * 4);
-            const sh4to7 = bands > 1 ? new Uint32Array(n * 4) : null;
-            const sh8to11 = bands > 1 ? new Uint32Array(n * (bands > 2 ? 4 : 1)) : null;
-            const sh12to15 = bands > 2 ? new Uint32Array(n * 4) : null;
+            // texture t holds words [t * 4, t * 4 + 4), the last one fewer
+            const texWords = Array.from({ length: Math.ceil(words / SH_WORDS_PER_TEXEL) }, (_, t) =>
+                Math.min(SH_WORDS_PER_TEXEL, words - t * SH_WORDS_PER_TEXEL)
+            );
+            const sh = texWords.map((w) => new Uint32Array(n * w));
+            const put = (j: number, w: number, value: number) => {
+                const t = Math.floor(w / SH_WORDS_PER_TEXEL);
+                sh[t][j * texWords[t] + (w % SH_WORDS_PER_TEXEL)] = value;
+            };
             const c = new Array<number>(coeffs * 3).fill(0);
             const f32w = new Float32Array(1);
             const u32w = new Uint32Array(f32w.buffer);
@@ -415,41 +420,13 @@ function sogstPackWorker() {
                     );
                 }
                 const word = (k: number) => (c[k] << SH_R_SHIFT) | (c[k + 1] << SH_G_SHIFT) | c[k + 2];
-                const o = j * 4;
                 f32w[0] = max;
-                sh1to3[o] = u32w[0];
-                sh1to3[o + 1] = word(0);
-                sh1to3[o + 2] = word(3);
-                sh1to3[o + 3] = word(6);
-                if (sh4to7 && sh8to11) {
-                    sh4to7[o] = word(9);
-                    sh4to7[o + 1] = word(12);
-                    sh4to7[o + 2] = word(15);
-                    sh4to7[o + 3] = word(18);
-                    if (sh12to15) {
-                        sh8to11[o] = word(21);
-                        sh8to11[o + 1] = word(24);
-                        sh8to11[o + 2] = word(27);
-                        sh8to11[o + 3] = word(30);
-                        sh12to15[o] = word(33);
-                        sh12to15[o + 1] = word(36);
-                        sh12to15[o + 2] = word(39);
-                        sh12to15[o + 3] = word(42);
-                    } else {
-                        sh8to11[j] = word(21);
-                    }
+                put(j, 0, u32w[0]);
+                for (let k = 0; k < coeffs; k++) {
+                    put(j, 1 + k, word(k * 3));
                 }
             }
-            out.sh1to3 = sh1to3;
-            if (sh4to7) {
-                out.sh4to7 = sh4to7;
-            }
-            if (sh8to11) {
-                out.sh8to11 = sh8to11;
-            }
-            if (sh12to15) {
-                out.sh12to15 = sh12to15;
-            }
+            out.sh = sh;
         }
         return out;
     };
@@ -468,6 +445,10 @@ function sogstPackWorker() {
             for (const value of Object.values(rows)) {
                 if (ArrayBuffer.isView(value)) {
                     transfer.push(value.buffer as ArrayBuffer);
+                } else if (Array.isArray(value)) {
+                    for (const words of value) {
+                        transfer.push(words.buffer as ArrayBuffer);
+                    }
                 } else if (value) {
                     for (const texels of Object.values(value as Record<string, RawTexels>)) {
                         transfer.push(texels.data.buffer as ArrayBuffer);

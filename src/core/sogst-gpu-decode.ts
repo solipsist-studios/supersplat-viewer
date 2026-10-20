@@ -12,6 +12,7 @@ import type { GraphicsDevice, Shader } from 'playcanvas';
 
 import type { SogstMeta } from '../parsers/sogst';
 
+import { SH_TEXTURES, shCoefficients, shTextureCount, shWords, WORDS_PER_TEXEL } from './sh-textures';
 import type { SogstGroup, SplatPlacement } from './sogst-decoder';
 import type { PackMeta, RawTexels } from './sogst-pack-worker';
 import type { SogstTarget } from './sogst-target';
@@ -27,7 +28,7 @@ import type { SogstTarget } from './sogst-target';
 //
 //   geometry  splatColor (RGBA16F), transformA (RGBA32U), transformB (RGBA16F)
 //   temporal  splatMotion (RGBA32F), splatTemporal (R32F), splatAccel
-//   sh        splatSH_* (RGBA32U, or R32U for 8to11 with 2 bands)
+//   sh        the SH textures (sh-textures.ts)
 //
 // The CPU sorter (WebGL) still needs the centers on the CPU; the worker that
 // decodes the means pair computes them, so nothing is read back from the
@@ -40,8 +41,6 @@ import type { SogstTarget } from './sogst-target';
 //
 // Not byte-identical to the CPU path: the GPU rounds float to half with its
 // own rounding mode, and does the maths in float32.
-
-const SH_COEFFS: Record<number, number> = { 1: 3, 2: 8, 3: 15 };
 
 // codebook rows in the codebook texture
 const CB_SCALES = 0;
@@ -170,8 +169,21 @@ void main(void) {
 }
 `;
 
+// One statement per SH texture the degree uses, assigning texture t its
+// texel of words from the shader's array w (0u past the last word).
+const shOutputs = (bands: number, statement: (t: number, lanes: string) => string) => {
+    const words = shWords(bands);
+    return Array.from({ length: shTextureCount(bands) }, (_, t) => {
+        const lanes = Array.from({ length: WORDS_PER_TEXEL }, (_, l) => t * WORDS_PER_TEXEL + l).map((w) =>
+            w < words ? `w[${w}]` : '0u'
+        );
+        return statement(t, lanes.join(', '));
+    }).join('\n    ');
+};
+
 const shGlsl = (bands: number) => {
-    const coeffs = SH_COEFFS[bands];
+    const coeffs = shCoefficients(bands);
+    const words = shWords(bands);
     return /* glsl */ `
 ${COMMON_GLSL}
 uniform highp sampler2D sh_labels;
@@ -217,15 +229,13 @@ void main(void) {
     for (int j = 1; j < ${coeffs * 3}; j++) {
         mx = max(mx, abs(c[j]));
     }
-    uint w[${coeffs}];
+    // the scale word, then one word per coefficient (sh-textures.ts)
+    uint w[${words}];
+    w[0] = mx == 0.0 ? 0u : floatBitsToUint(mx);
     for (int k = 0; k < ${coeffs}; k++) {
-        w[k] = mx == 0.0 ? 0u : word(c[k * 3], c[k * 3 + 1], c[k * 3 + 2], mx);
+        w[k + 1] = mx == 0.0 ? 0u : word(c[k * 3], c[k * 3 + 1], c[k * 3 + 2], mx);
     }
-    uint m = mx == 0.0 ? 0u : floatBitsToUint(mx);
-    pcFragColor0 = uvec4(m, w[0], w[1], w[2]);
-    ${bands > 1 ? 'pcFragColor1 = uvec4(w[3], w[4], w[5], w[6]);' : ''}
-    ${bands === 2 ? 'pcFragColor2 = uvec4(w[7], 0u, 0u, 0u);' : ''}
-    ${bands > 2 ? 'pcFragColor2 = uvec4(w[7], w[8], w[9], w[10]);\n    pcFragColor3 = uvec4(w[11], w[12], w[13], w[14]);' : ''}
+    ${shOutputs(bands, (t, lanes) => `pcFragColor${t} = uvec4(${lanes});`)}
 }
 `;
 };
@@ -423,10 +433,7 @@ class SogstGpuDecoder {
             }
             if (sh && this.centroids) {
                 const bands = this.meta.shN!.bands;
-                const names = ['splatSH_1to3', 'splatSH_4to7', 'splatSH_8to11', 'splatSH_12to15'].slice(
-                    0,
-                    bands === 1 ? 1 : bands === 2 ? 3 : 4
-                );
+                const names = SH_TEXTURES.slice(0, shTextureCount(bands));
                 this.setUniforms({ ...common, sh_labels: tex.shN_labels, sh_centroids: this.centroids });
                 drawQuadWithShader(
                     this.device,

@@ -4,6 +4,7 @@ import type { AppBase } from 'playcanvas';
 import type { SogstMeta } from '../parsers/sogst';
 
 import { uploadGsplatRows } from './gsplat-range-sync';
+import { SH_TEXTURES, shCoefficients, shTextureCount, shTextureWords } from './sh-textures';
 import { createSogstMotionTextures, uploadSogstMotionRows } from './sogst-motion';
 import type { PackedRows } from './sogst-pack-worker';
 
@@ -16,14 +17,9 @@ import type { PackedRows } from './sogst-pack-worker';
 // holds the decoded attributes for the whole clip. A capacity of meta.count
 // with destination == file index reproduces the old fully resident layout.
 
-// Coefficients per colour channel for each SH band count. The engine's
-// repack (updateSHData, and packSH in gsplat-range-sync.ts) reads the same
-// table.
-const SH_COEFFS_PER_CHANNEL: Record<number, number> = { 1: 3, 2: 8, 3: 15 };
-
-// Number of f_rest_* properties for a band count, in the compact layout:
-// channel c, coefficient k at f_rest_{c * coeffs + k}.
-const shRestCount = (bands: number) => 3 * (SH_COEFFS_PER_CHANNEL[bands] ?? 0);
+// Number of f_rest_* properties for an SH degree, in the compact layout:
+// channel c, coefficient k at f_rest_{c * coefficients + k}.
+const shRestCount = (bands: number) => 3 * shCoefficients(bands);
 
 // Logit the placeholder data gives every slot before a splat decodes into
 // it. Sigmoid of this is zero to float precision, so an empty slot draws
@@ -139,10 +135,7 @@ class SogstTarget {
         put('splatColor', rows.color, 4);
         put('transformA', rows.transformA, 4);
         put('transformB', rows.transformB, 4);
-        put('splatSH_1to3', rows.sh1to3, 4);
-        put('splatSH_4to7', rows.sh4to7, 4);
-        put('splatSH_8to11', rows.sh8to11, this.resource.shBands > 2 ? 4 : 1);
-        put('splatSH_12to15', rows.sh12to15, 4);
+        rows.sh?.forEach((words, i) => put(SH_TEXTURES[i], words, shTextureWords(this.resource.shBands, i)));
         put('splatMotion', rows.motion, 4);
         put('splatTemporal', rows.temporal, 1);
         put('splatAccel', rows.accel, 4);
@@ -179,14 +172,12 @@ class SogstTarget {
             return Promise.resolve();
         }
         const streams = this.resource.streams;
-        const clear = (name: string, words: number) => {
-            const level = streams.getTexture(name)?._levels?.[0] as Uint32Array | undefined;
+        const bands = this.resource.shBands;
+        for (let i = 0; i < shTextureCount(bands); i++) {
+            const words = shTextureWords(bands, i);
+            const level = streams.getTexture(SH_TEXTURES[i])?._levels?.[0] as Uint32Array | undefined;
             level?.fill(0, a * words, b * words);
-        };
-        clear('splatSH_1to3', 4);
-        clear('splatSH_4to7', 4);
-        clear('splatSH_8to11', this.resource.shBands > 2 ? 4 : 1);
-        clear('splatSH_12to15', 4);
+        }
         return this.upload(a, b, true);
     }
 
@@ -202,4 +193,4 @@ class SogstTarget {
     }
 }
 
-export { SH_COEFFS_PER_CHANNEL, SogstTarget, shRestCount };
+export { SogstTarget, shRestCount };
