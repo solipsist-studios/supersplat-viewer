@@ -210,11 +210,22 @@ const createSogstDriver = (
         }
     };
 
-    // Windowed reveal: once the persistent group is decoded and the window
-    // holds every segment the first frame needs. The window gates the
-    // playhead from then on, so there is no buffer gate here.
+    // Windowed reveal: once the persistent group is decoded, the window
+    // holds every segment the first frame needs, and the byte side of the
+    // buffer gate is open. The window holds the playhead whenever a segment
+    // is missing, but on the first pass every segment comes off the network:
+    // revealing before the remaining geometry can arrive within the clip's
+    // duration makes the whole pass hitch at download speed. The fill side
+    // reads 1 here (decodedThrough is Infinity once the persistent group is
+    // done), since the window, not the stream, decodes the segments.
     const checkWindowReveal = () => {
-        if (segmentWindow && !revealed && persistentDone && segmentWindow.isReady(assembler.meta?.time?.min ?? 0)) {
+        if (
+            segmentWindow &&
+            !revealed &&
+            persistentDone &&
+            segmentWindow.isReady(assembler.meta?.time?.min ?? 0) &&
+            gateOpen(quotients())
+        ) {
             doReveal();
         }
     };
@@ -335,6 +346,7 @@ const createSogstDriver = (
         // release a pending reveal as soon as the buffer criterion is met;
         // do not wait for the next group to finish decoding
         tryReveal();
+        checkWindowReveal();
 
         const streams = assembler.meta?.streams;
         if (streams?.reveal_bytes && !revealed) {
