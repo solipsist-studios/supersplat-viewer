@@ -83,16 +83,26 @@ const ALLOWANCES: Record<SogstBudgetTier, number> = {
     desktop: DESKTOP_ALLOWANCE
 };
 
-// The automatic budget for a clip, in splats.
-const sogstAutoBudget = (meta: SogstMeta): number => {
+const millions = (splats: number) => `${(splats / 1e6).toFixed(2)}M`;
+
+// The splat budget for a clip: the host's override when it gave one (0 for
+// no budget), otherwise the automatic one. Logs the choice and its source,
+// so a device's console shows which budget a load used.
+const sogstBudgetFor = (meta: SogstMeta, override: number | undefined): number => {
+    const clip = `clip has ${millions(meta.count)}`;
+    if (override !== undefined) {
+        console.debug(
+            override > 0
+                ? `sogst: budget ${millions(override)} splats (sogstbudget override; ${clip})`
+                : `sogst: no budget, fully resident (sogstbudget=0; ${clip})`
+        );
+        return override;
+    }
     const tier = sogstBudgetTier();
     const bytes = sogstSplatBytes(meta);
     const budget = Math.floor(ALLOWANCES[tier] / bytes);
-    console.debug(
-        `sogst: automatic budget ${(budget / 1e6).toFixed(2)}M splats ` +
-            `(${tier} tier, ~${bytes} B/splat; clip has ${(meta.count / 1e6).toFixed(2)}M)`
-    );
+    console.debug(`sogst: automatic budget ${millions(budget)} splats (${tier} tier, ~${bytes} B/splat; ${clip})`);
     return budget;
 };
 
-export { sogstAutoBudget, sogstBudgetTier, sogstSplatBytes };
+export { sogstBudgetFor, sogstBudgetTier, sogstSplatBytes };

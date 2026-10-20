@@ -4,7 +4,7 @@ import type { SogstMeta } from '../parsers/sogst';
 
 import { loadSogst } from './load-sogst';
 import { SerialQueue } from './serial-queue';
-import { sogstAutoBudget } from './sogst-budget';
+import { sogstBudgetFor } from './sogst-budget';
 import { FillHistory, gateOpen, gateQuotients, monolithicProgress, streamProgress } from './sogst-buffer-gate';
 import type { GateQuotients } from './sogst-buffer-gate';
 import { EntryUnitWriter, idbGetEntryUnit } from './sogst-cache';
@@ -286,7 +286,7 @@ const createSogstDriver = (
                     return;
                 }
                 const meta = step.meta;
-                const plan = planSogstCapacity(meta, options.budget ?? sogstAutoBudget(meta));
+                const plan = planSogstCapacity(meta, sogstBudgetFor(meta, options.budget));
                 decoder = new SogstDecoder(app, meta, new SogstTarget(app, meta, plan.capacity), {
                     gpu: options.gpuDecode
                 });
