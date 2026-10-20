@@ -43,7 +43,8 @@ type EmbedViewerOptions = {
      * clip larger than this plays through a segment window: only the
      * segments near the playhead stay decoded, and the rest are re-read from
      * the IndexedDB cache (or the network) as playback reaches them. Unset,
-     * every clip plays fully resident.
+     * the viewer picks a budget from the device type and the clip's cost per
+     * splat; 0 plays every clip fully resident.
      */
     sogstBudget?: number;
     /**

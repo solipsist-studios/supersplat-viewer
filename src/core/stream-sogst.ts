@@ -4,6 +4,7 @@ import type { SogstMeta } from '../parsers/sogst';
 
 import { loadSogst } from './load-sogst';
 import { SerialQueue } from './serial-queue';
+import { sogstAutoBudget } from './sogst-budget';
 import { FillHistory, gateOpen, gateQuotients, monolithicProgress, streamProgress } from './sogst-buffer-gate';
 import type { GateQuotients } from './sogst-buffer-gate';
 import { EntryUnitWriter, idbGetEntryUnit } from './sogst-cache';
@@ -65,6 +66,8 @@ type SogstStreamOptions = {
     cacheKey: string | null;
     // Splat budget, in splats. A segmented clip larger than this plays
     // through a segment window (sogst-window.ts) instead of fully resident.
+    // Unset, the budget is automatic (sogst-budget.ts); 0 plays every clip
+    // fully resident.
     budget?: number;
     // Decode on the GPU (sogst-gpu-decode.ts) where supported.
     gpuDecode?: boolean;
@@ -283,7 +286,7 @@ const createSogstDriver = (
                     return;
                 }
                 const meta = step.meta;
-                const plan = planSogstCapacity(meta, options.budget);
+                const plan = planSogstCapacity(meta, options.budget ?? sogstAutoBudget(meta));
                 decoder = new SogstDecoder(app, meta, new SogstTarget(app, meta, plan.capacity), {
                     gpu: options.gpuDecode
                 });

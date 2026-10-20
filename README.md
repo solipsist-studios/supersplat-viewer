@@ -49,7 +49,7 @@ By default the viewer uses WebGPU when available (falling back automatically whe
 | `nofx` | Disable post effects |
 | `hpr` | Override `highPrecisionRendering` from settings (`?hpr`, `?hpr=1`, `?hpr=true`, `?hpr=enable` to enable) |
 | `budget` | Override the splat budget, in millions of splats |
-| `sogstbudget` | Splat budget for `.sogst` content, in millions of splats. A segmented clip larger than this keeps only the segments near the playhead decoded, and re-reads the rest from the cache (or the network) as playback reaches them. Unset, clips play fully resident. |
+| `sogstbudget` | Splat budget for `.sogst` content, in millions of splats. A segmented clip larger than this keeps only the segments near the playhead decoded, and re-reads the rest from the cache (or the network) as playback reaches them. Unset, the viewer picks a budget from the device type (Apple touch devices, other mobile, desktop) and the clip's memory cost per splat, so large clips play windowed on phones and headsets. `0` plays every clip fully resident. |
 | `sogstcpu` | Decode `.sogst` content with the CPU pack workers instead of on the GPU. GPU decode is the default under both WebGL2 and WebGPU. |
 | `colorize` | Render with LOD colorization |
 | `fullload` | Load all streaming LOD data before the first frame |

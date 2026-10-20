@@ -81,12 +81,14 @@ const setupSogst = (app: AppBase, config: Config, global: Global, data: SogstDat
 // long to an install's latency.
 const MIN_SORTER_REFRESH_MS = 200;
 
-// The .sogst splat budget in splats, from the config's millions.
+// The .sogst splat budget in splats, from the config's millions: undefined
+// for the automatic budget (unset or not a number), 0 for no budget.
 const sogstBudgetSplats = (config: Config): number | undefined => {
     const millions = config.sogstBudget;
-    return millions !== undefined && Number.isFinite(millions) && millions > 0
-        ? Math.round(millions * 1000000)
-        : undefined;
+    if (millions === undefined || !Number.isFinite(millions)) {
+        return undefined;
+    }
+    return millions > 0 ? Math.round(millions * 1000000) : 0;
 };
 
 // Progressive load of a streamed archive: reveal the scene once the
