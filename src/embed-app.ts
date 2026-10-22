@@ -23,7 +23,10 @@ type EmbedViewerOptions = {
     contentFilename?: string;
     /** Experience settings JSON (v1 or v2); defaults to a minimal setup. */
     settings?: object;
-    /** Requested renderer; XR sessions require 'webgl'. Default 'webgpu'. */
+    /**
+     * Requested renderer; XR sessions require 'webgl'. Unset, the viewer
+     * picks: WebGPU, except WebGL for .sogst clips on a Mac or Vision Pro.
+     */
     renderer?: 'webgl' | 'webgpu';
     /**
      * Antialias the splats (the GSPLAT_AA shader path). Off by default. The
@@ -153,7 +156,7 @@ const createEmbedViewer = async (options: EmbedViewerOptions): Promise<EmbedView
         colorize: false,
         fullload: false,
         aa: !!options.aa,
-        renderer: options.renderer ?? 'webgpu',
+        renderer: options.renderer,
         heatmap: false,
         debug: false
     };

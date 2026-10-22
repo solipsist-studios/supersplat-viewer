@@ -86,7 +86,11 @@
                 : './coffee_martini.sogst';
             const sogstRotationDeg = parseRotationParam(url.searchParams.get('sogstrot'), [0, 0, 0]);
 
-            const renderer = url.searchParams.has('webgl') ? 'webgl' : 'webgpu';
+            const renderer = url.searchParams.has('webgl')
+                ? 'webgl'
+                : url.searchParams.has('webgpu')
+                  ? 'webgpu'
+                  : undefined;
 
             const budgetParam = url.searchParams.get('budget');
             const budget = budgetParam !== null ? Number(budgetParam) : undefined;
