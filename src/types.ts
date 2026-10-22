@@ -30,7 +30,7 @@ type Config = {
     fullload: boolean; // load all streaming LOD data before first frame
     aa: boolean; // render with antialiasing
     budget?: number; // override splat budget in millions (overrides platform + performanceMode table)
-    sogstBudget?: number; // .sogst splat budget in millions: a segmented clip larger than this plays through a segment window
+    sogstBudget?: number; // .sogst splat budget in millions: a segmented clip larger than this plays through a segment window (unset: automatic; 0: none)
     sogstGpuDecode: boolean; // decode .sogst groups on the GPU (WebGL2 or WebGPU); false forces the CPU pack workers
     renderer: 'webgl' | 'webgpu'; // requested renderer; the actual one (after engine fallback) is exposed as Global.renderer
     heatmap: boolean; // render heatmap debug overlay (WebGPU only)
