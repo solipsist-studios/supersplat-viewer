@@ -40,12 +40,12 @@ The app supports a number of URL parameters (these are subject to change):
 
 ### Renderer
 
-By default the viewer uses WebGPU when available (falling back automatically when not), except for `.sogst` clips on a Mac, which use WebGL: there, clips that play through a segment window keep up with real time only on WebGL. The flags below force a renderer:
+By default the viewer uses WebGPU when available (falling back automatically when not), except for `.sogst` clips on a Mac or Vision Pro (and iPad, which reports itself the same way), which use WebGL: there, clips that play through a segment window keep up with real time only on WebGL. The flags below force a renderer:
 
 | Parameter | Description |
 | --------- | ----------- |
 | `webgl` | Force the WebGL renderer (required for AR/VR) |
-| `webgpu` | Force the WebGPU renderer, including for `.sogst` clips on a Mac |
+| `webgpu` | Force the WebGPU renderer, including for `.sogst` clips on a Mac or Vision Pro |
 | `aa` | Enable antialiasing (WebGL only) |
 | `nofx` | Disable post effects |
 | `hpr` | Override `highPrecisionRendering` from settings (`?hpr`, `?hpr=1`, `?hpr=true`, `?hpr=enable` to enable) |

@@ -25,7 +25,7 @@ type EmbedViewerOptions = {
     settings?: object;
     /**
      * Requested renderer; XR sessions require 'webgl'. Unset, the viewer
-     * picks: WebGPU, except WebGL for .sogst clips on a Mac.
+     * picks: WebGPU, except WebGL for .sogst clips on a Mac or Vision Pro.
      */
     renderer?: 'webgl' | 'webgpu';
     /**

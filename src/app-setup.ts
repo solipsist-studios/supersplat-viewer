@@ -424,17 +424,17 @@ const loadSkybox = (app: AppBase, url: string) => {
 };
 
 // The renderer to request when the host names none: WebGPU, except WebGL for
-// .sogst clips on a Mac. There, a clip playing through a segment window falls
-// behind real time on WebGPU: the engine projects and sorts every splat on
-// the GPU each frame, and segment decodes and cache reads slow to around four
-// times their WebGL cost behind it (measured on an 8 GB MacBook Air). The
-// device is created before the clip's metadata says whether it will play
-// windowed, so every .sogst clip takes WebGL; a fully resident one plays at
-// full speed on either. visionOS and iPadOS also report a Mac user agent and
-// are excluded, since this was measured on neither.
+// .sogst clips on a Mac or Vision Pro. There, a clip playing through a
+// segment window falls behind real time on WebGPU: the engine projects and
+// sorts every splat on the GPU each frame, and segment decodes and cache
+// reads slow to around four times their WebGL cost behind it (measured on an
+// 8 GB MacBook Air; the headset slows the same way). The device is created
+// before the clip's metadata says whether it will play windowed, so every
+// .sogst clip takes WebGL; a fully resident one plays at full speed on
+// either. Vision Pro sends a Mac user agent, so the test is the Mac one; an
+// iPad does too and cannot be told apart, so it takes WebGL as well.
 const defaultRenderer = (config: Config): 'webgl' | 'webgpu' => {
-    const mac = platform.name === 'osx' && !platform.visionos;
-    return mac && is4dgsFilename(contentFilename(config)) ? 'webgl' : 'webgpu';
+    return platform.name === 'osx' && is4dgsFilename(contentFilename(config)) ? 'webgl' : 'webgpu';
 };
 
 const createApp = async (canvas: HTMLCanvasElement, config: Config) => {
