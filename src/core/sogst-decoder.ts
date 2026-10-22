@@ -144,6 +144,7 @@ class SogstDecoder {
                 this.decodeTexels(files, count, priority)
             );
         }
+        console.debug(`sogst: decoding on the ${this.gpu ? 'GPU' : 'CPU (pack workers)'}`);
     }
 
     // Decodes that can usefully run at once: one per pack worker.

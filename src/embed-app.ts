@@ -47,9 +47,8 @@ type EmbedViewerOptions = {
      */
     sogstBudget?: number;
     /**
-     * Decode .sogst content on the GPU where supported (WebGL2 for now).
-     * Default true; false forces the CPU pack workers, the fallback that
-     * WebGPU uses anyway.
+     * Decode .sogst content on the GPU (WebGL2 or WebGPU). Default true;
+     * false forces the CPU pack workers.
      */
     sogstGpuDecode?: boolean;
     /**

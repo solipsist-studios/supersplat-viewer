@@ -64,6 +64,38 @@ const uploadTextureRows = (texture: Texture, elemsPerTexel: number, a: number, b
     texture.upload();
 };
 
+// Write a `width` x `height` block of RGBA8 texels at the origin of a
+// texture with a typed-array CPU copy, for staging textures that are
+// rewritten for every decode. The block goes to the GPU only, through the
+// same two paths as uploadTextureRows. A texture not yet created on the GPU
+// takes the block into its CPU copy and uploads that instead.
+const writeTexelBlock = (texture: Texture, width: number, height: number, data: Uint8Array) => {
+    if (texture.impl?.write) {
+        (texture.write(0, 0, width, height, data) as Promise<unknown>)?.catch(() => {
+            /* upload races teardown; nothing to recover */
+        });
+        return;
+    }
+    const gpuTexture = (texture.impl as unknown as WebgpuTextureImpl | undefined)?.gpuTexture;
+    const wgpu = (texture.device as unknown as WebgpuQueueDevice | undefined)?.wgpu;
+    if (gpuTexture && wgpu) {
+        wgpu.queue.writeTexture(
+            { texture: gpuTexture, origin: { x: 0, y: 0 } },
+            data,
+            { bytesPerRow: width * 4, rowsPerImage: height },
+            { width, height }
+        );
+        return;
+    }
+    const level = texture._levels?.[0] as Uint8Array | undefined;
+    if (level) {
+        for (let row = 0; row < height; row++) {
+            level.set(data.subarray(row * width * 4, (row + 1) * width * 4), row * texture.width * 4);
+        }
+        texture.upload();
+    }
+};
+
 const uploadSHRows = (resource: GSplatResource, a: number, b: number) => {
     const bands = resource.shBands;
     for (let i = 0; i < shTextureCount(bands); i++) {
@@ -85,4 +117,4 @@ const uploadGsplatRows = (resource: GSplatResource, a: number, b: number, shOnly
     uploadSHRows(resource, a, b);
 };
 
-export { uploadGsplatRows, uploadTextureRows };
+export { uploadGsplatRows, uploadTextureRows, writeTexelBlock };
