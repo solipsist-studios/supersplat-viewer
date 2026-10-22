@@ -423,8 +423,23 @@ const loadSkybox = (app: AppBase, url: string) => {
     });
 };
 
+// The renderer to request when the host names none: WebGPU, except WebGL for
+// .sogst clips on a Mac. There, a clip playing through a segment window falls
+// behind real time on WebGPU: the engine projects and sorts every splat on
+// the GPU each frame, and segment decodes and cache reads slow to around four
+// times their WebGL cost behind it (measured on an 8 GB MacBook Air). The
+// device is created before the clip's metadata says whether it will play
+// windowed, so every .sogst clip takes WebGL; a fully resident one plays at
+// full speed on either. visionOS and iPadOS also report a Mac user agent and
+// are excluded, since this was measured on neither.
+const defaultRenderer = (config: Config): 'webgl' | 'webgpu' => {
+    const mac = platform.name === 'osx' && !platform.visionos;
+    return mac && is4dgsFilename(contentFilename(config)) ? 'webgl' : 'webgpu';
+};
+
 const createApp = async (canvas: HTMLCanvasElement, config: Config) => {
-    const useWebGPU = config.renderer === 'webgpu';
+    const requested = config.renderer ?? defaultRenderer(config);
+    const useWebGPU = requested === 'webgpu';
 
     // Create the graphics device. The engine auto-appends WebGL2/null fallbacks
     // when WebGPU isn't supported. Request xrCompatible so the device — WebGPU
@@ -441,7 +456,7 @@ const createApp = async (canvas: HTMLCanvasElement, config: Config) => {
         ...(config.transparent ? { alpha: true } : {})
     });
 
-    console.log(`Renderer: ${device.deviceType}`);
+    console.log(`Renderer: ${device.deviceType} (requested ${requested}${config.renderer ? '' : ', automatically'})`);
 
     // The engine may have fallen back from WebGPU to WebGL2; downstream code
     // (voxel overlay, XR, gsplat renderer selection) needs the *actual* renderer.
