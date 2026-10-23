@@ -13,6 +13,17 @@
             href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Ccircle cx='32' cy='32' r='30' fill='%23111111'/%3E%3Ccircle cx='32' cy='32' r='12' fill='%23ffffff'/%3E%3C/svg%3E"
         />
         <link rel="stylesheet" href="./index.css" />
+
+        <!--
+            Single injection seam. `renderViewerHtml` replaces the contents of this block to
+            supply asset urls and inline settings, so anything generating a page around the
+            viewer goes through that function rather than pattern-matching this document.
+            Left as `null` for the standalone case.
+        -->
+        <script type="application/json" id="sse-bootstrap">
+            null
+        </script>
+
         <script type="module">
             const createImage = (url) => {
                 const img = new Image();
@@ -77,14 +88,33 @@
 
             const url = new URL(location.href);
 
-            const posterUrl = url.searchParams.get('poster');
-            const skyboxUrl = url.searchParams.get('skybox');
-            const collisionUrl = url.searchParams.get('collision') ?? url.searchParams.get('voxel');
-            const settingsUrl = url.searchParams.get('settings');
-            const contentUrl = url.searchParams.has('content')
-                ? url.searchParams.get('content')
-                : './coffee_martini.sogst';
+            const ensureOk = (response) => {
+                if (!response.ok) {
+                    throw new Error(`Failed to load settings: ${response.status} ${response.statusText}`);
+                }
+                return response;
+            };
+
+            // Embedder-supplied defaults. URL params take precedence over the asset urls below,
+            // so an embed can still be overridden per-instance (e.g. `?skybox=` to preview a
+            // different sky). Inline `settings` is the exception: it wins over `?settings=`, so a
+            // published experience cannot be repointed at someone else's settings file.
+            const bootstrap = JSON.parse(document.getElementById('sse-bootstrap').textContent) ?? {};
+
+            const posterUrl = url.searchParams.get('poster') ?? bootstrap.posterUrl ?? null;
+            const skyboxUrl = url.searchParams.get('skybox') ?? bootstrap.skyboxUrl ?? null;
+            const collisionUrl =
+                url.searchParams.get('collision') ?? url.searchParams.get('voxel') ?? bootstrap.collisionUrl ?? null;
+            // with no settings named, a data: url serves the defaults, so the fetch below needs no special case
+            const defaultSettingsUrl = `data:application/json,${encodeURIComponent(JSON.stringify(defaultSettings))}`;
+            const settingsUrl = url.searchParams.get('settings') ?? bootstrap.settingsUrl ?? defaultSettingsUrl;
+            const contentUrl = url.searchParams.get('content') ?? bootstrap.contentUrl ?? './coffee_martini.sogst';
             const sogstRotationDeg = parseRotationParam(url.searchParams.get('sogstrot'), [0, 0, 0]);
+
+            // Names the bootstrap's contentUrl when the url itself has no usable name (a data:
+            // uri, say) — the splat format is chosen by the name's extension. Ignored when a
+            // ?content= override replaces the url it describes.
+            const contentFilename = url.searchParams.has('content') ? null : (bootstrap.contentFilename ?? null);
 
             const renderer = url.searchParams.has('webgl')
                 ? 'webgl'
@@ -104,7 +134,7 @@
             // to read, which is the cost the early rejection exists to avoid.
             // An extensionless URL carries no evidence and takes the 3DGS path.
             // keep in step with STATIC_3DGS_EXTENSIONS and SOGST_EXTENSIONS in src/
-            const contentPath = new URL(contentUrl, location.href).pathname.toLowerCase();
+            const contentPath = (contentFilename || new URL(contentUrl, location.href).pathname).toLowerCase();
             const contentExt = /\.[^./]+$/.exec(contentPath)?.[0] ?? '';
             const contentIsStatic3dgs = !contentExt || ['.ply', '.sog', '.json'].includes(contentExt);
 
@@ -114,6 +144,7 @@
                 collisionUrl,
                 sogstRotationDeg,
                 contentUrl,
+                contentFilename,
                 contents: contentIsStatic3dgs ? fetch(contentUrl) : undefined,
                 noui: url.searchParams.has('noui'),
                 noanim: url.searchParams.has('noanim'),
@@ -138,14 +169,9 @@
 
             window.sse = {
                 config: sseConfig,
-                settings: settingsUrl
-                    ? fetch(settingsUrl).then((response) => {
-                          if (!response.ok) {
-                              throw new Error(`Failed to load settings: ${response.status} ${response.statusText}`);
-                          }
-                          return response.json();
-                      })
-                    : Promise.resolve(defaultSettings)
+                // consumers' rewriting patterns expect this assignment on one line
+                // prettier-ignore
+                settings: bootstrap.settings ?? fetch(settingsUrl).then(ensureOk).then((response) => response.json())
             };
         </script>
     </head>

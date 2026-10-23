@@ -2,7 +2,15 @@ import { EventHandler, revision as engineRevision, version as engineVersion } fr
 import type { Texture } from 'playcanvas';
 
 import { version as appVersion } from '../package.json';
-import { createApp, createViewerState, initCanvas, loadContent, loadSkybox } from './app-setup';
+import {
+    createApp,
+    createViewerState,
+    initCanvas,
+    loadContent,
+    loadSkybox,
+    measureCanvas,
+    resizeCanvas
+} from './app-setup';
 import { MeshCollision, loadVoxelCollision } from './collision';
 import type { Collision } from './collision';
 import { initEmbed } from './embed';
@@ -14,14 +22,20 @@ import { Viewer } from './viewer';
 import { initXr } from './xr';
 
 const main = async (canvas: HTMLCanvasElement, settingsJson: unknown, config: Config) => {
-    const { app, camera, renderer } = await createApp(canvas, config);
-
     // create events and observable state
     const events = new EventHandler();
 
     // shared with the embed entry point — keep the defaults in one place so the two
     // bundles cannot drift (a missing field here reads as `undefined` at runtime)
     const state = createViewerState(events, config);
+
+    // size the canvas backbuffer before the graphics device is created, so the swap
+    // chain and any backbuffer-sized resources start at the correct resolution instead
+    // of being recreated on the first frame's resize. a hidden embed keeps the default
+    // canvas size here; the resize observer sizes it on reveal
+    resizeCanvas(canvas, measureCanvas(canvas), state.performanceMode);
+
+    const { app, camera, renderer } = await createApp(canvas, config);
 
     const global: Global = {
         app,

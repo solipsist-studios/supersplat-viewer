@@ -14,6 +14,7 @@ import { WalkController } from './cameras/walk-controller';
 import { WalkSource } from './cameras/walk-source';
 import type { Collision } from './collision';
 import { easeOut } from './core/math';
+import { DEFAULT_CAMERA_FOV } from './schemas/defaults';
 import type { Annotation } from './settings';
 import type { CameraMode, Global, LoopMode } from './types';
 
@@ -63,7 +64,7 @@ class CameraManager {
         const walkAllowed = isWalkAllowed(bbox, collision);
 
         const camera0 = settings.cameras[0]?.initial;
-        const defaultFov = camera0?.fov ?? 75;
+        const defaultFov = camera0?.fov ?? DEFAULT_CAMERA_FOV;
         const frameCamera = createFrameCamera(bbox, defaultFov);
         const resetCamera = camera0
             ? createCamera(new Vec3(camera0.position), new Vec3(camera0.target), camera0.fov)
@@ -215,13 +216,8 @@ class CameraManager {
                 const { cursor } = controllers.anim.animState;
                 state.animationTime = cursor.value;
 
-                // play-once mode: hold on the final pose and stop the transport
-                if (
-                    !state.animationPaused &&
-                    state.animationLoopMode === 'none' &&
-                    cursor.duration > 0 &&
-                    cursor.value >= cursor.duration
-                ) {
+                // a play-once animation holds its final pose and pauses at the end of the track
+                if (!state.animationPaused && cursor.duration > 0 && cursor.ended) {
                     state.animationPaused = true;
                 }
             }
@@ -319,6 +315,18 @@ class CameraManager {
             // enter new controller
             const newController = getController(value);
             newController.onEnter(this.camera);
+        });
+
+        // pressing play at (or within a frame of) the end of a play-once animation
+        // restarts it from the beginning (a scrub can park just short of the end)
+        events.on('animationPaused:changed', (paused: boolean) => {
+            const animState = controllers.anim?.animState;
+            if (!paused && animState) {
+                const { cursor } = animState;
+                if (cursor.loopMode === 'none' && cursor.duration - cursor.value < 1 / animState.frameRate) {
+                    cursor.value = 0;
+                }
+            }
         });
 
         // handle user scrubbing the animation timeline
