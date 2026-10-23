@@ -109,8 +109,6 @@
                 return response;
             };
 
-            const url = new URL(location.href);
-
             // Embedder-supplied defaults. URL params take precedence over the asset urls below,
             // so an embed can still be overridden per-instance (e.g. `?skybox=` to preview a
             // different sky). Inline `settings` is the exception: it wins over `?settings=`, so a
