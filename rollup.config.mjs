@@ -174,8 +174,8 @@ const buildSettings = {
     plugins: [typescript({ noEmit: true })]
 };
 
-// Self-contained embeddable viewer library (engine bundled, no HTML UI) for
-// hosting the viewer directly in another page's canvas.
+// Self-contained embeddable viewer library (engine bundled, no built-in UI) for hosting the
+// viewer directly in another page's element. An adapter over `createViewer`.
 const buildEmbedApp = {
     input: 'src/embed-app.ts',
     output: {
@@ -183,7 +183,12 @@ const buildEmbedApp = {
         format: 'esm',
         sourcemap: true
     },
-    plugins: [resolve(debugEngine ? { exportConditions: ['development'] } : {}), typescript(), json()]
+    plugins: [
+        resolve(debugEngine ? { exportConditions: ['development'] } : {}),
+        typescript(),
+        json(),
+        htmlTemplatePlugin()
+    ]
 };
 
 // Declarations are bundled from the source, so the published types cannot drift from the
