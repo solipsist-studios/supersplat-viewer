@@ -1,5 +1,5 @@
-import { EventHandler, platform, revision as engineRevision, version as engineVersion } from 'playcanvas';
-import type { Texture } from 'playcanvas';
+import { EventHandler, Vec3, platform, revision as engineRevision, version as engineVersion } from 'playcanvas';
+import type { Entity, Texture } from 'playcanvas';
 
 import {
     createApp,
@@ -14,6 +14,7 @@ import {
 import { MeshCollision, loadVoxelCollision } from './collision';
 import type { Collision } from './collision';
 import { initEmbed } from './embed';
+import { EmbedInputDevice } from './input/devices/external';
 import { initLocalization } from './localization';
 import type { CreateViewerOptions } from './options';
 import { persistPreferences, readPreferences } from './preferences';
@@ -57,6 +58,9 @@ const resolveConfig = (options: CreateViewerOptions): Config => ({
     lang: options.lang,
     transparent: options.transparent ?? false,
     embed: options.embed ?? false,
+    hostInput: options.hostInput ?? false,
+    position: options.position,
+    scale: options.scale,
     sogstBudget: options.sogstBudget,
     sogstGpuDecode: options.sogstGpuDecode ?? true,
     sogstRotationDeg: options.sogstRotationDeg,
@@ -205,6 +209,43 @@ const createViewer = async (options: CreateViewerOptions): Promise<ViewerHandle>
         initEmbed(global, viewer);
     }
 
+    // Position and scale the content entity: splats are authored at arbitrary origins and
+    // scales. Re-applied when an XR session ends, so the page view always returns to the
+    // configured transform whatever happened during the session.
+    if (config.position || config.scale) {
+        const { position, scale } = config;
+        let contentEntity: Entity | null = null;
+        const applyTransform = () => {
+            if (!contentEntity) return;
+            if (position) contentEntity.setLocalPosition(position[0], position[1], position[2]);
+            if (scale) contentEntity.setLocalScale(scale[0], scale[1], scale[2]);
+        };
+        gsplatLoad
+            .then((entity) => {
+                contentEntity = entity;
+                applyTransform();
+                app.renderNextFrame = true;
+            })
+            .catch(() => {
+                /* a load failure is reported through state */
+            });
+        const xrEnd = app.xr?.on('end', () => {
+            applyTransform();
+            app.renderNextFrame = true;
+        });
+        viewer.onDestroy(() => xrEnd?.off());
+    }
+
+    // Host-fed input flows through the shared controller pipeline. The input controller exists
+    // once loading completes, so the device is registered on the first frame; deltas queued
+    // before then wait in the device.
+    const hostInputDevice = new EmbedInputDevice();
+    events.once('firstFrame', () => {
+        viewer.inputController?.extraDevices.push(hostInputDevice);
+    });
+
+    const cameraTarget = new Vec3();
+
     const handle: ViewerHandle = {
         app,
         state,
@@ -221,6 +262,28 @@ const createViewer = async (options: CreateViewerOptions): Promise<ViewerHandle>
         exitFullscreen: () => viewer.exitFullscreen(),
         startXR: (mode) => viewer.startXR(mode),
         endXR: () => viewer.endXR(),
+        getCameraPose: () => {
+            // the camera manager is only assigned when loading completes
+            const active = viewer.cameraManager?.camera;
+            if (!active) {
+                return null;
+            }
+            active.calcFocusPoint(cameraTarget);
+            return {
+                position: [active.position.x, active.position.y, active.position.z],
+                target: [cameraTarget.x, cameraTarget.y, cameraTarget.z],
+                fov: active.fov
+            };
+        },
+        input: (deltas) => {
+            if (deltas.rotate) {
+                hostInputDevice.queueRotate(deltas.rotate[0], deltas.rotate[1]);
+            }
+            if (typeof deltas.zoom === 'number') {
+                hostInputDevice.queueZoom(deltas.zoom);
+            }
+            app.renderNextFrame = true;
+        },
         destroy: () => viewer.destroy()
     };
 
@@ -244,5 +307,5 @@ console.log(`SuperSplat Viewer v${appVersion} | Engine v${engineVersion} (${engi
 
 export type { CaptureResult } from './capture';
 export type { CreateViewerOptions, ViewerAssets, ViewerFlags } from './options';
-export type { CaptureOptions, ViewerHandle, ViewerState, XrMode } from './types';
+export type { CameraPose, CaptureOptions, ViewerHandle, ViewerState, XrMode } from './types';
 export { createViewer };

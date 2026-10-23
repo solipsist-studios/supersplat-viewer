@@ -79,6 +79,24 @@ type ViewerFlags = {
      */
     embed?: boolean;
     /**
+     * The host page owns all input: the native mouse, touch, keyboard and gamepad devices are not
+     * attached, and the host feeds orbit and zoom through `ViewerHandle.input`. For a viewer
+     * under other ui, such as a flipbook. Implied by `embed`.
+     */
+    hostInput?: boolean;
+    /**
+     * World-space position of the content entity. Splats are authored at arbitrary origins, so
+     * each needs its own adjustment; this also fixes where the content sits relative to the
+     * floor in AR (y = 0). Restored when an XR session ends.
+     */
+    position?: [number, number, number];
+    /**
+     * Scale of the content entity, which is its real-world size in AR. Uniform scales are
+     * exact; `.sogst` motion follows the world transform's lossy scale. Restored when an XR
+     * session ends.
+     */
+    scale?: [number, number, number];
+    /**
      * `.sogst` splat budget in millions. A segmented clip larger than this plays through a
      * segment window, with only the segments near the playhead decoded. Unset: chosen from the
      * device and the clip. 0: every clip fully resident.

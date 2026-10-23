@@ -86,7 +86,7 @@ class InputController {
         // In embed mode the host page owns all input (fed in via
         // extraDevices) — don't attach the native devices or the app-level
         // helpers, whose window/canvas listeners would fight the host page.
-        if (config.embed) {
+        if (config.embed || config.hostInput) {
             return;
         }
 
@@ -173,7 +173,7 @@ class InputController {
 
         // order: touch first (so touchCount in ctx reflects this frame's
         // count delta), then everyone else.
-        if (!this._global.config.embed) {
+        if (!this._global.config.embed && !this._global.config.hostInput) {
             this._touch.update(ctx, this.frame);
             ctx.touchCount = this._touch.touchCount;
             this._keyboardMouse.update(ctx, this.frame);

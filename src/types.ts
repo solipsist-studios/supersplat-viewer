@@ -20,7 +20,8 @@ type LoopMode = 'none' | 'repeat' | 'pingpong';
 type XrMode = 'ar' | 'vr';
 
 // the flags that have no default: unset means the viewer decides, or nothing applies
-type OptionalFlag = 'hpr' | 'budget' | 'lang' | 'sogstBudget' | 'sogstRotationDeg' | 'animLoopMode';
+type OptionalFlag =
+    'hpr' | 'budget' | 'lang' | 'sogstBudget' | 'sogstRotationDeg' | 'animLoopMode' | 'position' | 'scale';
 
 // the createViewer options with every default applied: what the viewer reads at runtime, and
 // immutable once it starts. The flags are documented on ViewerFlags
@@ -132,6 +133,17 @@ type CaptureOptions = {
     supersample?: number;
 };
 
+/**
+ * A camera pose in the same shape as a settings file's `cameras[0].initial`, so a pose read
+ * back from a live viewer pastes straight into settings with no conversion. The viewer stores
+ * its camera as position, angles and distance internally; this is the look-at form.
+ */
+type CameraPose = {
+    position: [number, number, number];
+    target: [number, number, number];
+    fov: number;
+};
+
 /** What `createViewer` resolves to: one viewer instance. */
 type ViewerHandle = {
     /** The engine application, for a host that needs to reach past this api. */
@@ -209,6 +221,18 @@ type ViewerHandle = {
      * Release everything: the engine application, the graphics context, every listener, and the
      * subtree built inside the container. Idempotent, and safe before loading finishes.
      */
+    /**
+     * Read the live camera pose, or null before the camera exists (it is built once the scene
+     * finishes loading). An authoring aid: orbit to the framing you want, then read out the
+     * numbers to bake into settings.
+     */
+    getCameraPose(): CameraPose | null;
+    /**
+     * Queue orbit and zoom deltas, in pixels, through the same controller pipeline as native
+     * pointer input. Meant for a viewer created with `hostInput`, whose host owns all input.
+     * Never throws; deltas queued before the scene loads apply once it has.
+     */
+    input(deltas: { rotate?: [number, number]; zoom?: number }): void;
     destroy(): void;
 };
 
@@ -228,4 +252,16 @@ type Global = {
     localize: Localize;
 };
 
-export { CameraMode, InputMode, LoopMode, XrMode, Config, State, Global, ViewerState, CaptureOptions, ViewerHandle };
+export {
+    CameraMode,
+    CameraPose,
+    InputMode,
+    LoopMode,
+    XrMode,
+    Config,
+    State,
+    Global,
+    ViewerState,
+    CaptureOptions,
+    ViewerHandle
+};
