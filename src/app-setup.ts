@@ -13,22 +13,43 @@ import { SogstPatchFence, SogstSortFence } from './core/sogst-sort-fence';
 import { installSogstSorter } from './core/sogst-sorter';
 import { replaySogst, streamSogst } from './core/stream-sogst';
 import { isSogstFilename } from './parsers/sogst';
+import { readPreferences } from './preferences';
 import type { Config, Global, LoopMode, State } from './types';
 
 // Shared application bootstrap used by both the standalone web app (index.ts)
 // and the embeddable library entry (embed-app.ts).
 
-const loadGsplat = async (app: AppBase, config: Config, progressCallback: (progress: number) => void) => {
-    const { contents, contentUrl } = config;
+// The filename's extension selects the gsplat parser, so a url with no usable name (a data:
+// or blob: uri) needs the config to name its content instead; falsy (an empty name) falls
+// back to the url-derived name.
+const contentName = (contentUrl: string, contentFilename?: string | null) =>
+    contentFilename || new URL(contentUrl, location.href).pathname.split('/').pop();
+
+const loadGsplat = async (
+    app: AppBase,
+    config: Config,
+    progressCallback: (progress: number) => void,
+    cancelled: () => boolean
+) => {
+    const { contents, contentUrl, contentFilename } = config;
     const c = contents as unknown as ArrayBuffer;
-    // a falsy (empty) name falls back to the url-derived one
-    const filename = config.contentFilename || new URL(contentUrl, location.href).pathname.split('/').pop();
+    const filename = contentName(contentUrl, contentFilename);
     const data = filename.toLowerCase() === 'meta.json' ? await (await contents).json() : undefined;
+
+    // Reading that metadata spans a network round trip, so a destroy can land in the middle of
+    // it. `app.destroy()` nulls the asset registry, so registering the asset now would throw
+    // from the engine's internals; reject instead, which the viewer's load chains expect.
+    if (cancelled()) {
+        throw new Error('loadGsplat: the viewer was destroyed while loading');
+    }
+
     const asset = new Asset(filename, 'gsplat', { url: contentUrl, filename, contents: c }, data);
 
     return new Promise<Entity>((resolve, reject) => {
         asset.on('load', () => {
-            const entity = new Entity('gsplat');
+            // always name the app: the engine's default is the most recently created one,
+            // which is another viewer's when two share a page
+            const entity = new Entity('gsplat', app);
             entity.setLocalEulerAngles(0, 0, 180);
             entity.addComponent('gsplat', {
                 unified: true,
@@ -333,8 +354,12 @@ const loadSogstGsplat = async (
 };
 
 // Load a static 3DGS scene (PLY / LOD / meta.json etc.)
-const load3dgs = (app: AppBase, config: Config, progressCallback: (progress: number) => void) =>
-    loadGsplat(app, config, progressCallback);
+const load3dgs = (
+    app: AppBase,
+    config: Config,
+    progressCallback: (progress: number) => void,
+    cancelled: () => boolean
+) => loadGsplat(app, config, progressCallback, cancelled);
 
 // Extensions the static 3DGS path understands, mirroring the parser table in
 // the engine's GSplatHandler ({ply, sog, json} plus lod-meta.json). Variants
@@ -366,6 +391,15 @@ const isStatic3dgsFilename = (filename: string) => {
     return dot <= 0 || STATIC_3DGS_EXTENSIONS.includes(lower.slice(dot));
 };
 
+// Whether a prefetched response for this content is worth starting: the static 3DGS handlers
+// read it, except the engine's octree parser, which fetches lod-meta.json itself and ignores
+// `asset.file.contents`. Prefetching that file downloads the metadata twice, and the second
+// request is not a cache hit because the file is served with no cache-control header.
+const isPrefetchable = (contentUrl: string, contentFilename?: string | null) => {
+    const name = contentName(contentUrl, contentFilename) ?? '';
+    return isStatic3dgsFilename(name) && name.toLowerCase() !== 'lod-meta.json';
+};
+
 // Dispatch on the filename, rejecting an unrecognised extension here rather
 // than letting it reach the gsplat asset handler. That handler downloads the
 // whole file before the PLY parser rejects its header, so a mistyped or
@@ -377,7 +411,8 @@ const loadContent = (
     app: AppBase,
     config: Config,
     global: Global,
-    progressCallback: (progress: number) => void
+    progressCallback: (progress: number) => void,
+    cancelled: () => boolean
 ): Promise<Entity> => {
     const filename = contentFilename(config);
     if (is4dgsFilename(filename)) {
@@ -386,7 +421,7 @@ const loadContent = (
     // Same predicate the prefetch uses, so the two cannot disagree about
     // which files are worth fetching.
     if (isStatic3dgsFilename(filename)) {
-        return load3dgs(app, config, progressCallback);
+        return load3dgs(app, config, progressCallback, cancelled);
     }
     const ext = filename.slice(filename.lastIndexOf('.'));
     return Promise.reject(
@@ -484,13 +519,13 @@ const createApp = async (canvas: HTMLCanvasElement, config: Config) => {
     (app.loader.getHandler('texture') as TextureHandler).imgParser.crossOrigin = 'anonymous';
 
     // Create entity hierarchy
-    const cameraRoot = new Entity('camera root');
+    const cameraRoot = new Entity('camera root', app);
     app.root.addChild(cameraRoot);
 
-    const camera = new Entity('camera');
+    const camera = new Entity('camera', app);
     cameraRoot.addChild(camera);
 
-    const light = new Entity('light');
+    const light = new Entity('light', app);
     light.setEulerAngles(35, 45, 0);
     light.addComponent('light', {
         color: new Color(1.0, 0.98, 0.957),
@@ -573,6 +608,8 @@ const initCanvas = (global: Global) => {
     // Disable the engine's built-in canvas resize — we handle it via ResizeObserver
     (app as unknown as { _allowResize: boolean })._allowResize = false;
     apply();
+
+    return () => resizeObserver.disconnect();
 };
 
 // Translate the config's loop style into the transport's loop mode. The two
@@ -586,24 +623,17 @@ const initialLoopMode = (config?: Config): LoopMode => {
     return config?.animLoopMode === 'pingpong' ? 'pingpong' : 'repeat';
 };
 
-// Build the observable viewer state (shared defaults, including the legacy
-// `retinaDisplay` -> `performanceMode` localStorage migration).
+// Build the observable viewer state (shared defaults; the persisted preferences come from
+// localStorage, with the legacy `retinaDisplay` -> `performanceMode` migration).
 const createViewerState = (events: EventHandler, config?: Config): State => {
-    const legacyRetina = localStorage.getItem('retinaDisplay');
-    if (legacyRetina !== null && localStorage.getItem('performanceMode') === null) {
-        localStorage.setItem('performanceMode', String(legacyRetina === 'false'));
-        localStorage.removeItem('retinaDisplay');
-    }
-    const storedPerformanceMode = localStorage.getItem('performanceMode');
-
     return observe(events, {
         loaded: false,
-        readyToRender: false,
-        performanceMode: storedPerformanceMode !== null ? storedPerformanceMode === 'true' : platform.mobile,
+        ...readPreferences(platform.mobile),
         progress: 0,
         inputMode: platform.mobile ? 'touch' : 'desktop',
         cameraMode: 'orbit',
         hasAnimation: false,
+        hasSplatAnimation: false,
         animationDuration: 0,
         animationTime: 0,
         animationPaused: true,
@@ -611,14 +641,17 @@ const createViewerState = (events: EventHandler, config?: Config): State => {
         animationSpeed: 1,
         hasAR: false,
         hasVR: false,
+        canStartAR: false,
+        canStartVR: false,
+        xrMode: null,
         hasCollision: false,
         hasCollisionOverlay: false,
         walkAllowed: false,
         collisionOverlayEnabled: false,
         isFullscreen: false,
         controlsHidden: false,
-        showAnnotations: localStorage.getItem('showAnnotations') !== 'false',
-        gamingControls: localStorage.getItem('gamingControls') === 'true'
+        selectedAnnotation: null,
+        inputEnabled: true
     });
 };
 
@@ -628,6 +661,7 @@ export {
     measureCanvas,
     resizeCanvas,
     createViewerState,
+    isPrefetchable,
     isStatic3dgsFilename,
     loadContent,
     loadSkybox

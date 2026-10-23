@@ -49,11 +49,21 @@ const createFrameCamera = (bbox: BoundingBox, fov: number) => {
 class CameraManager {
     update: (deltaTime: number, cameraFrame: CameraFrame) => void;
 
+    seek: (time: number) => void;
+
+    selectAnnotation: (annotation: Annotation) => void;
+
     // Re-seed the active controller from the current camera pose and
     // cancel any in-progress transition lerp. Use after externally
     // mutating `camera` and/or `state.cameraMode` to make the change
     // visible instantly.
     snap: () => void;
+
+    // Attach (or clear) collision after construction. The viewer reveals the scene without
+    // waiting for collision data, which can be larger than the splats themselves, so this
+    // arrives late. It re-tests whether walk mode is allowed, which gates the walk toggle
+    // and the mode the camera falls back to when an animation is interrupted.
+    setCollision: (collision: Collision | null) => void;
 
     // holds the camera state
     camera = new Camera();
@@ -61,7 +71,7 @@ class CameraManager {
     constructor(global: Global, bbox: BoundingBox, collision: Collision | null = null) {
         const { events, settings, state } = global;
 
-        const walkAllowed = isWalkAllowed(bbox, collision);
+        let walkAllowed = isWalkAllowed(bbox, collision);
 
         const camera0 = settings.cameras[0]?.initial;
         const defaultFov = camera0?.fov ?? DEFAULT_CAMERA_FOV;
@@ -117,13 +127,14 @@ class CameraManager {
             return controllers[cameraMode] as CameraController;
         };
 
-        // state.hasAnimation is true only for 4DGS content (set by setupSplatAnim
+        // state.hasSplatAnimation is true only for 4DGS content (set by setupSplatAnim
         // before this constructor runs) — its timeline belongs to the splat
         // animation, so leave animationDuration/cameraMode defaults alone here.
         // 3D content always has a camera track (authored, or the generated
         // rotate/figure-8 fallback below) and keeps the existing auto-orbit
         // "turntable" behaviour.
-        const isSplatAnimation = state.hasAnimation;
+        const isSplatAnimation = state.hasSplatAnimation;
+        state.hasAnimation = isSplatAnimation || !!controllers.anim;
         const hasCameraAnim = !!controllers.anim && !isSplatAnimation;
 
         if (!isSplatAnimation) {
@@ -155,8 +166,11 @@ class CameraManager {
 
         const target = new Camera(this.camera); // the active controller updates this
         const from = new Camera(this.camera); // stores the previous camera state during transition
-        const defaultMode: CameraMode = isObjectExperience ? 'orbit' : walkAllowed ? 'walk' : 'fly';
-        let fromMode: CameraMode = defaultMode;
+        const defaultMode = (): CameraMode => (isObjectExperience ? 'orbit' : walkAllowed ? 'walk' : 'fly');
+
+        // null until the first mode change, so the fallback tracks `walkAllowed` if collision
+        // attaches before the user has moved
+        let fromMode: CameraMode | null = null;
 
         // tracks the mode to restore when exiting walk
         let preWalkMode: CameraMode = isObjectExperience ? 'orbit' : 'fly';
@@ -173,6 +187,12 @@ class CameraManager {
         const startTransition = () => {
             from.copy(this.camera);
             transitionTimer = 0;
+        };
+
+        this.setCollision = (value: Collision | null) => {
+            controllers.fly.collision = value;
+            controllers.walk.collision = value;
+            walkAllowed = isWalkAllowed(bbox, value);
         };
 
         this.snap = () => {
@@ -268,14 +288,15 @@ class CameraManager {
                     }
                     break;
                 case 'requestFirstPerson':
-                    state.cameraMode = 'fly';
+                    // movement input from a non-first-person mode: walk where the scene allows
+                    // it, fly otherwise, the same preference as the animation fallback
+                    state.cameraMode = walkAllowed ? 'walk' : 'fly';
                     break;
                 case 'toggleWalk':
                     if (walkAllowed) {
                         if (state.cameraMode === 'walk') {
                             state.cameraMode = preWalkMode;
                         } else {
-                            preWalkMode = state.cameraMode;
                             state.cameraMode = 'walk';
                         }
                     }
@@ -287,12 +308,12 @@ class CameraManager {
                     break;
                 case 'cancel':
                     if (state.cameraMode === 'anim') {
-                        state.cameraMode = fromMode;
+                        state.cameraMode = fromMode ?? defaultMode();
                     }
                     break;
                 case 'interrupt':
                     if (state.cameraMode === 'anim') {
-                        state.cameraMode = fromMode;
+                        state.cameraMode = fromMode ?? defaultMode();
                     }
                     break;
             }
@@ -300,6 +321,10 @@ class CameraManager {
 
         // handle camera mode switching
         events.on('cameraMode:changed', (value: CameraMode, prev: CameraMode) => {
+            // Host state writes and the walk toggle must remember the same return mode.
+            if (value === 'walk') {
+                preWalkMode = prev;
+            }
             sourcesByMode[prev]?.cancel();
 
             // snapshot the current pose before any controller mutation
@@ -329,18 +354,19 @@ class CameraManager {
             }
         });
 
-        // handle user scrubbing the animation timeline
-        events.on('scrubAnim', (time) => {
+        this.seek = (time) => {
             if (!controllers.anim || isSplatAnimation) {
-                // 4DGS content — scrubbing is handled by SplatAnimationBase.attach()
+                // 4DGS content: scrubbing is handled by SplatAnimationBase.attach()
                 return;
             }
+
             // switch to animation camera if we're not already there
             state.cameraMode = 'anim';
 
             // set time
             controllers.anim.animState.cursor.value = time;
-        });
+            state.animationTime = controllers.anim.animState.cursor.value;
+        };
 
         // handle user picking in the scene
         events.on('pick', (position: Vec3) => {
@@ -356,7 +382,7 @@ class CameraManager {
             clearOrbitTargetOnTransitionEnd = true;
         });
 
-        events.on('annotation.activate', (annotation: Annotation) => {
+        this.selectAnnotation = (annotation: Annotation) => {
             events.fire('orbitTarget:clear');
 
             // switch to orbit camera on pick
@@ -370,7 +396,7 @@ class CameraManager {
 
             controllers.orbit.goto(tmpCamera);
             startTransition();
-        });
+        };
 
         // tap-to-navigate: start auto-driving the active mode toward a picked position
         events.on('navigateTo', (position: Vec3, normal: Vec3, speedMul = 1) => {

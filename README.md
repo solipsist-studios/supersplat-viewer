@@ -33,7 +33,8 @@ The app supports a number of URL parameters (these are subject to change):
 
 | Parameter | Description |
 | --------- | ----------- |
-| `noui` | Hide the UI overlay |
+| `noui` | Hide the UI overlay (the programmatic form is `ui: false`, which skips building it) |
+| `reticle` | Show the centre reticle in captured desktop fly/walk mode (off by default; programmatic form: `reticle: true`) |
 | `noanim` | Start with animation paused |
 | `ministats` | Show runtime CPU/GPU performance graphs |
 | `lang` | Override the UI language (`de`, `en`, `es`, `fr`, `ja`, `ko`, `pt-BR`, `ru`, `zh-CN`; default: detect from browser) |
@@ -59,79 +60,7 @@ By default the viewer uses WebGPU when available (falling back automatically whe
 
 ## NPM Package
 
-### Embedding the viewer
-
-If you generate a page around the viewer, use `renderViewerHtml`. It returns a complete
-document, with your asset URLs and settings supplied through a single JSON block:
-
-```ts
-import { renderViewerHtml } from '@playcanvas/supersplat-viewer';
-
-const document = renderViewerHtml({
-    bootstrap: {
-        settings,                      // an object, or omit and set settingsUrl
-        contentUrl: 'scene.sog',
-        posterUrl: 'poster.jpg'
-    },
-    baseHref: '/viewer/',              // serving from a sub-path
-    backgroundColor: [0, 0, 0],        // components are 0..1, not 0..255
-    headExtras: '<script src="analytics.js"></script>',
-    inlineCss: true                    // no sibling index.css needed
-});
-```
-
-Called with no options it returns the document the package ships, unmodified. URL parameters
-on the served page override the bootstrap's asset URLs, so an embed stays overridable per
-instance — except an inline `settings` object, which takes precedence over `?settings=`.
-
-Set both `inlineCss` and `inlineJs` for a single self-contained file, with the splat passed as
-a `data:` URI in `contentUrl` and the settings supplied inline through the bootstrap's
-`settings` object — without an inline settings object the page still fetches `./settings.json`
-from a sibling file. A `data:` URI has no filename and the splat format is chosen by the
-name's extension, so name its content with the bootstrap's `contentFilename` (e.g.
-`scene.sog`). The flags are independent, so a server that serves the bundle from its own
-route can inline only the stylesheet.
-
-`html` is still exported as a raw string, but is **deprecated**: its formatting is not part of
-this package's API and changes between releases, so pattern-matching it is unsupported. `css`
-and `js` remain exported for serving (or writing) the stylesheet and bundle alongside a
-rendered document that doesn't inline them.
-
-### Settings
-
-The `/settings` subpath exports the schema types plus helpers for generating, validating and
-migrating a `settings.json` file:
-
-```ts
-import {
-    defaultSettings,
-    importSettings,
-    validateSettings,
-    POST_EFFECT_RANGES,
-    type ExperienceSettings
-} from '@playcanvas/supersplat-viewer/settings';
-
-// a complete settings object every tool agrees on; pass 'object' to frame a subject
-// from outside rather than a captured space from within
-const settings: ExperienceSettings = defaultSettings();
-
-// throws on invalid input, naming the offending field
-validateSettings(json);
-
-// additionally check the authoring bounds — stricter than what the viewer will render,
-// so existing files may fail. Producers writing new settings should enable it
-validateSettings(json, { limits: true });
-
-// migrates older versions forward; does not mutate its argument
-const migrated = importSettings(json);
-
-// the bounds are data, so an editor UI can drive a slider from the same numbers
-const { min, max, step } = POST_EFFECT_RANGES.bloom.intensity;
-```
-
-`CAMERA_FOV_RANGE`, `POST_EFFECT_RANGES`, `ANIM_TRACK_LIMITS` and `ANNOTATION_LIMITS` are
-exported as data, so an editor UI can drive sliders from the same bounds the validator uses.
-They are frozen at runtime.
+See the [API reference](docs/api.md) for embedding, runtime control, UI customization and settings.
 
 ## Local Development
 
@@ -168,104 +97,6 @@ ENGINE=debug npm run develop
 
 This also works with `npm run build` and `npm run watch`.
 
-## Settings Schema
-
-The `settings.json` file uses the schema below (defined in TypeScript and exported from `@playcanvas/supersplat-viewer/settings`). Legacy v1 settings produced by older SuperSplat releases are automatically migrated to v2 on load.
-
-```typescript
-type AnimTrack = {
-    name: string,
-    duration: number,
-    frameRate: number,
-    loopMode: 'none' | 'repeat' | 'pingpong',
-    interpolation: 'step' | 'spline',
-    smoothness: number,
-    keyframes: {
-        times: number[],
-        values: {
-            position: number[],
-            target: number[],
-            fov: number[],
-        }
-    }
-};
-
-type CameraPose = {
-    position: [number, number, number],
-    target: [number, number, number],
-    fov: number
-};
-
-type Camera = {
-    initial: CameraPose
-};
-
-type Annotation = {
-    position: [number, number, number],
-    title: string,
-    text: string,
-    extras?: any,
-    camera: Camera
-};
-
-type PostEffectSettings = {
-    sharpness: { enabled: boolean, amount: number },
-    bloom:     { enabled: boolean, intensity: number, blurLevel: number },
-    grading:   { enabled: boolean, brightness: number, contrast: number, saturation: number, tint: [number, number, number] },
-    vignette:  { enabled: boolean, intensity: number, inner: number, outer: number, curvature: number },
-    fringing:  { enabled: boolean, intensity: number }
-};
-
-type ExperienceSettings = {
-    version: 2,
-    tonemapping: 'none' | 'linear' | 'filmic' | 'hejl' | 'aces' | 'aces2' | 'neutral',
-    highPrecisionRendering: boolean,
-    soundUrl?: string,
-    background: {
-        color: [number, number, number],
-        skyboxUrl?: string
-    },
-    postEffectSettings: PostEffectSettings,
-    animTracks: AnimTrack[],
-    cameras: Camera[],
-    annotations: Annotation[],
-    startMode: 'default' | 'animTrack' | 'annotation'
-};
-```
-
-### Example settings.json
-
-```json
-{
-    "version": 2,
-    "tonemapping": "none",
-    "highPrecisionRendering": false,
-    "background": {
-        "color": [0, 0, 0]
-    },
-    "postEffectSettings": {
-        "sharpness": { "enabled": false, "amount": 0 },
-        "bloom":     { "enabled": false, "intensity": 0.1, "blurLevel": 2 },
-        "grading":   { "enabled": false, "brightness": 1, "contrast": 1, "saturation": 1, "tint": [1, 1, 1] },
-        "vignette":  { "enabled": false, "intensity": 0.5, "inner": 0.3, "outer": 0.75, "curvature": 1 },
-        "fringing":  { "enabled": false, "intensity": 0.5 }
-    },
-    "animTracks": [],
-    "cameras": [
-        {
-            "initial": {
-                "position": [0, 1, -1],
-                "target": [0, 0, 0],
-                "fov": 60
-            }
-        }
-    ],
-    "annotations": [],
-    "startMode": "default"
-}
-```
-
----
 
 ## 4D Gaussian Splatting — SOG spacetime (`.sogst`)
 
