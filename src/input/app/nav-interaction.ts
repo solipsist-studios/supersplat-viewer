@@ -1,7 +1,7 @@
 import { Vec3 } from 'playcanvas';
 
 import type { Collision } from '../../collision';
-import type { Picker } from '../../picker';
+import type { ScenePicker } from '../../picker';
 import type { Global } from '../../types';
 import { TAP_EPSILON } from '../shared';
 
@@ -37,7 +37,7 @@ type PickTarget = {
 class NavInteraction {
     collision: Collision | null = null;
 
-    private _picker: Picker;
+    private _picker: ScenePicker;
 
     private _global: Global | null = null;
 
@@ -57,7 +57,7 @@ class NavInteraction {
 
     private _lastTap = { time: 0, x: 0, y: 0 };
 
-    constructor(picker: Picker) {
+    constructor(picker: ScenePicker) {
         this._picker = picker;
     }
 
@@ -92,6 +92,7 @@ class NavInteraction {
         camera.camera!.screenToWorld(offsetX, offsetY, 1.0, tmpV);
         tmpV.sub(cameraPos).normalize();
 
+        // a camera inside solid geometry picks where the ray leaves it, not its own position
         const hit = this.collision.queryRay(
             cameraPos.x,
             cameraPos.y,
@@ -99,11 +100,14 @@ class NavInteraction {
             tmpV.x,
             tmpV.y,
             tmpV.z,
-            camera.camera!.farClip
+            camera.camera!.farClip,
+            true
         );
 
         if (!hit) return null;
 
+        // an exit's surface faces along the ray, so its normal is found looking back along it
+        if (hit.exit) tmpV.mulScalar(-1);
         const sn = this.collision.querySurfaceNormal(hit.x, hit.y, hit.z, tmpV.x, tmpV.y, tmpV.z);
         return {
             position: new Vec3(hit.x, hit.y, hit.z),

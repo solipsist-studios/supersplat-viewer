@@ -1,4 +1,5 @@
-import { copyFileSync, readFileSync } from 'fs';
+import { copyFileSync, existsSync, readFileSync } from 'fs';
+import path from 'path';
 
 import json from '@rollup/plugin-json';
 import resolve from '@rollup/plugin-node-resolve';
@@ -9,6 +10,40 @@ import { dts } from 'rollup-plugin-dts';
 import scss from 'rollup-plugin-scss';
 import { string } from 'rollup-plugin-string';
 import sass from 'sass';
+import ts from 'typescript';
+
+// Watch builds transpile each TypeScript file on its own. The typescript plugin, in watch mode,
+// hands rollup the output of TypeScript's own watch program, which detects changes separately
+// from rollup's watcher: when it misses one (a change landing during a build, a file replaced by
+// git or an editor), rollup rebuilds with that file's previous output, and keeps it until
+// TypeScript's watcher fires again, which may be never. Rollup reads every changed file itself,
+// so transpiling what it passes cannot go stale. Type errors come from `npm run type:check`,
+// which `npm run develop` runs in watch mode alongside.
+function transpileTypescript() {
+    const compilerOptions = {
+        module: ts.ModuleKind.ESNext,
+        target: ts.ScriptTarget.ES2022,
+        sourceMap: true,
+        inlineSources: true
+    };
+    return {
+        name: 'transpile-typescript',
+        // relative imports name modules without their extension
+        resolveId(source, importer) {
+            if (!importer || !source.startsWith('.')) return null;
+            const base = path.resolve(path.dirname(importer), source);
+            return [`${base}.ts`, path.join(base, 'index.ts')].find((candidate) => existsSync(candidate)) ?? null;
+        },
+        transform(code, id) {
+            if (!id.endsWith('.ts') || id.endsWith('.d.ts')) return null;
+            const output = ts.transpileModule(code, { compilerOptions, fileName: id });
+            return { code: output.outputText, map: JSON.parse(output.sourceMapText) };
+        }
+    };
+}
+
+const watching = process.env.ROLLUP_WATCH === 'true';
+const typescriptPlugin = (options) => (watching ? transpileTypescript() : typescript(options));
 
 function htmlPlugin() {
     return {
@@ -17,6 +52,8 @@ function htmlPlugin() {
             this.addWatchFile('src/index.html');
             this.addWatchFile('src/dev/mount-loop.html');
             this.addWatchFile('src/dev/custom-ui.html');
+            this.addWatchFile('src/dev/bench.html');
+            this.addWatchFile('src/dev/card.html');
         },
         generateBundle() {
             const contents = readFileSync('src/index.html', 'utf-8');
@@ -45,6 +82,21 @@ function htmlPlugin() {
                 type: 'asset',
                 fileName: 'custom-ui.html',
                 source: readFileSync('src/dev/custom-ui.html', 'utf-8')
+            });
+
+            // Development page that frames the viewer as a social card player does, with host
+            // chrome over its bottom, for the `experimentalTouchInsetBottom` option.
+            this.emitFile({
+                type: 'asset',
+                fileName: 'card.html',
+                source: readFileSync('src/dev/card.html', 'utf-8')
+            });
+
+            // Development page that measures the splat renderers (docs/stochastic-renderer.md).
+            this.emitFile({
+                type: 'asset',
+                fileName: 'bench.html',
+                source: readFileSync('src/dev/bench.html', 'utf-8')
             });
         }
     };
@@ -110,7 +162,7 @@ const buildPublic = {
     },
     plugins: [
         resolve(debugEngine ? { exportConditions: ['development'] } : {}),
-        typescript(),
+        typescriptPlugin(),
         json(),
         htmlTemplatePlugin(),
         htmlPlugin()
@@ -128,7 +180,7 @@ const buildDist = {
         string({
             include: ['**/*.html', '**/*.css', '**/*.js']
         }),
-        typescript({ noEmit: true }),
+        typescriptPlugin({ noEmit: true }),
         json()
     ]
 };
@@ -150,7 +202,7 @@ const buildViewer = {
     external: engineExternal,
     plugins: [
         resolve(),
-        typescript(),
+        typescriptPlugin(),
         json(),
         htmlTemplatePlugin(),
         {
@@ -171,7 +223,7 @@ const buildSettings = {
         format: 'esm',
         sourcemap: true
     },
-    plugins: [typescript({ noEmit: true })]
+    plugins: [typescriptPlugin({ noEmit: true })]
 };
 
 // Self-contained embeddable viewer library (engine bundled, no built-in UI) for hosting the

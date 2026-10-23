@@ -1,8 +1,13 @@
 {
     "settings.performance-mode": "Performance Mode",
+    "settings.quality": "Quality",
+    "settings.quality-performance": "Performance",
+    "settings.quality-default": "Default",
+    "settings.quality-high": "High",
+    "settings.quality-max": "Max",
     "settings.gaming-controls": "Gaming Controls",
     "settings.show-annotations": "Show Annotations",
-    "settings.show-hints": "Show Control Hints",
+    "settings.show-collision": "Show Collision",
     "settings.frame": "Frame",
     "settings.reset": "Reset",
 
@@ -15,11 +20,9 @@
     "tooltip.walk-mode": "Walk Mode",
     "tooltip.reset-camera": "Reset Camera",
     "tooltip.frame-scene": "Frame Scene",
-    "tooltip.show-collision": "Show Collision",
     "tooltip.settings": "Settings",
     "tooltip.help": "Info",
-    "tooltip.pin-hints": "Pin Control Hints",
-    "tooltip.hide-hints": "Hide Control Hints",
+    "tooltip.controls": "Controls",
     "tooltip.enter-ar": "Enter AR",
     "tooltip.enter-vr": "Enter VR",
     "tooltip.fullscreen": "Fullscreen",
@@ -51,6 +54,7 @@
     "help.action.toggle-gaming": "Toggle Gaming Controls",
     "help.action.show-collision": "Show Collision",
     "help.action.play-pause": "Play / Pause",
+    "help.action.toggle-controls": "Toggle Controls",
     "help.action.toggle-help": "Toggle Info",
     "help.action.exit-cancel": "Exit / Cancel",
     "help.action.release-mouse": "Release Mouse",
@@ -70,5 +74,11 @@
     "xr-modal.title": "WebGL Required",
     "xr-modal.message": "AR and VR are not supported on the WebGPU renderer. Pressing OK will reload the viewer with WebGL.",
     "xr-modal.cancel": "Cancel",
-    "xr-modal.ok": "OK"
+    "xr-modal.ok": "OK",
+    "vr-prompt.loading": "Loading…",
+    "vr-prompt.enter": "Tap to enter VR",
+    "xr-menu.exit-vr": "Exit VR",
+    "xr-menu.exit-ar": "Exit AR",
+    "xr-menu.ice-cream": "Ice-cream mode",
+    "xr-hint.stalled": "Nothing happening? Switch tabs and back."
 }

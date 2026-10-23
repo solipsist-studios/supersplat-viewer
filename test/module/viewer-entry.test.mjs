@@ -58,6 +58,8 @@ describe('the /viewer entry', () => {
     it('publishes the option and handle types, with their documentation', () => {
         const types = read('../../dist/viewer.d.ts');
 
+        // exported by name, not only declared for a field that uses it
+        const exported = (types.match(/export type \{([^}]*)\}/)?.[1] ?? '').split(',').map((name) => name.trim());
         for (const name of [
             'CreateViewerOptions',
             'ViewerAssets',
@@ -65,10 +67,11 @@ describe('the /viewer entry', () => {
             'ViewerHandle',
             'ViewerState',
             'XrMode',
+            'QualityLevel',
             'CaptureOptions',
             'CaptureResult'
         ]) {
-            assert.match(types, new RegExp(`\\b${name}\\b`), `${name} missing from the published types`);
+            assert.ok(exported.includes(name), `${name} missing from the published types' exports`);
         }
 
         // the engine's types are part of this surface rather than inlined
@@ -99,7 +102,10 @@ describe('the /viewer entry', () => {
 
     it('scopes every stylesheet rule to the instance root', () => {
         const css = read('../../dist/viewer.css');
-        const selectors = [...css.matchAll(/(?:^|\}|\{)\s*([^{}@][^{}]*?)\{/g)].map((m) => m[1].trim());
+        // at-rule preludes (`@media …`) are skipped: their rules are matched inside them. The
+        // first character is not whitespace either, so `\s*` cannot give back the newline before
+        // an at-rule and let it in
+        const selectors = [...css.matchAll(/(?:^|\}|\{)\s*([^{}@\s][^{}]*?)\{/g)].map((m) => m[1].trim());
 
         assert.ok(selectors.length > 50, `only ${selectors.length} selectors found — did the parse break?`);
 

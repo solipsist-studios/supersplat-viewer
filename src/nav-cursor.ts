@@ -313,8 +313,11 @@ class NavCursor {
 
         this.svg = document.createElementNS(SVGNS, 'svg');
         this.svg.style.cssText =
-            'position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;overflow:visible;z-index:1';
-        this.canvas.parentElement!.appendChild(this.svg);
+            'position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;overflow:visible';
+        // in the scene layer, over the scene and beneath the ui, and first in it so the
+        // annotations draw over the cursor
+        const parent = this.canvas.parentElement!;
+        (parent.querySelector(':scope > .sse-sceneLayer') ?? parent).prepend(this.svg);
 
         this.captureMarker = document.createElementNS(SVGNS, 'circle');
         this.captureMarker.setAttribute('cx', '50%');
@@ -451,6 +454,7 @@ class NavCursor {
         camera.camera.screenToWorld(offsetX, offsetY, 1.0, tmpV);
         tmpV.sub(cameraPos).normalize();
 
+        // a camera inside solid geometry picks where the ray leaves it, not its own position
         const hit = collision.queryRay(
             cameraPos.x,
             cameraPos.y,
@@ -458,13 +462,16 @@ class NavCursor {
             tmpV.x,
             tmpV.y,
             tmpV.z,
-            camera.camera.farClip
+            camera.camera.farClip,
+            true
         );
 
         if (!hit) {
             return null;
         }
 
+        // an exit's surface faces along the ray, so its normal is found looking back along it
+        if (hit.exit) tmpV.mulScalar(-1);
         const sn = collision.querySurfaceNormal(hit.x, hit.y, hit.z, tmpV.x, tmpV.y, tmpV.z);
         this.collisionTarget.position.set(hit.x, hit.y, hit.z);
         this.collisionTarget.normal.set(sn.nx, sn.ny, sn.nz);

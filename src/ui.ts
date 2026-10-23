@@ -3,18 +3,23 @@ import type { EventHandler } from 'playcanvas';
 
 import { version as appVersion } from '../package.json';
 
+import type { Picker } from './picker';
+import { QUALITY_LEVELS } from './quality';
 import { Tooltip } from './tooltip';
 import type { Global, ViewerHandle } from './types';
 import { initAnnotationControls } from './ui/annotation-controls';
 import { Annotations } from './ui/annotations';
 import { initCameraControls } from './ui/camera-controls';
-import { initControlsHint } from './ui/controls-hint';
+import { initControlsHint, readControlsOpen, writeControlsOpen } from './ui/controls-hint';
 import { initFullscreenControls } from './ui/fullscreen-controls';
 import { initJoystick } from './ui/joystick';
 import { initPlayback } from './ui/playback';
 import { initPlaybackExtras } from './ui/playback-extras';
 import { initSogstControls } from './ui/sogst-controls';
+import { initVrPrompt } from './ui/vr-prompt';
 import { initXrControls } from './ui/xr-controls';
+import { initXrHint } from './ui/xr-hint';
+import { visionPro } from './xr';
 
 // show the poster image over the hidden canvas, blurry at first and sharpening as loading
 // progresses, until the first frame renders
@@ -56,7 +61,15 @@ const getGpuName = (device: unknown) => {
 // Returns a function that removes the listeners added outside the ui subtree (window,
 // document, screen) and cancels pending timers. Listeners on the subtree's own elements are
 // released with the elements.
-const initUI = (global: Global, viewer: ViewerHandle, hasCameraFrame: boolean) => {
+// `getPicker` returns the viewer's picker once the scene has loaded, for the annotation
+// occlusion test; `getCameraProgress` how far the camera's current move has eased, 1 when there
+// is none, for the annotation tooltip's timing
+const initUI = (
+    global: Global,
+    viewer: ViewerHandle,
+    getPicker: () => Picker | undefined,
+    getCameraProgress: () => number
+) => {
     const { root, localize } = global;
     const { events, state } = viewer;
     const disposers: (() => void)[] = [];
@@ -70,6 +83,7 @@ const initUI = (global: Global, viewer: ViewerHandle, hasCameraFrame: boolean) =
 
     const dom = [
         'ui',
+        'sceneLayer',
         'controlsWrap',
         'annotationNav',
         'arMode',
@@ -91,21 +105,25 @@ const initUI = (global: Global, viewer: ViewerHandle, hasCameraFrame: boolean) =
         'orbitCamera',
         'flyCamera',
         'fpsCamera',
+        'qualityValue',
+        'qualityTrack',
+        'qualityRail',
+        'qualityThumb',
         'performanceModeRow',
         'performanceModeCheck',
-        'performanceModeOption',
-        'gamingControlsDivider',
         'gamingControlsRow',
         'gamingControlsCheck',
         'gamingControlsOption',
-        'controlsHintPin',
+        'controlsButton',
+        'controlsHint',
         'controlsHintClose',
         'reset',
         'frame',
         'loadingWrap',
         'loadingText',
         'loadingBar',
-        'showCollision',
+        'showCollisionRow',
+        'showCollisionCheck',
         'showCollisionShortcut',
         'walkShortcut',
         'playShortcut',
@@ -140,31 +158,32 @@ const initUI = (global: Global, viewer: ViewerHandle, hasCameraFrame: boolean) =
     });
 
     // Forward wheel events from UI overlays to the canvas so the camera zooms
-    // instead of the page scrolling (e.g. annotation nav, tooltips, hotspots).
+    // instead of the page scrolling (e.g. annotation nav, tooltips), and from the
+    // scene layer beside the ui (the annotation hotspots), which the ui does not contain.
     // The non-standard wheelDelta{X,Y} properties aren't part of WheelEventInit,
     // so they get dropped by `new WheelEvent(type, init)`. We re-attach them so
     // the trackpad-vs-mouse classifier in input-controller.ts behaves the same
     // whether the event originated on the canvas or was forwarded from the UI.
     const canvas = global.app.graphicsDevice.canvas as HTMLCanvasElement;
-    dom.ui.addEventListener(
-        'wheel',
-        (event: WheelEvent) => {
-            event.preventDefault();
-            const forwarded = new WheelEvent(event.type, event);
-            const src = event as WheelEvent & {
-                wheelDelta?: number;
-                wheelDeltaX?: number;
-                wheelDeltaY?: number;
-            };
-            for (const key of ['wheelDelta', 'wheelDeltaX', 'wheelDeltaY'] as const) {
-                if (typeof src[key] === 'number') {
-                    Object.defineProperty(forwarded, key, { value: src[key], configurable: true });
-                }
+    const forwardWheel = (event: WheelEvent) => {
+        event.preventDefault();
+        const forwarded = new WheelEvent(event.type, event);
+        const src = event as WheelEvent & {
+            wheelDelta?: number;
+            wheelDeltaX?: number;
+            wheelDeltaY?: number;
+        };
+        for (const key of ['wheelDelta', 'wheelDeltaX', 'wheelDeltaY'] as const) {
+            if (typeof src[key] === 'number') {
+                Object.defineProperty(forwarded, key, { value: src[key], configurable: true });
             }
-            canvas.dispatchEvent(forwarded);
-        },
-        { passive: false }
-    );
+        }
+        canvas.dispatchEvent(forwarded);
+    };
+    // both are the canvas's siblings, so a forwarded event cannot bubble back into either
+    for (const layer of [dom.ui, dom.sceneLayer]) {
+        layer.addEventListener('wheel', forwardWheel, { passive: false });
+    }
 
     // Handle loading progress updates
     const updateLoadingProgress = (progress: number) => {
@@ -183,7 +202,48 @@ const initUI = (global: Global, viewer: ViewerHandle, hasCameraFrame: boolean) =
         dom.loadingWrap.classList.add('sse-hidden');
     });
 
-    // Performance mode toggle
+    // The Quality slider: a stop per position, the ones the device cannot hold disabled. A press
+    // or drag on the track moves the thumb to the nearest available stop
+    const qualityStops = Array.from(dom.qualityRail.querySelectorAll<HTMLElement>('.sse-qualityStop'));
+    const stopLeft = (index: number) => `${(index / (QUALITY_LEVELS.length - 1)) * 100}%`;
+    qualityStops.forEach((stop, i) => {
+        stop.style.left = stopLeft(i);
+    });
+
+    const pickQuality = (event: PointerEvent) => {
+        const rail = dom.qualityRail.getBoundingClientRect();
+        const t = rail.width > 0 ? Math.min(1, Math.max(0, (event.clientX - rail.left) / rail.width)) : 0;
+        const at = t * (QUALITY_LEVELS.length - 1);
+        // the nearest available stop to the pointer
+        const nearest = state.qualityAvailable
+            .map((level) => ({ level, distance: Math.abs(QUALITY_LEVELS.indexOf(level) - at) }))
+            .sort((a, b) => a.distance - b.distance)[0];
+        if (nearest && nearest.level !== state.quality) state.quality = nearest.level;
+    };
+    dom.qualityTrack.addEventListener('pointerdown', (event: PointerEvent) => {
+        if (event.button !== 0) return;
+        dom.qualityTrack.setPointerCapture(event.pointerId);
+        pickQuality(event);
+    });
+    dom.qualityTrack.addEventListener('pointermove', (event: PointerEvent) => {
+        if (dom.qualityTrack.hasPointerCapture(event.pointerId)) pickQuality(event);
+    });
+
+    const updateQuality = () => {
+        dom.qualityThumb.style.left = stopLeft(QUALITY_LEVELS.indexOf(state.quality));
+        const budget = global.quality.levels().find((entry) => entry.level === state.quality)?.budget;
+        dom.qualityValue.textContent = `${localize(`settings.quality-${state.quality}`)}${budget == null ? '' : ` · ${budget}M`}`;
+        qualityStops.forEach((stop, i) => {
+            stop.classList.toggle('sse-disabled', !state.qualityAvailable.includes(QUALITY_LEVELS[i]));
+        });
+    };
+    on('quality:changed', updateQuality);
+    on('qualityAvailable:changed', updateQuality);
+    updateQuality();
+
+    // Performance Mode, the stochastic renderer's toggle, where it can switch the renderer: the
+    // device offers it and the stochastic flag does not force the renderer
+    dom.performanceModeRow.classList.toggle('sse-hidden', !global.quality.switchable);
     dom.performanceModeRow.addEventListener('click', () => {
         state.performanceMode = !state.performanceMode;
     });
@@ -201,7 +261,6 @@ const initUI = (global: Global, viewer: ViewerHandle, hasCameraFrame: boolean) =
 
     const updateGamingSettingsVisibility = () => {
         const isDesktop = state.inputMode === 'desktop';
-        dom.gamingControlsDivider.classList.toggle('sse-hidden', isDesktop);
         dom.gamingControlsRow.classList.toggle('sse-hidden', isDesktop);
     };
     on('inputMode:changed', updateGamingSettingsVisibility);
@@ -214,14 +273,51 @@ const initUI = (global: Global, viewer: ViewerHandle, hasCameraFrame: boolean) =
     on('gamingControls:changed', updateGamingControls);
     updateGamingControls();
 
-    // The settings and info buttons are toggles: each shows active while its panel is open.
-    // Every open and close goes through these so the two cannot disagree.
+    // The settings, controls and info buttons are toggles: each shows active while its panel is
+    // open. Every open and close goes through these so the two cannot disagree.
     const isVisible = (panel: HTMLElement) => !panel.classList.contains('sse-hidden');
+
+    // The controls panel and the settings panel share the space above the toolbar. The controls
+    // panel's open state is the user's choice and persists: it stays open while the scene is used,
+    // and shows once the scene has loaded. Settings is a quick look, so while it is open it only
+    // stands in for the controls panel, which comes back when it closes.
+    let controlsOpen = readControlsOpen();
+
+    const applyControls = () => {
+        const visible = controlsOpen && state.loaded && !isVisible(dom.settingsPanel);
+        dom.controlsHint.classList.toggle('sse-hidden', !visible);
+        dom.controlsButton.classList.toggle('sse-active', visible);
+    };
 
     const showSettings = (visible: boolean) => {
         dom.settingsPanel.classList.toggle('sse-hidden', !visible);
         dom.settings.classList.toggle('sse-active', visible);
+        applyControls();
     };
+
+    // the toolbar button toggles what it shows, so opening the panel from under settings
+    // closes settings rather than leaving the panel open and unseen
+    const showControls = (open: boolean) => {
+        controlsOpen = open;
+        writeControlsOpen(open);
+        if (open) showSettings(false);
+        applyControls();
+    };
+
+    on('loaded:changed', applyControls);
+    applyControls();
+
+    // clicks rather than input events, so they restart the fade timer themselves
+    const toggleControls = () => showControls(!isVisible(dom.controlsHint));
+
+    dom.controlsButton.addEventListener('click', () => {
+        toggleControls();
+        showUI();
+    });
+    dom.controlsHintClose.addEventListener('click', () => {
+        showControls(false);
+        showUI();
+    });
 
     const showInfo = (visible: boolean) => {
         // the shortcuts are keyboard shortcuts, and list only what this scene offers, as the
@@ -256,6 +352,8 @@ const initUI = (global: Global, viewer: ViewerHandle, hasCameraFrame: boolean) =
     on('inputEvent', (event) => {
         if (event === 'toggleHelp') {
             toggleHelp();
+        } else if (event === 'toggleControls') {
+            toggleControls();
         } else if (event === 'cancel') {
             // close info panel on cancel
             showInfo(false);
@@ -368,7 +466,13 @@ const initUI = (global: Global, viewer: ViewerHandle, hasCameraFrame: boolean) =
             // the controls stay while a panel is open or the pointer is over them; closing the
             // panel or leaving restarts this timer. An open speed dropdown counts too: fading the
             // controls would pull the entry field out from under the user
-            if (hovering || isVisible(dom.settingsPanel) || isVisible(dom.infoPanel) || extras.isSpeedMenuOpen()) {
+            if (
+                hovering ||
+                isVisible(dom.settingsPanel) ||
+                isVisible(dom.infoPanel) ||
+                isVisible(dom.controlsHint) ||
+                extras.isSpeedMenuOpen()
+            ) {
                 return;
             }
             if (state.selectedAnnotation === null || !state.showAnnotations) {
@@ -420,19 +524,26 @@ const initUI = (global: Global, viewer: ViewerHandle, hasCameraFrame: boolean) =
     disposers.push(initControlsHint(viewer, root, localize));
     disposers.push(initFullscreenControls(viewer, root));
     disposers.push(initXrControls(viewer, root));
+    if (visionPro) {
+        disposers.push(initXrHint(viewer, root));
+    }
+    if (global.config.vr) {
+        disposers.push(initVrPrompt(viewer, root, localize));
+    }
 
-    // Collision overlay toggle + matching info-panel shortcut (only visible when overlay is available)
+    // Collision overlay: a settings row and the matching info-panel shortcut, shown only when
+    // the scene ships an overlay
     on('hasCollisionOverlay:changed', (value: boolean) => {
-        dom.showCollision.classList.toggle('sse-hidden', !value);
+        dom.showCollisionRow.classList.toggle('sse-hidden', !value);
         dom.showCollisionShortcut.classList.toggle('sse-hidden', !value);
     });
 
-    dom.showCollision.addEventListener('click', () => {
+    dom.showCollisionRow.addEventListener('click', () => {
         state.collisionOverlayEnabled = !state.collisionOverlayEnabled;
     });
 
     on('collisionOverlayEnabled:changed', (value: boolean) => {
-        dom.showCollision.classList.toggle('sse-active', value);
+        dom.showCollisionCheck.classList.toggle('sse-active', value);
     });
 
     dom.settings.addEventListener('click', () => {
@@ -445,7 +556,7 @@ const initUI = (global: Global, viewer: ViewerHandle, hasCameraFrame: boolean) =
 
     disposers.push(initAnnotationControls(viewer, root));
     if (viewer.annotations.length > 0) {
-        const annotations = new Annotations(viewer, root, global.camera, hasCameraFrame);
+        const annotations = new Annotations(viewer, root, global.camera, getPicker, getCameraProgress);
         disposers.push(() => annotations.destroy());
     }
 
@@ -462,11 +573,9 @@ const initUI = (global: Global, viewer: ViewerHandle, hasCameraFrame: boolean) =
     tooltip.register(dom.fpsCamera, localize('tooltip.walk-mode'), 'top');
     tooltip.register(dom.reset, localize('tooltip.reset-camera'), 'bottom');
     tooltip.register(dom.frame, localize('tooltip.frame-scene'), 'bottom');
-    tooltip.register(dom.showCollision, localize('tooltip.show-collision'), 'top');
     tooltip.register(dom.settings, localize('tooltip.settings'), 'top');
     tooltip.register(dom.info, localize('tooltip.help'), 'top');
-    tooltip.register(dom.controlsHintPin, localize('tooltip.pin-hints'), 'bottom');
-    tooltip.register(dom.controlsHintClose, localize('tooltip.hide-hints'), 'bottom');
+    tooltip.register(dom.controlsButton, localize('tooltip.controls'), 'top');
     tooltip.register(dom.arMode, localize('tooltip.enter-ar'), 'top');
     tooltip.register(dom.vrMode, localize('tooltip.enter-vr'), 'top');
     tooltip.register(dom.enterFullscreen, localize('tooltip.fullscreen'), 'top');

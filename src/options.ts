@@ -46,6 +46,14 @@ type ViewerFlags = {
      * fallback prompt live in that ui, so a headless host owns those affordances too.
      */
     ui?: boolean;
+    /**
+     * Css pixels by which the toolbar, and everything else anchored to the viewer's bottom edge,
+     * is lifted, so chrome a host app draws over the bottom of the viewer does not cover it. On
+     * touch devices (a coarse primary pointer) only; elsewhere the toolbar stays at the edge.
+     * Clamped to 0–200. Defaults to `0`. Experimental: it may be renamed or removed in a minor
+     * release.
+     */
+    experimentalTouchInsetBottom?: number;
     /** Show the centre reticle in desktop fly/walk mode with gaming controls. Defaults to `false`. */
     reticle?: boolean;
     /** Start with the camera animation paused. */
@@ -60,10 +68,44 @@ type ViewerFlags = {
     colorize?: boolean;
     /** Load all streaming LOD data before the first frame. */
     fullload?: boolean;
+    /**
+     * Offer VR at once: where VR can start, a prompt shows over the viewer while it loads, and a
+     * tap on it starts a VR session as soon as the scene is placed, the rest of the scene streaming
+     * in during the session; a tap elsewhere dismisses it. A session needs a tap: browsers start
+     * none without one. The camera animation starts paused, as with `noanim`. Needs the ui.
+     * Defaults to `false`.
+     */
+    vr?: boolean;
     /** Render with antialiasing. */
     aa?: boolean;
-    /** Splat budget in millions, overriding the platform and performance-mode table. */
+    /**
+     * Developer override of the Performance Mode setting: `true` forces the stochastic splat
+     * renderer (unsorted, depth-tested splats whose depth buffer also serves picking) in its
+     * per-pixel mode, `'mobile'` in its interleaved-pixel-sets mode, and `'off'` keeps the
+     * engine's sorted renderer; each hides the setting. Without it the user's Performance Mode
+     * toggle decides, and the device class picks the mode. WebGPU only; ignored on WebGL. The
+     * renderer draws WebGPU XR sessions too, one view per eye (Safari on Apple Vision Pro); where
+     * only WebGL could host a session, the viewer offers a reload into WebGL.
+     */
+    stochastic?: boolean | 'mobile' | 'off';
+    /**
+     * Developer knob for the stochastic renderer: the data path that feeds it. Default
+     * `direct`, the resident files read in place; `workbuffer` reads the engine's work buffer.
+     */
+    splatSource?: 'workbuffer' | 'direct';
+    /**
+     * Developer knob for the stochastic renderer: comma-separated `key:value` experiment
+     * switches applied over the chosen mode's, e.g. `coverage:interleaved,jitter:2`.
+     */
+    variant?: string;
+    /** Splat budget in millions, overriding the Quality slider's ladder (every position then gives it). */
     budget?: number;
+    /**
+     * Developer knob: while the viewer renders on demand, the most rendered frames the gpu may
+     * have unfinished before the next continuous render (the camera moving, the stochastic
+     * renderer accumulating) waits for one to finish; `0` lets them queue. Defaults to `2`.
+     */
+    framesInFlight?: number;
     /** Render the collision heatmap debug overlay (WebGPU only). */
     heatmap?: boolean;
     /** Open the developer debug panel on load; Ctrl+Shift+D toggles it either way. */

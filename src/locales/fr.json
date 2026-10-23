@@ -2,7 +2,7 @@
     "settings.performance-mode": "Mode performance",
     "settings.gaming-controls": "Commandes de jeu",
     "settings.show-annotations": "Afficher les annotations",
-    "settings.show-hints": "Afficher l'aide des commandes",
+    "settings.show-collision": "Afficher les collisions",
     "settings.frame": "Cadrer",
     "settings.reset": "Réinitialiser",
 
@@ -15,11 +15,9 @@
     "tooltip.walk-mode": "Mode marche",
     "tooltip.reset-camera": "Réinitialiser la caméra",
     "tooltip.frame-scene": "Cadrer la scène",
-    "tooltip.show-collision": "Afficher les collisions",
     "tooltip.settings": "Paramètres",
     "tooltip.help": "Infos",
-    "tooltip.pin-hints": "Épingler l'aide des commandes",
-    "tooltip.hide-hints": "Masquer l'aide des commandes",
+    "tooltip.controls": "Commandes",
     "tooltip.enter-ar": "Entrer en AR",
     "tooltip.enter-vr": "Entrer en VR",
     "tooltip.fullscreen": "Plein écran",
@@ -51,6 +49,7 @@
     "help.action.toggle-gaming": "Basculer les commandes de jeu",
     "help.action.show-collision": "Afficher les collisions",
     "help.action.play-pause": "Lecture / Pause",
+    "help.action.toggle-controls": "Basculer les commandes",
     "help.action.toggle-help": "Basculer les infos",
     "help.action.exit-cancel": "Quitter / Annuler",
     "help.action.release-mouse": "Libérer la souris",
@@ -70,5 +69,11 @@
     "xr-modal.title": "WebGL requis",
     "xr-modal.message": "L'AR et la VR ne sont pas prises en charge par le moteur de rendu WebGPU. Cliquer sur OK rechargera le visualiseur avec WebGL.",
     "xr-modal.cancel": "Annuler",
-    "xr-modal.ok": "OK"
+    "xr-modal.ok": "OK",
+    "vr-prompt.loading": "Chargement…",
+    "vr-prompt.enter": "Touchez pour entrer en RV",
+    "xr-menu.exit-vr": "Quitter la VR",
+    "xr-menu.exit-ar": "Quitter l'AR",
+    "xr-menu.ice-cream": "Mode glace",
+    "xr-hint.stalled": "Rien ne se passe ? Changez d'onglet puis revenez."
 }

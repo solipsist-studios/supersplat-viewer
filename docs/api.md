@@ -152,7 +152,7 @@ The value stays active until replaced. The viewer clears it on camera/XR mode ch
 
 ### Saved preferences
 
-`performanceMode`, `gamingControls` and `showAnnotations` load from and write changes to the existing origin-wide local-storage keys, with or without the built-in UI. Creation does not write defaults; the legacy `retinaDisplay` migration is preserved. A new viewer reads the saved values; already-mounted viewers keep their own state rather than synchronizing through storage. The host can change these preferences through the corresponding writable state fields. Storage denial or quota errors leave the viewer usable, and destruction removes its persistence subscriptions.
+`performanceMode`, `gamingControls` and `showAnnotations` load from and write changes to the existing origin-wide local-storage keys, with or without the built-in UI. Creation does not write defaults; the legacy `retinaDisplay` migration is preserved. A new viewer reads the saved values; already-mounted viewers keep their own state rather than synchronizing through storage. The host can change these preferences through the corresponding writable state fields. Storage denial or quota errors leave the viewer usable, and destruction removes its persistence subscriptions. The built-in UI also remembers whether its controls panel is open, under the origin-wide key `controlsPanelOpen`; it is open for a new visitor until they close it.
 
 ### Controlling annotations
 
@@ -175,7 +175,7 @@ else viewer.events.once('loaded:changed', selectFirst);
 
 Selection switches to orbit and transitions to the annotation's authored camera without changing the animation pause flag. Selecting the same index again navigates again. `selectAnnotation(null)` clears selection while leaving the camera and any transition alone. Commands return immediately and throw before readiness, after destruction, or for an index that is not an integer in range. Clearing an empty annotation list is valid.
 
-With `ui: false`, the same data, selection and camera navigation are available; the host supplies presentation. `state.showAnnotations` controls built-in visibility and does not clear selection, so showing annotations again restores the selected panel. The built-in navigator retains its last title and navigation position after dismissal. Clicking elsewhere inside this viewer clears selection; clicking host controls or another viewer does not.
+With `ui: false`, the same data, selection and camera navigation are available; the host supplies presentation. `state.showAnnotations` controls built-in visibility and does not clear selection, so showing annotations again restores the selected panel. The built-in navigator retains its last title and navigation position after dismissal, greyed out while nothing is selected; clicking it selects that annotation again. Clicking elsewhere inside this viewer clears selection; clicking host controls or another viewer does not.
 
 ### Fullscreen and XR
 
@@ -197,6 +197,10 @@ Native fullscreen targets this viewer's root. Read-only `state.isFullscreen` fol
 `state.canStartAR` and `state.canStartVR` report availability on the current renderer. `hasAR` and `hasVR` also include sessions that could work after a WebGL reload. Subscribe to their change events because capability checks can finish after creation. The built-in UI offers the reload prompt; `startXR()` itself never reloads the page and rejects when the current renderer cannot host the session. Browser permission and device availability can still prevent entry.
 
 Read-only `state.xrMode` is `'ar'`, `'vr'` or `null` and follows both API and browser-initiated session exit. `startXR()` resolves when the session starts; it rejects invalid modes and attempts while a session is active, starting or ending. `endXR()` resolves on session exit, is a no-op while idle, and rejects during startup or another pending exit. All four methods reject after destruction; destruction also rejects outstanding API waits. Browser session requests themselves cannot be cancelled, so native XR teardown while a permission request is open still needs device testing.
+
+On standalone headsets (Meta Quest and Pico browsers), sessions render with fixed foveation, a 72 Hz target where supported and a 1 million splat budget, or the `budget` option when it is set. In performance mode they also render at 0.8x resolution, chosen when the session starts. The 2D budget returns when the session ends.
+
+During a session, squeezing both grips, or making fists with tracked hands, drags, turns and scales the scene: about the user's feet in VR, and about their hands in AR. The scene returns to its authored placement when the session ends.
 
 ### Restyling
 
