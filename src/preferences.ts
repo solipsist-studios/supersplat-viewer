@@ -1,11 +1,19 @@
 import type { EventHandler } from 'playcanvas';
 
-import type { State } from './types';
+import type { QualityLevel, State } from './types';
 
-type Preferences = Pick<State, 'performanceMode' | 'gamingControls' | 'showAnnotations'>;
+type Preferences = Pick<State, 'quality' | 'performanceMode' | 'gamingControls' | 'showAnnotations' | 'iceCream'>;
+
+const QUALITY_VALUES: readonly QualityLevel[] = ['performance', 'default', 'high', 'max'];
 
 const readPreferences = (mobile: boolean): Preferences => {
-    const defaults = { performanceMode: mobile, gamingControls: false, showAnnotations: true };
+    const defaults = {
+        quality: (mobile ? 'performance' : 'default') as QualityLevel,
+        performanceMode: false,
+        gamingControls: false,
+        showAnnotations: true,
+        iceCream: false
+    };
     try {
         // Preserve the legacy preference migration and origin-wide keys.
         const legacyRetina = localStorage.getItem('retinaDisplay');
@@ -19,10 +27,15 @@ const readPreferences = (mobile: boolean): Preferences => {
                 // Keep the migrated runtime value even if storage cannot be updated.
             }
         }
+        const storedQuality = localStorage.getItem('quality');
         return {
-            performanceMode: performanceMode === null ? mobile : performanceMode === 'true',
+            quality: QUALITY_VALUES.includes(storedQuality as QualityLevel)
+                ? (storedQuality as QualityLevel)
+                : defaults.quality,
+            performanceMode: performanceMode === 'true',
             gamingControls: localStorage.getItem('gamingControls') === 'true',
-            showAnnotations: localStorage.getItem('showAnnotations') !== 'false'
+            showAnnotations: localStorage.getItem('showAnnotations') !== 'false',
+            iceCream: localStorage.getItem('iceCream') === 'true'
         };
     } catch {
         // Embedded documents can be denied storage. Preferences must not prevent viewing.
@@ -32,8 +45,10 @@ const readPreferences = (mobile: boolean): Preferences => {
 
 const persistPreferences = (events: EventHandler) => {
     // Write changes only, so creating a viewer does not persist platform defaults.
-    const subscriptions = (['performanceMode', 'gamingControls', 'showAnnotations'] as const).map((key) =>
-        events.on(`${key}:changed`, (value: boolean) => {
+    const subscriptions = (
+        ['quality', 'performanceMode', 'gamingControls', 'showAnnotations', 'iceCream'] as const
+    ).map((key) =>
+        events.on(`${key}:changed`, (value: boolean | string) => {
             try {
                 localStorage.setItem(key, String(value));
             } catch {

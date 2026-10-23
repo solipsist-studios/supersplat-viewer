@@ -73,10 +73,8 @@
             that all reach a first frame is itself the leak test; each iteration also reports
             whether the previous context was released and whether the subtree was removed.
 
-            TEMPORARY. This page is run by hand before any change to teardown-sensitive code
-            merges (viewer-api-plan.md, phases D and E). It is rewritten as a browser test
-            against createViewer at E4; delete it, and its emit in rollup.config.mjs, when that
-            test lands.
+            This page is run by hand before any change to teardown-sensitive code merges: it is
+            the only teardown check, as there is no automated one.
 
             With ?instances=N it instead mounts N viewers at once into sibling hosts laid out
             side by side, checks they do not share dom, state or window globals, destroys the
@@ -96,7 +94,10 @@
             Browser mode supplies fullscreen/XR host controls and delayed-request teardown checks.
             XR callback simulations check cancellation without claiming to test a native session.
 
-            Params: ?iterations=20  ?mode=loaded|immediate|playback|camera|annotations|browser|input  ?instances=2  ?webgl  ?content=  ?settings=
+            MiniStats mode toggles the panel through the debug panel, checks the toggles add no
+            engine listeners and that destroy removes it, then destroys during a refused copy.
+
+            Params: ?iterations=20  ?mode=loaded|immediate|playback|camera|annotations|browser|input|ministats  ?instances=2  ?webgl  ?stochastic[=mobile]  ?pump (frames without the display, for a hidden tab)  ?content=  ?settings=
         -->
         <div id="hosts"></div>
         <pre id="harness"></pre>
@@ -134,6 +135,28 @@
             const renderer = url.searchParams.has('webgl') ? 'webgl' : 'webgpu';
             const contentUrl = url.searchParams.get('content') ?? './scene.compressed.ply';
             const settingsUrl = url.searchParams.get('settings') ?? './settings.json';
+
+            // ?pump: animation frames from a MessageChannel instead of the display, as fast as the
+            // page takes them. A hidden page gets no requestAnimationFrame at all (the desktop
+            // app's browser pane hides it whenever it is not in front), so without this the loop
+            // stalls at its first frame there
+            if (url.searchParams.has('pump')) {
+                const channel = new MessageChannel();
+                let callbacks = new Map();
+                let nextId = 1;
+                channel.port1.onmessage = () => {
+                    const due = callbacks;
+                    callbacks = new Map();
+                    const now = performance.now();
+                    due.forEach((callback) => callback(now));
+                };
+                window.requestAnimationFrame = (callback) => {
+                    if (callbacks.size === 0) channel.port2.postMessage(0);
+                    callbacks.set(nextId, callback);
+                    return nextId++;
+                };
+                window.cancelAnimationFrame = (id) => callbacks.delete(id);
+            }
 
             const harness = document.getElementById('harness');
             const log = (line, fail = false) => {
@@ -201,6 +224,14 @@
             const createOptions = () => ({
                 contentUrl,
                 renderer,
+                // the opt-in stochastic renderer: its own passes, buffers and textures must go
+                // with the viewer, in either mode (?stochastic, ?stochastic=mobile)
+                stochastic: url.searchParams.has('stochastic')
+                    ? url.searchParams.get('stochastic') === 'mobile'
+                        ? 'mobile'
+                        : true
+                    : false,
+                splatSource: url.searchParams.get('splatSource') ?? undefined,
                 exposeGlobals: false,
                 collisionUrl: url.searchParams.get('collision') ?? undefined,
                 ui: !url.searchParams.has('noui')
@@ -214,6 +245,30 @@
                 return h;
             };
             const timeout = (ms, value) => new Promise((resolve) => setTimeout(() => resolve(value), ms));
+            // whether the engine's work-buffer copies are switched off, as the stochastic renderer's
+            // direct source does while it draws: its no-op replaces the class's method
+            const copiesSwitchedOff = (viewer) => {
+                const director = viewer.app.renderer.gsplatDirector;
+                const layers = [...([...director.camerasMap.values()][0]?.layersMap.values() ?? [])];
+                const workBuffer = layers.find((layer) => layer.gsplatManager)?.gsplatManager.world.workBuffer;
+                return !!workBuffer && workBuffer.renderColor !== Object.getPrototypeOf(workBuffer).renderColor;
+            };
+            // the bytes of the stochastic renderer's own textures, named sse-splat-*
+            const splatTextureBytes = (device) =>
+                [...device.textures]
+                    .filter((texture) => texture.name.startsWith('sse-splat-'))
+                    .reduce((bytes, texture) => bytes + texture.gpuSize, 0);
+            // resolves after `count` ticks of the app
+            const frames = (app, count) =>
+                new Promise((resolve) => {
+                    let left = count;
+                    const onFrameEnd = () => {
+                        if (--left > 0) return;
+                        app.off('frameend', onFrameEnd);
+                        resolve();
+                    };
+                    app.on('frameend', onFrameEnd);
+                });
             const until = async (test, ms) => {
                 const deadline = performance.now() + ms;
                 while (!test()) {
@@ -257,6 +312,15 @@
                     device.computeDispatch = dispatch;
                 }
 
+                // the composite quad sits in the default draw layer, whose mesh instances the
+                // engine's teardown never destroys
+                const quad = viewer.app.scene.defaultDrawLayer.meshInstances.find(
+                    (meshInstance) => meshInstance.node.name === 'VoxelOverlayComposite'
+                );
+                if (!quad) {
+                    throw new Error('voxel overlay quad is not in the default draw layer');
+                }
+
                 let shaderDestroyed = false;
                 const shader = overlayCompute.shader;
                 const destroy = shader.destroy;
@@ -265,7 +329,10 @@
                     return destroy.call(this);
                 };
                 return () =>
-                    !overlayCompute.impl && shaderDestroyed && !overlayCompute.getParameter('outputTexture').device;
+                    !overlayCompute.impl &&
+                    shaderDestroyed &&
+                    !overlayCompute.getParameter('outputTexture').device &&
+                    !quad.mesh;
             };
 
             // Teardown during a metadata load. `meta.json` content is read with an await before
@@ -304,7 +371,7 @@
                         return true;
                     }
                 };
-                const keys = ['performanceMode', 'gamingControls', 'showAnnotations', 'retinaDisplay'];
+                const keys = ['quality', 'performanceMode', 'gamingControls', 'showAnnotations', 'retinaDisplay'];
                 const saved = keys.map((key) => localStorage.getItem(key));
                 const viewers = [];
                 try {
@@ -333,7 +400,9 @@
                     viewer.state.showAnnotations = false;
                     check(
                         'all preference writes persist',
-                        keys.slice(0, 3).every((key) => localStorage.getItem(key) === String(viewer.state[key]))
+                        ['performanceMode', 'gamingControls', 'showAnnotations'].every(
+                            (key) => localStorage.getItem(key) === String(viewer.state[key])
+                        )
                     );
                     const otherHost = addHost();
                     const other = await createViewer({ container: otherHost, settings, ...createOptions(), ui: false });
@@ -932,6 +1001,74 @@
                     document.getElementById('playback').hidden = true;
                     await reportUnhandled();
                 };
+            } else if (mode === 'ministats') {
+                // The debug panel's MiniStats toggle. The engine's MiniStats.destroy() leaves its
+                // stats timers reading every frame, so the viewer keeps one panel and hides it:
+                // toggling must add no frameupdate listeners, and destroy must remove its div.
+                // Then a copy whose clipboard refuses only once the viewer has gone stays quiet
+                log(`ministats, renderer=${renderer}, tab ${document.visibilityState}`);
+                let failures = 0;
+                const check = (name, ok, detail = '') => {
+                    if (!ok) failures++;
+                    log(`${ok ? 'ok  ' : 'FAIL'} ${name}${detail ? ` — ${detail}` : ''}`, !ok);
+                };
+                const host = addHost();
+                try {
+                    const viewer = await createViewer({
+                        container: host,
+                        settings,
+                        ...createOptions(),
+                        ministats: true,
+                        debug: true
+                    });
+                    const handles = handlesOf(viewer);
+                    const listeners = () => viewer.app._callbacks.get('frameupdate')?.length ?? 0;
+                    const button = () => host.querySelector('.sse-debug-panel [data-id="ministats"]');
+                    const panels = () => document.querySelectorAll('#mini-stats');
+                    const shown = () => panels().length === 1 && panels()[0].style.display !== 'none';
+
+                    // the debug panel is built once the content has loaded
+                    check('debug panel built', await until(() => !!button(), 120000));
+                    check('shown from the flag', shown() && button().textContent === 'MiniStats: on');
+                    const before = listeners();
+                    button().click();
+                    check(
+                        'hidden by the toggle',
+                        panels().length === 1 && !shown() && button().textContent === 'MiniStats: off'
+                    );
+                    for (let i = 0; i < 9; i++) button().click();
+                    check('shown again after ten toggles', shown());
+                    check(
+                        'toggling adds no frameupdate listeners',
+                        listeners() === before,
+                        `${before} -> ${listeners()}`
+                    );
+
+                    const clipboard = navigator.clipboard;
+                    clipboard.writeText = () =>
+                        timeout(100).then(() => {
+                            throw new Error('refused');
+                        });
+                    try {
+                        host.querySelector('.sse-debug-panel [data-id="copy"]').click();
+                        viewer.destroy();
+                        await timeout(200);
+                    } finally {
+                        delete clipboard.writeText;
+                    }
+                    check('panel div removed', panels().length === 0);
+                    check(
+                        'context released and subtree removed',
+                        (await released(handles)) && host.childElementCount === 0
+                    );
+                } catch (err) {
+                    failures++;
+                    log(`failed: ${err?.message ?? err}`, true);
+                    console.error(err);
+                }
+                host.remove();
+                failures += await reportUnhandled();
+                log(failures ? `done, ${failures} failed` : 'done, ministats toggles cleanly', failures > 0);
                 // Several viewers at once, each in its own host so each has a distinct root.
             } else if (instances > 1) {
                 log(`${instances} instances, renderer=${renderer}, tab ${document.visibilityState}`);
@@ -1120,6 +1257,34 @@
                             }
                         }
 
+                        // &toggle: Performance Mode (the stochastic renderer) on and back off twice, so the
+                        // engine's renderer draws again from the textures rebuilt for it (a sog
+                        // scene's, which the stochastic renderer releases); a dead one throws from the
+                        // frame or fails a submit, which the error handlers count. Each switch on
+                        // must switch the engine's work-buffer copies off again, even when the
+                        // resident set has not changed since the last, or they read the textures
+                        // released once more, and each switch off must release the stochastic
+                        // renderer's own textures (an empty view's placeholders remain). The stored
+                        // setting is put back
+                        let toggled = null;
+                        if (mode === 'loaded' && url.searchParams.has('toggle')) {
+                            const stored = localStorage.getItem('performanceMode');
+                            handles.device.wgpu?.addEventListener('uncapturederror', (event) =>
+                                unhandled.push(`gpu: ${event.error.message.split('\n')[0]}`)
+                            );
+                            toggled = true;
+                            for (let round = 0; round < 2; round++) {
+                                viewer.state.performanceMode = true;
+                                await frames(viewer.app, 30);
+                                toggled &&= copiesSwitchedOff(viewer);
+                                viewer.state.performanceMode = false;
+                                await frames(viewer.app, 30);
+                                toggled &&= splatTextureBytes(handles.device) < 1048576;
+                            }
+                            if (stored === null) localStorage.removeItem('performanceMode');
+                            else localStorage.setItem('performanceMode', stored);
+                        }
+
                         // `loaded` flips in the viewer's own first-frame handler, so it proves the hook
                         // came from this instance rendering and not from anything stale
                         const { loaded, progress } = viewer.state;
@@ -1128,17 +1293,31 @@
                             mode === 'loaded' && url.searchParams.has('overlay')
                                 ? await enableVoxelOverlay(viewer)
                                 : null;
+                        // the stochastic renderer's own textures, named sse-splat-*; every one
+                        // must be destroyed (device nulled) by the viewer's destroy
+                        const splatTextures = url.searchParams.has('stochastic')
+                            ? [...handles.device.textures].filter((t) => t.name.startsWith('sse-splat-'))
+                            : null;
                         viewer.destroy();
                         const removed = host.childElementCount === 0;
 
                         const freed = await released(handles);
                         const captured = capture ? await Promise.race([capture, timeout(2000, 'hung')]) : 'n/a';
                         const overlayFreed = overlayReleased ? overlayReleased() : true;
+                        const splatFreed = splatTextures
+                            ? splatTextures.length > 0 && splatTextures.every((t) => t.device === null)
+                            : true;
                         const ok =
-                            freed && removed && overlayFreed && captured !== 'hung' && (mode !== 'loaded' || loaded);
+                            freed &&
+                            removed &&
+                            overlayFreed &&
+                            splatFreed &&
+                            toggled !== false &&
+                            captured !== 'hung' &&
+                            (mode !== 'loaded' || loaded);
                         if (!ok) failures++;
                         log(
-                            `#${i} ${handles.device.deviceType} ${Math.round(performance.now() - started)}ms loaded=${loaded} progress=${progress} released=${freed} removed=${removed} capture=${captured} overlay=${overlayReleased ? overlayFreed : 'n/a'}`,
+                            `#${i} ${handles.device.deviceType} ${Math.round(performance.now() - started)}ms loaded=${loaded} progress=${progress} released=${freed} removed=${removed} capture=${captured} overlay=${overlayReleased ? overlayFreed : 'n/a'} splat=${splatTextures ? `${splatFreed} (${splatTextures.length})` : 'n/a'} toggle=${toggled ?? 'n/a'}`,
                             !ok
                         );
                     } catch (err) {

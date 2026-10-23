@@ -5,3 +5,6 @@ public
 .npmrc
 .cursor
 CLAUDE.md
+docs/bench
+docs/pick-depth.md
+docs/stochastic-renderer.md

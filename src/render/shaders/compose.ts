@@ -1,0 +1,214 @@
+// The compose: a fullscreen quad in the World layer's transparent sublayer that blends the
+// stochastic target over the camera's target (after the skybox and opaque meshes) and writes
+// its depth, so everything drawn later depth-tests against the splats. The colour transform
+// the engine's own splat shader applies (gsplatOutputVS: tonemap and gamma, or the viewer's
+// pass-through patch under CameraFrame) runs here, once per pixel instead of once per splat.
+import { taaHistoryWGSL } from './taa';
+import { warpWGSL } from './warp';
+
+// The quad's position across the screen, 0 to 1 from the bottom left. The splat targets are read
+// through it rather than through the fragment's position: an XR eye may be rasterised at a
+// variable rate (visionOS draws a 4493x3604 viewport into a 1888x1792 texture), where a
+// fragment's pixel is not a fixed fraction of the screen
+const composeVaryingsWGSL = /* wgsl */ `
+varying screenPos: vec2f;
+`;
+
+const composeVertexWGSL = /* wgsl */ `
+attribute vertex_position: vec2f;
+${composeVaryingsWGSL}
+
+@vertex
+fn vertexMain(input: VertexInput) -> VertexOutput {
+    var output: VertexOutput;
+    output.position = vec4f(vertex_position, 0.0, 1.0);
+    output.screenPos = vertex_position * 0.5 + vec2f(0.5);
+    return output;
+}
+`;
+
+const composeFragmentWGSL = /* wgsl */ `
+#include "gsplatOutputVS"
+${composeVaryingsWGSL}
+
+var splatColor: texture_2d<f32>;
+var splatColorSampler: sampler;
+var splatDepth: texture_depth_2d;
+// the temporally accumulated frame (premultiplied colour, coverage), when taa ran this frame:
+// unorm16, or half floats (variant taaHistory, shaders/taa.ts)
+#ifdef SSE_TAA_HALF
+    var taaColor: texture_2d<f32>;
+#else
+    var taaColor: texture_2d<u32>;
+#endif
+// its depth record: the mean view depth of the pixel's samples and their count
+var taaInfo: texture_2d<u32>;
+// x: 1 when the splat target's rows run the other way to the camera target's; y: 1 for an
+// orthographic camera; z: 1 to read the taa history instead of the raw frame (w unused)
+uniform composeParams: vec4f;
+// the splat target's depth: clip z = a * viewDepth + b over w = viewDepth (x, y), and the
+// camera's near and far (z, w) for the depth view
+uniform depthViewParams: vec4f;
+// the camera's own depth, the one written for the rest of the scene: clip z = a * viewDepth + b
+// (x, y). The splat target's far plane is at infinity where the camera's is fitted to the scene
+uniform cameraClipZ: vec4f;
+// variant taaSharpen: x the strength of an unsharp mask on the history at display, y the sample
+// count at which it has faded out (a still camera's converged history needs none)
+uniform sharpenParams: vec4f;
+#ifdef SSE_WARP
+    // variant warp: the view's table (shaders/warp.ts)
+    var<storage, read> warpTable: array<f32>;
+    ${warpWGSL}
+#endif
+
+${taaHistoryWGSL}
+
+const FAR_DEPTH = 0.999999;
+
+// the splat target's depth texel of a view depth, just inside its far plane at most: the
+// raster clamps there too, since a depth of 1 reads as no sample
+fn clipZOf(viewDepth: f32) -> f32 {
+    let p = uniform.depthViewParams;
+    let w = select(viewDepth, 1.0, uniform.composeParams.y > 0.5);
+    return min(clamp(p.x * viewDepth + p.y, 0.0, w) / w, FAR_DEPTH);
+}
+
+// the view depth of a splat target depth texel
+fn viewDepthOf(z: f32) -> f32 {
+    let p = uniform.depthViewParams;
+    let dz = z - p.x;
+    let safeDz = select(dz, sign(dz) * 1e-9 + 1e-12, abs(dz) < 1e-9);
+    return select(p.y / safeDz, (z - p.y) / p.x, uniform.composeParams.y > 0.5);
+}
+
+// a splat target texel's depth: the nearest sample's, or 1 (the clear) where none landed
+fn sampleDepth(p: vec2i) -> f32 {
+    return textureLoad(splatDepth, p, 0);
+}
+
+// A splat target depth in the camera's depth, clamped just inside the camera's far plane as the
+// engine clamps its splats: splats beyond it stay behind everything the scene draws
+fn cameraDepthOf(z: f32) -> f32 {
+    let viewDepth = viewDepthOf(z);
+    let c = uniform.cameraClipZ;
+    let w = select(viewDepth, 1.0, uniform.composeParams.y > 0.5);
+    return min(clamp(c.x * viewDepth + c.y, 0.0, w) / w, FAR_DEPTH);
+}
+
+@fragment
+fn fragmentMain(input: FragmentInput) -> FragmentOutput {
+    var output: FragmentOutput;
+    let dims = vec2i(textureDimensions(splatColor));
+    // variant warp: the foveated target holds this pixel where the warp put it
+    #ifdef SSE_WARP
+        let screen = warpNdc(input.screenPos * 2.0 - vec2f(1.0)) * 0.5 + vec2f(0.5);
+    #else
+        let screen = input.screenPos;
+    #endif
+    // the splat target's texel under this fragment, rows from the top as the fragment's are
+    var pix = vec2i(floor(vec2f(screen.x, 1.0 - screen.y) * vec2f(dims)));
+    if (uniform.composeParams.x > 0.5) {
+        pix.y = dims.y - 1 - pix.y;
+    }
+    pix = clamp(pix, vec2i(0), dims - vec2i(1));
+
+    var depth = sampleDepth(pix);
+    var color: vec4f;
+    if (uniform.composeParams.z > 0.5) {
+        // the accumulated history: coverage in alpha, colour premultiplied by it
+        color = decodeColor(textureLoad(taaColor, pix, 0));
+        if (color.a > 0.001) {
+            let info = decodeInfo(textureLoad(taaInfo, pix, 0).x);
+            // Variant taaSharpen: an unsharp mask applied here at display, where nothing feeds back
+            // (a sharper kernel inside the accumulation diverges), to take back some of the blur
+            // the moving path's resampling compounds. The blur is a few pixels wide, so the mask
+            // takes its mean over a 5x5 tent; it fades out as the history lengthens toward a still
+            // camera's, which is sharp already
+            if (uniform.sharpenParams.x > 0.0 && info.count > 0.5) {
+                var mean = vec4f(0.0);
+                var weight = 0.0;
+                for (var dy = -2; dy <= 2; dy++) {
+                    for (var dx = -2; dx <= 2; dx++) {
+                        let w = f32((3 - abs(dx)) * (3 - abs(dy)));
+                        mean += decodeColor(textureLoad(taaColor, clamp(pix + vec2i(dx, dy), vec2i(0), dims - vec2i(1)), 0)) * w;
+                        weight += w;
+                    }
+                }
+                let k = uniform.sharpenParams.x * clamp(1.0 - info.count / max(uniform.sharpenParams.y, 1.0), 0.0, 1.0);
+                color += (color - mean / weight) * k;
+                let a = clamp(color.a, 0.0, 1.0);
+                color = vec4f(clamp(color.rgb, vec3f(0.0), vec3f(a)), a);
+            }
+            // The mean depth of the pixel's own samples wherever it has a history, rather than
+            // this frame's nearest sample: a faint splat in front takes a sample on a few frames
+            // only, so the depth would flicker between it and what lies behind, which a compositor
+            // reprojecting a late XR frame by depth shows as judder there, and which hides what
+            // is drawn after the splats on some frames only. For a history this frame started
+            // (moving, from the quad's samples), this frame's sample, or where none landed the
+            // nearest sampled neighbour's, so the pixel still occludes what is behind the splats
+            if (info.count > 0.5) {
+                depth = clipZOf(info.depth);
+            } else if (depth >= 1.0) {
+                for (var dy = -1; dy <= 1; dy++) {
+                    for (var dx = -1; dx <= 1; dx++) {
+                        depth = min(depth, sampleDepth(clamp(pix + vec2i(dx, dy), vec2i(0), dims - vec2i(1))));
+                    }
+                }
+            }
+        }
+    } else {
+        // the raw frame: the mean of each 2x2 quad, bilinearly interpolated between quad centres.
+        // A quad's four pixels take thresholds spread over [0, 1) (interleaved gradient noise, or
+        // the pixel sets' four quarters), so the mean is close to the splat's coverage. Empty
+        // texels are transparent black, so the result is premultiplied coverage
+        let size = vec2f(dims);
+        let u = (vec2f(pix) - vec2f(0.5)) * 0.5;
+        let q0 = floor(u);
+        let f = u - q0;
+        let uv = (q0 * 2.0 + vec2f(1.0)) / size;
+        let step = vec2f(2.0) / size;
+        let a = textureSampleLevel(splatColor, splatColorSampler, uv, 0.0);
+        let b = textureSampleLevel(splatColor, splatColorSampler, uv + vec2f(step.x, 0.0), 0.0);
+        let c = textureSampleLevel(splatColor, splatColorSampler, uv + vec2f(0.0, step.y), 0.0);
+        let d = textureSampleLevel(splatColor, splatColorSampler, uv + step, 0.0);
+        color = mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+        if (depth >= 1.0) {
+            // no sample at this pixel but coverage from its quad: the quad's nearest depth
+            let quad = (pix >> vec2u(1u)) << vec2u(1u);
+            depth = min(
+                min(sampleDepth(quad), sampleDepth(min(quad + vec2i(1, 0), dims - 1))),
+                min(sampleDepth(min(quad + vec2i(0, 1), dims - 1)), sampleDepth(min(quad + vec2i(1, 1), dims - 1)))
+            );
+        }
+    }
+    if (color.a <= 0.001) {
+        discard;
+    }
+    // coverage with no depth anywhere near: shown, behind everything the scene drew
+    depth = min(depth, FAR_DEPTH);
+
+    #ifdef SSE_SHOW_DEPTH
+        // the nearest sample's view depth, log-spaced between near and far, as grey
+        let p = uniform.depthViewParams;
+        let viewDepth = viewDepthOf(depth);
+        let t = clamp(log(max(viewDepth, p.z) / p.z) / log(p.w / p.z), 0.0, 1.0);
+        // 24-bit fixed point across rgb (high byte in red), so a capture can read it precisely
+        let fixed = floor(t * 16777215.0);
+        let hi = floor(fixed / 65536.0);
+        let mid = floor((fixed - hi * 65536.0) / 256.0);
+        let lo = fixed - hi * 65536.0 - mid * 256.0;
+        output.color = vec4f(vec3f(hi, mid, lo) / 255.0, 1.0);
+        output.fragDepth = cameraDepthOf(depth);
+        return output;
+    #endif
+
+    // un-premultiply for the output transform, then premultiply for the blend
+    let gamma = color.rgb / color.a;
+    let rgb = prepareOutputFromGamma(gamma, 0.0);
+    output.color = vec4f(rgb * color.a, color.a);
+    output.fragDepth = cameraDepthOf(depth);
+    return output;
+}
+`;
+
+export { composeFragmentWGSL, composeVertexWGSL };

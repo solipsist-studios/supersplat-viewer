@@ -103,7 +103,8 @@
             const url = new URL(location.href);
 
             const ensureOk = (response) => {
-                if (!response.ok) {
+                // a real Response always has a boolean `ok`; a bare stub (as in the tests) has none
+                if (response.ok === false) {
                     throw new Error(`Failed to load settings: ${response.status} ${response.statusText}`);
                 }
                 return response;
@@ -136,6 +137,12 @@
                 : url.searchParams.has('webgpu')
                   ? 'webgpu'
                   : undefined;
+
+            // css pixels to lift the toolbar by on touch devices; createViewer clamps it, and treats
+            // a value that is not a number as 0
+            const experimentalTouchInsetBottom = url.searchParams.has('experimental-touch-inset-bottom')
+                ? Number(url.searchParams.get('experimental-touch-inset-bottom'))
+                : undefined;
 
             const budgetParam = url.searchParams.get('budget');
             const budget = budgetParam !== null ? Number(budgetParam) : undefined;
@@ -170,6 +177,7 @@
                 poster: posterUrl && createImage(posterUrl),
                 contents: prefetchContent ? fetch(contentUrl) : undefined,
                 ui: !url.searchParams.has('noui'),
+                experimentalTouchInsetBottom,
                 reticle: url.searchParams.has('reticle'),
                 noanim: url.searchParams.has('noanim'),
                 nofx: url.searchParams.has('nofx'),
@@ -180,14 +188,25 @@
                 colorize: url.searchParams.has('colorize'),
                 renderer,
                 aa: url.searchParams.has('aa'),
+                stochastic: url.searchParams.has('stochastic')
+                    ? url.searchParams.get('stochastic') === 'mobile'
+                        ? 'mobile'
+                        : url.searchParams.get('stochastic') === 'off'
+                          ? 'off'
+                          : true
+                    : false,
+                splatSource: url.searchParams.get('splatSource') ?? undefined,
+                variant: url.searchParams.get('variant') ?? undefined,
                 budget,
                 sogstBudget,
                 sogstGpuDecode: !url.searchParams.has('sogstcpu'),
                 sogstRotationDeg,
                 embed: url.searchParams.has('embed'),
                 transparent: url.searchParams.has('transparent'),
+                framesInFlight: url.searchParams.has('fif') ? Number(url.searchParams.get('fif')) : undefined,
                 heatmap: url.searchParams.has('heatmap'),
                 fullload: url.searchParams.has('fullload'),
+                vr: url.searchParams.has('vr'),
                 debug: url.searchParams.has('debug'),
                 lang: url.searchParams.get('lang'),
                 // the standalone document is the one place the window.* hooks belong

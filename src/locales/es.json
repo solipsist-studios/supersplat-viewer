@@ -2,7 +2,7 @@
     "settings.performance-mode": "Modo rendimiento",
     "settings.gaming-controls": "Controles de juego",
     "settings.show-annotations": "Mostrar anotaciones",
-    "settings.show-hints": "Mostrar ayuda de controles",
+    "settings.show-collision": "Mostrar colisión",
     "settings.frame": "Encuadrar",
     "settings.reset": "Restablecer",
 
@@ -15,11 +15,9 @@
     "tooltip.walk-mode": "Modo caminar",
     "tooltip.reset-camera": "Restablecer cámara",
     "tooltip.frame-scene": "Encuadrar escena",
-    "tooltip.show-collision": "Mostrar colisión",
     "tooltip.settings": "Ajustes",
     "tooltip.help": "Información",
-    "tooltip.pin-hints": "Fijar ayuda de controles",
-    "tooltip.hide-hints": "Ocultar ayuda de controles",
+    "tooltip.controls": "Controles",
     "tooltip.enter-ar": "Entrar en AR",
     "tooltip.enter-vr": "Entrar en VR",
     "tooltip.fullscreen": "Pantalla completa",
@@ -51,6 +49,7 @@
     "help.action.toggle-gaming": "Alternar controles de juego",
     "help.action.show-collision": "Mostrar colisión",
     "help.action.play-pause": "Reproducir / Pausar",
+    "help.action.toggle-controls": "Alternar controles",
     "help.action.toggle-help": "Alternar información",
     "help.action.exit-cancel": "Salir / Cancelar",
     "help.action.release-mouse": "Liberar ratón",
@@ -70,5 +69,11 @@
     "xr-modal.title": "Se requiere WebGL",
     "xr-modal.message": "AR y VR no son compatibles con el renderizador WebGPU. Al pulsar OK se recargará el visor con WebGL.",
     "xr-modal.cancel": "Cancelar",
-    "xr-modal.ok": "OK"
+    "xr-modal.ok": "OK",
+    "vr-prompt.loading": "Cargando…",
+    "vr-prompt.enter": "Toca para entrar en RV",
+    "xr-menu.exit-vr": "Salir de VR",
+    "xr-menu.exit-ar": "Salir de AR",
+    "xr-menu.ice-cream": "Modo helado",
+    "xr-hint.stalled": "¿No pasa nada? Cambia de pestaña y vuelve."
 }
