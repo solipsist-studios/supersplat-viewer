@@ -13,7 +13,7 @@ type Config = {
     poster?: HTMLImageElement;
     skyboxUrl?: string;
     contentUrl?: string;
-    contentFilename?: string; // original filename when content is a blob URL (no extension in URL)
+    contentFilename?: string; // names contentUrl when the url itself has no usable name (a blob: or data: uri)
     contents?: Promise<Response>;
     sogstRotationDeg?: [number, number, number];
     animLoopMode?: 'loop' | 'pingpong'; // 4DGS playback loop style (default 'loop')
