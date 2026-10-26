@@ -16,7 +16,7 @@ const initPlayback = (
     const available = () => state.loaded && state.hasAnimation;
     const updateControls = () => {
         // a 4DGS clip owns its timeline, so its transport is live whatever the camera is doing
-        const driven = state.hasSplatAnimation || state.cameraMode === 'anim';
+        const driven = state.has4DAnimation || state.cameraMode === 'anim';
         const playing = driven && !state.animationPaused;
         play.classList.toggle('sse-hidden', !available() || playing);
         pause.classList.toggle('sse-hidden', !available() || !playing);
@@ -32,7 +32,7 @@ const initPlayback = (
     const onPlay = () => {
         if (!available()) return;
         // 4DGS playback leaves the camera alone; a camera animation needs its camera
-        if (!state.hasSplatAnimation) state.cameraMode = 'anim';
+        if (!state.has4DAnimation) state.cameraMode = 'anim';
         // play-once holds at the end; pressing play again restarts it
         if (
             state.animationLoopMode === 'none' &&
@@ -45,7 +45,7 @@ const initPlayback = (
     };
     const onPause = () => {
         if (!available()) return;
-        if (!state.hasSplatAnimation) state.cameraMode = 'anim';
+        if (!state.has4DAnimation) state.cameraMode = 'anim';
         state.animationPaused = true;
     };
     const scrub = (event: PointerEvent) => {
@@ -88,7 +88,7 @@ const initPlayback = (
     const subscriptions = [
         events.on('loaded:changed', updateControls),
         events.on('hasAnimation:changed', updateControls),
-        events.on('hasSplatAnimation:changed', updateControls),
+        events.on('has4DAnimation:changed', updateControls),
         events.on('cameraMode:changed', updateControls),
         events.on('animationPaused:changed', updateControls),
         events.on('animationTime:changed', updateSlider),

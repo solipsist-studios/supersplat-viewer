@@ -53,7 +53,7 @@ type State = {
      * Whether the content is a 4DGS clip, which owns its timeline: the transport drives file
      * playback, not the camera. Read-only: set when the clip loads.
      */
-    hasSplatAnimation: boolean;
+    has4DAnimation: boolean;
     /** Length of that animation in seconds, or 0. */
     animationDuration: number;
     /** Playhead position in seconds. Read-only: the animation cursor owns it. */

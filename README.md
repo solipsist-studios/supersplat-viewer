@@ -87,6 +87,16 @@ To initialize a local development environment for SuperSplat Viewer, ensure you 
 
 4. Open your browser at http://localhost:3000.
 
+### Testing over HTTPS
+
+WebGPU needs a secure context: `https://`, or `http://localhost`. A page opened from another machine over plain http (a phone, a headset, a second computer) falls back to WebGL2. To serve over HTTPS with a self-signed certificate:
+
+```sh
+npm run develop:https
+```
+
+The first run creates `.certs/` (ignored by git) with a certificate for `localhost`, the machine's hostname and its IPv4 addresses, using `openssl`. Open `https://<hostname>:3000` and accept the browser's certificate warning once per origin. Delete `.certs/` to regenerate the certificate after the addresses change. `npm run serve:https` serves `public/` without the watcher.
+
 ### Debug engine build
 
 By default the viewer links against the release build of the PlayCanvas engine. Set `ENGINE=debug` to link against the engine's debug build instead, which includes runtime assertions and unminified, readable source for easier debugging:
