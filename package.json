@@ -67,12 +67,14 @@
   "scripts": {
     "build": "rollup -c",
     "develop": "concurrently --kill-others \"npm run watch\" \"npm run serve\"",
+    "develop:https": "concurrently --kill-others \"npm run watch\" \"npm run serve:https\"",
     "fmt": "prettier --check src rollup.config.mjs eslint.config.mjs prettier.config.mjs",
     "fmt:fix": "prettier --write src rollup.config.mjs eslint.config.mjs prettier.config.mjs",
     "lint": "eslint src rollup.config.mjs eslint.config.mjs prettier.config.mjs",
     "lint:fix": "eslint src rollup.config.mjs eslint.config.mjs prettier.config.mjs --fix",
     "publint": "publint",
     "serve": "serve public -C -c ../serve.json",
+    "serve:https": "node scripts/dev-cert.mjs && serve public -C -c ../serve.json --ssl-cert .certs/cert.pem --ssl-key .certs/key.pem",
     "test": "echo \"Error: no test specified\" && exit 1",
     "type:check": "tsc --noEmit",
     "watch": "rollup -c -w"
