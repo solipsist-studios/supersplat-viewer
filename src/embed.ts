@@ -45,7 +45,7 @@ const initEmbed = (global: Global, viewer: Viewer) => {
         send({
             type: 'ssv:state',
             loaded: state.loaded,
-            hasAnimation: state.hasAnimation,
+            hasAnimation: state.has4DAnimation,
             duration: state.animationDuration,
             time: state.animationTime,
             paused: state.animationPaused,
@@ -61,7 +61,7 @@ const initEmbed = (global: Global, viewer: Viewer) => {
     };
 
     events.on('firstFrame', sendState);
-    ['hasAnimation', 'animationDuration', 'animationPaused', 'progress', 'hasAR', 'hasVR'].forEach((prop) => {
+    ['has4DAnimation', 'animationDuration', 'animationPaused', 'progress', 'hasAR', 'hasVR'].forEach((prop) => {
         events.on(`${prop}:changed`, sendState);
     });
     global.app.xr?.on('available', sendState);
@@ -121,7 +121,7 @@ const initEmbed = (global: Global, viewer: Viewer) => {
     // mirrors the play/pause buttons in ui.ts: 3D content switches to the
     // camera track, 4DGS content toggles file playback
     const setPaused = (paused: boolean) => {
-        if (!state.hasAnimation) {
+        if (!state.has4DAnimation) {
             state.cameraMode = 'anim';
         }
         state.animationPaused = paused;

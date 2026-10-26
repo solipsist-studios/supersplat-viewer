@@ -262,7 +262,10 @@ class NavCursor {
 
     private camera: Entity;
 
-    private collision: Collision | null;
+    // Settable after construction: the viewer reveals the scene before the collision data has
+    // downloaded, so this arrives late. Ring sizing reads `state.walkAllowed` live, so only the
+    // pick path needs updating here.
+    collision: Collision | null;
 
     private canvas: HTMLCanvasElement;
 
@@ -294,7 +297,14 @@ class NavCursor {
         normal: new Vec3()
     };
 
-    constructor(app: AppBase, camera: Entity, collision: Collision | null, events: EventHandler, state: State) {
+    constructor(
+        app: AppBase,
+        camera: Entity,
+        collision: Collision | null,
+        events: EventHandler,
+        state: State,
+        reticle: boolean
+    ) {
         this.camera = camera;
         this.collision = collision;
         this.canvas = app.graphicsDevice.canvas as HTMLCanvasElement;
@@ -339,6 +349,7 @@ class NavCursor {
 
         const updateActive = () => {
             const captureActive =
+                reticle &&
                 state.inputMode === 'desktop' &&
                 state.gamingControls &&
                 (state.cameraMode === 'walk' || state.cameraMode === 'fly');

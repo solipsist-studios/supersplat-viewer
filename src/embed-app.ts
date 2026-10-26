@@ -3,10 +3,10 @@ import type { Entity } from 'playcanvas';
 
 import { createApp, createViewerState, initCanvas, isStatic3dgsFilename, loadContent } from './app-setup';
 import { EmbedInputDevice } from './input/devices/external';
+import { initLocalization } from './localization';
 import { importSettings } from './settings';
 import type { Config, Global, State } from './types';
 import { Viewer } from './viewer';
-import { initXr } from './xr';
 
 // Embeddable library entry: creates a full viewer (engine, loaders, camera
 // pipeline, XR) on a host-page canvas with NO HTML UI and no iframe. The
@@ -147,7 +147,9 @@ const createEmbedViewer = async (options: EmbedViewerOptions): Promise<EmbedView
         animLoopMode: options.loopMode,
         sogstBudget: options.sogstBudget,
         sogstGpuDecode: options.sogstGpuDecode ?? true,
-        noui: true,
+        ui: false,
+        reticle: false,
+        exposeGlobals: false,
         noanim: !!options.noanim,
         embed: true,
         transparent: !!options.transparent,
@@ -166,6 +168,12 @@ const createEmbedViewer = async (options: EmbedViewerOptions): Promise<EmbedView
     const events = new EventHandler();
     const state = createViewerState(events, config);
 
+    // The viewer's instance root. The host owns the canvas and the page around it, and the
+    // viewer removes its root when destroyed, so this is a private detached element: nothing
+    // of the host's is looked up, restyled or removed. (Phase C replaces this adapter with
+    // createViewer, which owns its root outright.)
+    const root = document.createElement('div');
+
     const global: Global = {
         app,
         settings: importSettings(options.settings ?? defaultSettings),
@@ -173,22 +181,25 @@ const createEmbedViewer = async (options: EmbedViewerOptions): Promise<EmbedView
         state,
         events,
         camera,
-        renderer
+        renderer,
+        root,
+        localize: initLocalization(undefined, root)
     };
 
-    initCanvas(global);
+    const disposeCanvas = initCanvas(global);
     app.start();
     camera.addComponent('camera');
-    initXr(global);
 
     // Load model — loadContent picks the handler from the filename and
     // rejects an unrecognised extension without fetching the body
     const progressCallback = (progress: number) => {
         state.progress = progress;
     };
-    const gsplatLoad = loadContent(app, config, global, progressCallback);
+    let destroyed = false;
+    const gsplatLoad = loadContent(app, config, global, progressCallback, () => destroyed);
 
     const viewer = new Viewer(global, gsplatLoad, undefined, undefined);
+    viewer.onDestroy(disposeCanvas);
 
     // Host-fed input flows through the shared controller pipeline; the
     // input controller exists once loading completes.
@@ -241,7 +252,7 @@ const createEmbedViewer = async (options: EmbedViewerOptions): Promise<EmbedView
     // mirrors the play/pause buttons in ui.ts: 3D content switches to the
     // camera track, 4DGS content toggles file playback
     const setPaused = (paused: boolean) => {
-        if (!state.hasAnimation) {
+        if (!state.has4DAnimation) {
             state.cameraMode = 'anim';
         }
         state.animationPaused = paused;
@@ -300,7 +311,8 @@ const createEmbedViewer = async (options: EmbedViewerOptions): Promise<EmbedView
             return true;
         },
         destroy: () => {
-            app.destroy();
+            destroyed = true;
+            viewer.destroy();
         }
     };
 };
