@@ -291,25 +291,6 @@ class VoxelCollision implements Collision {
         return false;
     }
 
-    isFreeAt(x: number, y: number, z: number): boolean {
-        // Without voxel data, there's no carve to consult — report not-free
-        // rather than have the lattice search treat the world as wide open.
-        if (this._nodes.length === 0) {
-            return false;
-        }
-        const res = this._voxelResolution;
-        const ix = Math.floor((x - this._gridMinX) / res);
-        const iy = Math.floor((y - this._gridMinY) / res);
-        const iz = Math.floor((z - this._gridMinZ) / res);
-        // Outside the carved grid is "no data" — also not-free. Without this
-        // check the lattice search would spend candidates on out-of-bounds
-        // cells (and `isVoxelSolid` would mislead callers by returning false).
-        if (ix < 0 || iy < 0 || iz < 0 || ix >= this._numVoxelsX || iy >= this._numVoxelsY || iz >= this._numVoxelsZ) {
-            return false;
-        }
-        return !this.isVoxelSolid(ix, iy, iz);
-    }
-
     querySurfaceNormal(
         x: number,
         y: number,
@@ -375,7 +356,16 @@ class VoxelCollision implements Collision {
         return result;
     }
 
-    queryRay(ox: number, oy: number, oz: number, dx: number, dy: number, dz: number, maxDist: number): RayHit | null {
+    queryRay(
+        ox: number,
+        oy: number,
+        oz: number,
+        dx: number,
+        dy: number,
+        dz: number,
+        maxDist: number,
+        exitSolid = false
+    ): RayHit | null {
         if (this._nodes.length === 0) {
             return null;
         }
@@ -475,12 +465,16 @@ class VoxelCollision implements Collision {
         let currentT = tNear;
         const maxSteps = this._numVoxelsX + this._numVoxelsY + this._numVoxelsZ;
 
+        // a ray from inside solid looks for the first free voxel instead, where it leaves
+        const inside = exitSolid && tNear === 0 && this.isVoxelSolid(ix, iy, iz);
+
         for (let step = 0; step < maxSteps; step++) {
-            if (this.isVoxelSolid(ix, iy, iz)) {
+            if (this.isVoxelSolid(ix, iy, iz) !== inside) {
                 return {
                     x: ox + dx * currentT,
                     y: oy + dy * currentT,
-                    z: oz + dz * currentT
+                    z: oz + dz * currentT,
+                    exit: inside
                 };
             }
 
@@ -505,15 +499,24 @@ class VoxelCollision implements Collision {
                 tMaxZ += tDeltaZ;
             }
 
-            if (
+            const outside =
                 ix < 0 ||
                 iy < 0 ||
                 iz < 0 ||
                 ix >= this._numVoxelsX ||
                 iy >= this._numVoxelsY ||
-                iz >= this._numVoxelsZ ||
-                currentT > maxDist
-            ) {
+                iz >= this._numVoxelsZ;
+
+            // past the grid is free, so a ray inside solid that reaches its edge leaves there
+            if (outside && inside && currentT <= maxDist) {
+                return {
+                    x: ox + dx * currentT,
+                    y: oy + dy * currentT,
+                    z: oz + dz * currentT,
+                    exit: true
+                };
+            }
+            if (outside || currentT > maxDist) {
                 return null;
             }
         }
@@ -901,6 +904,54 @@ class VoxelCollision implements Collision {
     }
 
     /**
+     * Read a whole block of voxels (leafSize on a side) with one descent of the tree, for scanning
+     * a region faster than isVoxelSolid can voxel by voxel.
+     *
+     * @param bx - Block X index (the voxel index over leafSize).
+     * @param by - Block Y index.
+     * @param bz - Block Z index.
+     * @param out - Receives the block's 64-bit solid mask as (lo, hi), bit z * 16 + y * 4 + x.
+     */
+    readBlock(bx: number, by: number, bz: number, out: Uint32Array) {
+        out[0] = 0;
+        out[1] = 0;
+        const { leafSize, treeDepth, nodes, leafData } = this;
+        if (
+            nodes.length === 0 ||
+            bx < 0 ||
+            by < 0 ||
+            bz < 0 ||
+            bx * leafSize >= this.numVoxelsX ||
+            by * leafSize >= this.numVoxelsY ||
+            bz * leafSize >= this.numVoxelsZ
+        ) {
+            return;
+        }
+
+        let nodeIndex = 0;
+        for (let level = treeDepth - 1; level >= -1; level--) {
+            const node = nodes[nodeIndex] >>> 0;
+            if (node === SOLID_LEAF_MARKER) {
+                out[0] = 0xffffffff;
+                out[1] = 0xffffffff;
+                return;
+            }
+            const childMask = (node >>> 24) & 0xff;
+            if (childMask === 0 || level < 0) {
+                const leafDataIndex = node & 0x00ffffff;
+                out[0] = leafData[leafDataIndex * 2];
+                out[1] = leafData[leafDataIndex * 2 + 1];
+                return;
+            }
+            const octant = (((bz >>> level) & 1) << 2) | (((by >>> level) & 1) << 1) | ((bx >>> level) & 1);
+            if ((childMask & (1 << octant)) === 0) {
+                return;
+            }
+            nodeIndex = (node & 0x00ffffff) + popcount(childMask & ((1 << octant) - 1));
+        }
+    }
+
+    /**
      * Check a mixed leaf node using voxel grid indices.
      * The solid leaf sentinel must be checked before calling this method.
      *
@@ -955,8 +1006,17 @@ class FlippedVoxelCollision extends VoxelCollision {
         return result;
     }
 
-    queryRay(ox: number, oy: number, oz: number, dx: number, dy: number, dz: number, maxDist: number): RayHit | null {
-        const hit = super.queryRay(-ox, -oy, oz, -dx, -dy, dz, maxDist);
+    queryRay(
+        ox: number,
+        oy: number,
+        oz: number,
+        dx: number,
+        dy: number,
+        dz: number,
+        maxDist: number,
+        exitSolid = false
+    ): RayHit | null {
+        const hit = super.queryRay(-ox, -oy, oz, -dx, -dy, dz, maxDist, exitSolid);
         if (hit) {
             hit.x = -hit.x;
             hit.y = -hit.y;
@@ -980,10 +1040,6 @@ class FlippedVoxelCollision extends VoxelCollision {
             out.y = -out.y;
         }
         return result;
-    }
-
-    isFreeAt(x: number, y: number, z: number): boolean {
-        return super.isFreeAt(-x, -y, z);
     }
 }
 

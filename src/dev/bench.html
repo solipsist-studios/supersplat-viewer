@@ -1,0 +1,1379 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="utf-8" />
+        <title>SuperSplat Viewer — renderer bench</title>
+        <link rel="stylesheet" href="./index.css" />
+        <style>
+            body {
+                margin: 0;
+                background: #181818;
+                color: #ddd;
+                font: 12px/1.5 monospace;
+            }
+            #host {
+                position: relative;
+            }
+            #panel {
+                padding: 8px 12px;
+            }
+            #log {
+                white-space: pre-wrap;
+                margin: 0;
+            }
+            #log .fail {
+                color: #f66;
+            }
+            table {
+                border-collapse: collapse;
+                margin: 8px 0;
+            }
+            td,
+            th {
+                border: 1px solid #444;
+                padding: 2px 8px;
+                text-align: right;
+            }
+            th:first-child,
+            td:first-child {
+                text-align: left;
+            }
+            canvas.preview {
+                width: 240px;
+                margin: 4px;
+                outline: 1px solid #444;
+            }
+        </style>
+    </head>
+    <body>
+        <!--
+            Bench harness for the splat renderers (docs/stochastic-renderer.md). Loads the scene once
+            per mode (the engine's sorted renderer, then the opt-in stochastic renderer), sets each
+            camera pose, and measures every variant with the engine's gpu timestamp profiler while a
+            MessageChannel pump drives frames as fast as the gpu takes them, so the queue stays
+            saturated regardless of vsync or tab visibility. Three round-robin rounds per pose;
+            median-of-medians and min-of-mins are reported. Stochastic frames are diffed against the
+            sorted frame at the same pose, and against a second stochastic frame with another seed
+            for the noise floor. Results download as json.
+
+            Params:
+              content=<url> settings=<url>  the scene (fullload and a large budget keep the resident set fixed)
+              poses=<url>                   json array of { name, snapshot } (window.getCameraState shape)
+                                            or { name, position, target, fov }; default: the start pose
+              modes=sorted,stochastic       which renderers to load
+              variants=cull:off;cull:l2     stochastic variant strings, ; separated (keys: coverage, jitter, strata, interleaveArea,
+                                            cull, contribution, compose, taa and the taa* keys, units)
+              splatSource=direct            stochastic data path: direct or workbuffer
+              dpr=1.5                       pin the pixel ratio and screen size: target = host * dpr
+              move=0.25                     orbit the camera this many degrees per measured frame (0: still)
+              motion=strafe                 move sideways instead, at the orbit's speed at the focus (disocclusion)
+              path=<url>                    a flythrough instead of the poses: json array of { time (s), position, target, fov }
+                                            keyframes, played at pathFps (60) with every frame's gpu time kept; a first
+                                            pass streams the detail in (reported as cold), then `rounds` timed passes
+              overdraw=<n>                  with path: the stochastic mode reads the overdraw back every n frames
+              pathCooldown=<s>              with path: idle this long before each pass (a phone throttles under sustained load)
+              pathHold=2                    with path: hold each pose for 2 frames, timing the same views moving and still
+              sortedVariants=sorted;...     with path: the sorted mode's variants; any variant may add engine splat settings
+                                            as gs.<name>:<value>, e.g. gs.colorUpdateAngle:1000 (no colour refresh)
+              truth=32                      raw frames averaged into the stochastic expectation each variant is judged against
+              truthVariant=<variant>        the variant those raw frames render with (default cull:off,taa:off)
+              rounds=3 warmup=40 frames=180
+              width=1280 height=720         host size in css pixels (the canvas follows the dpr rule)
+              budget=<millions>             default 8; the engine allocates its work buffer for the whole budget
+              nodiff                        skip the image comparison
+              fx hpr                        post effects / high precision rendering, off by default
+              minPixelSize=<px>             scene.gsplat.minPixelSize for the stochastic mode only (default 2)
+              radial=0                      sort the sorted renderer by view depth instead of radial distance
+              minPixelSizeAll=<px>          scene.gsplat.minPixelSize for both modes
+              save=<tag>                    keep every stochastic variant's captures (converged and moving) under a tag
+              closeup                       add an automatic pose at 0.3 of the subject pose's distance (no poses file)
+              pick                          pick noise: surface picks over a 9 x 5 grid on 8 frames, spread and offset from the sorted pick
+              far=<m>                       fix the camera's far plane (both modes) instead of the viewer's fit to the scene bound
+              keep                          leave the last viewer alive as window.bench { viewer, app, renderer, pump(n) }
+              against=<tag>                 diff every capture against the one saved under that tag by an earlier run,
+                                            usually another build: a variant accumulates the same seeds each time, so
+                                            an unchanged renderer differs by nothing
+        -->
+        <div id="host"></div>
+        <div id="panel">
+            <button id="download" disabled>Download json</button>
+            <div id="tables"></div>
+            <div id="previews"></div>
+            <pre id="log"></pre>
+        </div>
+        <script type="module">
+            import { createViewer } from './index.js';
+
+            const params = new URL(location.href).searchParams;
+            const host = document.getElementById('host');
+            const logEl = document.getElementById('log');
+            const log = (message, fail = false) => {
+                const line = document.createElement('div');
+                line.textContent = message;
+                if (fail) line.className = 'fail';
+                logEl.appendChild(line);
+                console.log(message);
+            };
+            window.addEventListener('error', (event) => log(`ERROR ${event.error?.stack ?? event.message}`, true));
+            window.addEventListener('unhandledrejection', (event) =>
+                log(`ERROR ${event.reason?.stack ?? event.reason}`, true)
+            );
+
+            const median = (values) => {
+                const sorted = [...values].sort((a, b) => a - b);
+                const mid = sorted.length >> 1;
+                return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+            };
+
+            const width = Number(params.get('width') ?? 1280);
+            const height = Number(params.get('height') ?? 720);
+            host.style.width = `${width}px`;
+            host.style.height = `${height}px`;
+
+            const modes = (params.get('modes') ?? 'sorted,stochastic').split(',').filter(Boolean);
+            const variants = (params.get('variants') ?? 'cull:off;cull:l2').split(';').filter(Boolean);
+            const rounds = Number(params.get('rounds') ?? 3);
+            const warmup = Number(params.get('warmup') ?? 40);
+            const frames = Number(params.get('frames') ?? 180);
+            // the engine allocates its work buffer for the whole budget up front (budget x 1.15 slots
+            // x 24 bytes), so keep it just above the scene's splat count
+            const budget = Number(params.get('budget') ?? 8);
+            const splatSource = params.get('splatSource') ?? 'direct';
+            // degrees of orbit per measured frame; 0 measures a still camera
+            const move = Number(params.get('move') ?? 0);
+            // how the camera moves for the moving comparison: orbit the focus, or strafe sideways
+            const motion = params.get('motion') ?? 'orbit';
+            // the pane's device pixel ratio and screen size follow tab visibility, so pin them for
+            // repeatable targets: the viewer caps its ratio from the screen's short side, and a
+            // host-sized screen leaves the ratio at dpr (target = host * dpr)
+            if (params.has('dpr')) {
+                Object.defineProperty(window, 'devicePixelRatio', {
+                    value: Number(params.get('dpr')),
+                    configurable: true
+                });
+                Object.defineProperty(screen, 'width', { value: width, configurable: true });
+                Object.defineProperty(screen, 'height', { value: height, configurable: true });
+            }
+            const diff = !params.has('nodiff');
+            const contentUrl = params.get('content') ?? './shoe.ply';
+            const settings = await (await fetch(params.get('settings') ?? './settings.json')).json();
+
+            // poses: the debug panel's snapshot shape, or position/target/fov converted the way
+            // Camera.look does (see src/core/math.ts vecToAngles)
+            const toSnapshot = (pose) => {
+                if (pose.snapshot) return pose.snapshot;
+                const [px, py, pz] = pose.position;
+                const [tx, ty, tz] = pose.target;
+                let dx = tx - px;
+                let dy = ty - py;
+                let dz = tz - pz;
+                const distance = Math.hypot(dx, dy, dz);
+                dx /= distance;
+                dy /= distance;
+                dz /= distance;
+                const radToDeg = 180 / Math.PI;
+                const horizLenSq = dx * dx + dz * dz;
+                return {
+                    position: [px, py, pz],
+                    angles: [
+                        Math.asin(Math.max(-1, Math.min(1, dy))) * radToDeg,
+                        horizLenSq > 1e-8 ? Math.atan2(-dx, -dz) * radToDeg : 0,
+                        0
+                    ],
+                    distance,
+                    fov: pose.fov ?? 85,
+                    mode: 'orbit'
+                };
+            };
+            const posesUrl = params.get('poses');
+            const poses = posesUrl
+                ? (await (await fetch(posesUrl)).json()).map((p) => ({ name: p.name, snapshot: toSnapshot(p) }))
+                : null;
+
+            // A flythrough (path=<url>) in place of the poses: keyframes { time (s), position,
+            // target, fov } played at pathFps, every frame timed. Position, pitch, yaw (unwrapped,
+            // so a turn takes the short way between neighbouring keys) and fov follow a
+            // Catmull-Rom spline through the keys
+            const pathUrl = params.get('path');
+            const pathFps = Number(params.get('pathFps') ?? 60);
+            // frames between the overdraw readbacks of the stochastic mode's analysis pass (0: none)
+            const overdrawEvery = Number(params.get('overdraw') ?? 0);
+            // seconds the gpu idles before each pass, so a phone that throttles under sustained load
+            // starts every pass at the same clock
+            const pathCooldown = Number(params.get('pathCooldown') ?? 0);
+            // frames each path pose is held for: 2 times the same views moving and still
+            const pathHold = Math.max(1, Math.round(Number(params.get('pathHold') ?? 1)));
+            // the sorted mode's flythrough variants, ; separated: `sorted`, optionally with gs.* settings
+            const sortedVariants = (params.get('sortedVariants') ?? 'sorted').split(';').filter(Boolean);
+            const pathSnapshot = await (async () => {
+                if (!pathUrl) return null;
+                const keys = [];
+                let prevYaw = null;
+                for (const key of await (await fetch(pathUrl)).json()) {
+                    const s = toSnapshot(key);
+                    let yaw = s.angles[1];
+                    if (prevYaw !== null) yaw = prevYaw + ((((yaw - prevYaw) % 360) + 540) % 360) - 180;
+                    prevYaw = yaw;
+                    keys.push({ time: key.time, values: [...s.position, s.angles[0], yaw, s.fov] });
+                }
+                const spline = (p0, p1, p2, p3, u) =>
+                    0.5 *
+                    (2 * p1 +
+                        (p2 - p0) * u +
+                        (2 * p0 - 5 * p1 + 4 * p2 - p3) * u * u +
+                        (3 * p1 - p0 - 3 * p2 + p3) * u * u * u);
+                const at = (t) => {
+                    let i = 0;
+                    while (i < keys.length - 2 && t > keys[i + 1].time) i++;
+                    const k1 = keys[i];
+                    const k2 = keys[Math.min(i + 1, keys.length - 1)];
+                    const k0 = keys[Math.max(i - 1, 0)];
+                    const k3 = keys[Math.min(i + 2, keys.length - 1)];
+                    const u = k2.time > k1.time ? Math.min(1, Math.max(0, (t - k1.time) / (k2.time - k1.time))) : 0;
+                    const v = k1.values.map((_, j) =>
+                        spline(k0.values[j], k1.values[j], k2.values[j], k3.values[j], u)
+                    );
+                    return { position: v.slice(0, 3), angles: [v[3], v[4], 0], distance: 10, fov: v[5], mode: 'orbit' };
+                };
+                at.frames = Math.round(keys[keys.length - 1].time * pathFps) + 1;
+                at.keyTimes = keys.map((k) => k.time);
+                return at;
+            })();
+
+            // one frame, sequenced as AppBase.tick does it, without waiting for the display
+            const pumpFrame = (app, dt) => {
+                app.fire('frameupdate', dt * 1000);
+                app.update(dt);
+                app.fire('framerender');
+                app.render();
+                app.renderNextFrame = false;
+                app.fire('frameend');
+            };
+            // At most this many frames queued on the gpu: enough to keep it busy, and without a
+            // bound a phone's cpu runs hundreds of frames ahead, so the profiler's reports for one
+            // variant arrive during the next
+            const FRAMES_IN_FLIGHT = 2;
+            const inFlight = [];
+            const pump = (app, count, onFrame) =>
+                new Promise((resolve) => {
+                    const channel = new MessageChannel();
+                    const queue = app.graphicsDevice.wgpu?.queue;
+                    let i = 0;
+                    channel.port1.onmessage = async () => {
+                        if (i >= count) {
+                            channel.port1.close();
+                            resolve();
+                            return;
+                        }
+                        while (inFlight.length >= FRAMES_IN_FLIGHT) await inFlight.shift();
+                        // the frame's cpu time: the update and the render's encoding and submit
+                        const cpuStart = performance.now();
+                        pumpFrame(app, 1 / 60);
+                        const cpu = performance.now() - cpuStart;
+                        if (queue) inFlight.push(queue.onSubmittedWorkDone());
+                        onFrame?.(i, cpu);
+                        i++;
+                        channel.port2.postMessage(0);
+                    };
+                    channel.port2.postMessage(0);
+                });
+            // a yield that a hidden tab does not throttle (timers there fire once a second at best)
+            const yieldTask = () =>
+                new Promise((resolve) => {
+                    const channel = new MessageChannel();
+                    channel.port1.onmessage = () => {
+                        channel.port1.close();
+                        resolve();
+                    };
+                    channel.port2.postMessage(0);
+                });
+            // pump frames until the test passes, at real elapsed time so streaming and animation
+            // see sane deltas; false on timeout
+            const pumpUntil = async (app, test, timeoutMs) => {
+                const deadline = performance.now() + timeoutMs;
+                const queue = app.graphicsDevice.wgpu?.queue;
+                let last = performance.now();
+                while (!test()) {
+                    if (performance.now() > deadline) return false;
+                    while (inFlight.length >= FRAMES_IN_FLIGHT) await inFlight.shift();
+                    const now = performance.now();
+                    pumpFrame(app, Math.min(0.1, Math.max(1 / 240, (now - last) / 1000)));
+                    if (queue) inFlight.push(queue.onSubmittedWorkDone());
+                    last = now;
+                    await yieldTask();
+                }
+                return true;
+            };
+            const stopTicker = (app) => {
+                if (app.frameRequestId) {
+                    cancelAnimationFrame(app.frameRequestId);
+                    app.frameRequestId = null;
+                }
+            };
+            // The page's own frame loop is stopped once the viewer exists and every frame is pumped
+            // from here: the desktop app's browser pane hides the page whenever it is not in front,
+            // and a hidden page gets no requestAnimationFrame, which would stall every wait below.
+            const nextFrame = (app) => pump(app, 1);
+            // the viewer renders on demand, and frameend fires whether or not a frame rendered
+            const renderFrame = (app) => {
+                app.renderNextFrame = true;
+                return pump(app, 1);
+            };
+
+            // gpu spans: the engine's timestamp profiler reports asynchronously, a few frames late;
+            // the pass names live in pastFrameAllocations and are consumed by report(), so copy
+            // them first
+            const attachProfiler = (device) => {
+                const profiler = device.gpuProfiler;
+                profiler.enabled = true;
+                const samples = [];
+                const original = profiler.report;
+                profiler.report = function (renderVersion, timings, frameTime) {
+                    const names = this.pastFrameAllocations.get(renderVersion);
+                    if (timings && names) {
+                        const passes = {};
+                        let sum = 0;
+                        names.forEach((name, i) => {
+                            passes[name] = (passes[name] ?? 0) + timings[i];
+                            sum += timings[i];
+                        });
+                        samples.push({ version: renderVersion, frame: frameTime ?? sum, passes });
+                    }
+                    return original.call(this, renderVersion, timings, frameTime);
+                };
+                return {
+                    samples,
+                    detach() {
+                        profiler.report = original;
+                        profiler.enabled = false;
+                    }
+                };
+            };
+
+            // The frame as shown: one more frame is rendered and the canvas read back in the same
+            // task (WebGPU keeps no drawing buffer past it). Not viewer.captureFrame(): that renders
+            // a query frame into its own target with a horizontal fov, which the temporal history
+            // would have to be resampled into, and it would enter the history as an extra sample
+            let readback = null;
+            const capture = async (viewer, w, h) => {
+                const { app } = viewer;
+                const canvas = app.graphicsDevice.canvas;
+                if (!readback || readback.width !== w || readback.height !== h) {
+                    readback = document.createElement('canvas');
+                    readback.width = w;
+                    readback.height = h;
+                }
+                app.renderNextFrame = true;
+                pumpFrame(app, 1 / 60);
+                const ctx = readback.getContext('2d', { willReadFrequently: true });
+                ctx.drawImage(canvas, 0, 0, w, h);
+                await yieldTask();
+                return ctx.getImageData(0, 0, w, h).data;
+            };
+            // Mean absolute horizontal and vertical step of the depth view (24-bit log depth in
+            // rgb, see the compose) between neighbouring covered pixels, in thousandths of the
+            // near-to-far log range: a depth surface's roughness, where plates show as steps
+            const depthRoughness = (a, w, h) => {
+                const t = (i) => (a[i] * 65536 + a[i + 1] * 256 + a[i + 2]) / 16777215;
+                const covered = (i) => a[i] + a[i + 1] + a[i + 2] > 0;
+                let sum = 0;
+                let count = 0;
+                for (let y = 0; y < h - 1; y++) {
+                    for (let x = 0; x < w - 1; x++) {
+                        const i = (y * w + x) * 4;
+                        if (!covered(i)) continue;
+                        if (covered(i + 4)) {
+                            sum += Math.abs(t(i) - t(i + 4));
+                            count++;
+                        }
+                        const j = i + w * 4;
+                        if (covered(j)) {
+                            sum += Math.abs(t(i) - t(j));
+                            count++;
+                        }
+                    }
+                }
+                return count ? (1000 * sum) / count : 0;
+            };
+            // 8-bit rgb metrics: pixels changed by more than 8/255 in any channel, mean absolute
+            // and rms difference (the editor's convention)
+            // and rms difference (the editor's convention), and the signed mean (a - b) per
+            // channel: an intensity or tint bias
+            const imageDiff = (a, b) => {
+                let changed = 0;
+                // pixels off by more than 48 levels in a channel: ghosts and other gross errors,
+                // which the rms spreads over the whole image
+                let far = 0;
+                let sumAbs = 0;
+                let sumSq = 0;
+                const bias = [0, 0, 0];
+                const pixels = a.length / 4;
+                for (let i = 0; i < a.length; i += 4) {
+                    let pixelChanged = false;
+                    let pixelFar = false;
+                    for (let c = 0; c < 3; c++) {
+                        const d = a[i + c] - b[i + c];
+                        if (Math.abs(d) > 8) pixelChanged = true;
+                        if (Math.abs(d) > 48) pixelFar = true;
+                        sumAbs += Math.abs(d);
+                        sumSq += d * d;
+                        bias[c] += d;
+                    }
+                    if (pixelChanged) changed++;
+                    if (pixelFar) far++;
+                }
+                return {
+                    changedPct: (100 * changed) / pixels,
+                    farPct: (100 * far) / pixels,
+                    meanAbs: sumAbs / (pixels * 3),
+                    rms: Math.sqrt(sumSq / (pixels * 3)),
+                    bias: bias.map((v) => v / pixels)
+                };
+            };
+            // |a - b| times 4, as an image: where the difference lives
+            const diffImage = (a, b) => {
+                const out = new Uint8ClampedArray(a.length);
+                for (let i = 0; i < a.length; i += 4) {
+                    for (let c = 0; c < 3; c++) out[i + c] = Math.abs(a[i + c] - b[i + c]) * 4;
+                    out[i + 3] = 255;
+                }
+                return out;
+            };
+            // captures kept between runs (save= / against=), in IndexedDB since a run's worth of
+            // 1080p frames is far beyond localStorage
+            const saveTag = params.get('save');
+            const againstTag = params.get('against');
+            const captureStore = (() => {
+                let db = null;
+                const open = () =>
+                    (db ??= new Promise((resolve, reject) => {
+                        const request = indexedDB.open('sse-bench', 1);
+                        request.onupgradeneeded = () => request.result.createObjectStore('captures');
+                        request.onsuccess = () => resolve(request.result);
+                        request.onerror = () => reject(request.error);
+                    }));
+                const run = async (mode, operation) => {
+                    const store = (await open()).transaction('captures', mode).objectStore('captures');
+                    return new Promise((resolve, reject) => {
+                        const request = operation(store);
+                        request.onsuccess = () => resolve(request.result);
+                        request.onerror = () => reject(request.error);
+                    });
+                };
+                return {
+                    put: (key, value) => run('readwrite', (store) => store.put(value, key)),
+                    get: (key) => run('readonly', (store) => store.get(key))
+                };
+            })();
+            // save this capture under the run's tag, and diff it against the one under `against`
+            const keepCapture = async (key, bytes, w, h) => {
+                if (saveTag) await captureStore.put(`${saveTag}|${key}`, { width: w, height: h, bytes });
+                if (!againstTag) return null;
+                const saved = await captureStore.get(`${againstTag}|${key}`);
+                if (!saved || saved.width !== w || saved.height !== h) {
+                    log(`no capture saved under ${againstTag} for ${key}`, true);
+                    return null;
+                }
+                return { diff: imageDiff(bytes, saved.bytes), saved: saved.bytes };
+            };
+            const diffText = (d) =>
+                `${d.changedPct.toFixed(2)}% changed, meanAbs ${d.meanAbs.toFixed(2)}, rms ${d.rms.toFixed(2)}, bias ${d.bias.map((v) => v.toFixed(2)).join('/')}`;
+            const preview = (bytes, w, h, title) => {
+                const canvas = document.createElement('canvas');
+                canvas.className = 'preview';
+                canvas.width = w;
+                canvas.height = h;
+                canvas.title = title;
+                canvas.getContext('2d').putImageData(new ImageData(bytes, w, h), 0, 0);
+                document.getElementById('previews').appendChild(canvas);
+            };
+
+            const loadViewer = async (mode) => {
+                // the previous viewer's device is gone; its frames are not waited on
+                inFlight.length = 0;
+                const viewer = await createViewer({
+                    container: host,
+                    settings,
+                    contentUrl,
+                    stochastic: mode === 'stochastic',
+                    splatSource,
+                    renderer: 'webgpu',
+                    ui: false,
+                    noanim: true,
+                    nofx: !params.has('fx'),
+                    hpr: params.has('hpr'),
+                    fullload: true,
+                    budget,
+                    // the debug panel publishes window.setCameraState, which the poses use
+                    debug: true,
+                    exposeGlobals: true
+                });
+                let renderer = null;
+                const picking = { picker: null };
+                viewer.events.once('picker:ready', (p) => {
+                    picking.picker = p;
+                });
+                viewer.events.once('splatRenderer:ready', (r) => {
+                    renderer = r;
+                    // captures photograph the culled frame, so the image diff covers the cull
+                    renderer.allowQueryCull = true;
+                    renderer.allowQueryTaa = true;
+                });
+                const { app } = viewer;
+                // the size cull experiment: the stochastic projector's threshold, sorted untouched
+                if (mode === 'stochastic' && params.has('minPixelSize')) {
+                    app.scene.gsplat.minPixelSize = Number(params.get('minPixelSize'));
+                }
+                // both renderers: which splat sizes carry a difference between them
+                if (params.has('minPixelSizeAll')) {
+                    app.scene.gsplat.minPixelSize = Number(params.get('minPixelSizeAll'));
+                }
+                // a far plane fixed after the viewer fits its own to the scene bound, for scenes
+                // whose splats reach past that bound (a sky)
+                if (params.has('far')) {
+                    const farClip = Number(params.get('far'));
+                    app.on('framerender', () => {
+                        const cam = app.root.findComponents('camera')[0];
+                        if (cam) cam.farClip = farClip;
+                    });
+                }
+                // the sorted renderer's order: radial distance (the viewer's setting) or view depth,
+                // the depth the stochastic raster tests
+                if (mode === 'sorted' && params.get('radial') === '0') {
+                    app.scene.gsplat.radialSorting = false;
+                }
+                app.graphicsDevice.wgpu?.addEventListener('uncapturederror', (event) =>
+                    log(`GPU ERROR ${event.error.message}`, true)
+                );
+                // a submit inside a pass invalidates the frame's command buffer (a texture
+                // uploaded at bind time does it); report the first two with their stacks
+                {
+                    const dev = app.graphicsDevice;
+                    const original = dev.submit.bind(dev);
+                    let logged = 0;
+                    dev.submit = () => {
+                        if (dev.insideRenderPass && logged++ < 2) {
+                            log(`SUBMIT INSIDE PASS\n${new Error().stack}`, true);
+                        }
+                        original();
+                    };
+                }
+                // the engine reports each frame whether all the detail it wants is resident: a
+                // pose change on a streamed scene starts loading again, and both modes must be
+                // captured with the same resident detail
+                const streaming = { ready: false, loading: 0 };
+                app.systems.gsplat.on('frame:ready', (cam, layer, ready, loading) => {
+                    streaming.ready = ready;
+                    streaming.loading = loading;
+                });
+                const settle = async () => {
+                    await pump(app, 3);
+                    if (!(await pumpUntil(app, () => streaming.ready && streaming.loading === 0, 120000))) {
+                        log(`${mode}: streaming did not settle within 120s`, true);
+                    }
+                    await pump(app, 10);
+                };
+                stopTicker(app);
+                if (!(await pumpUntil(app, () => viewer.state.loaded, 300000))) {
+                    throw new Error(`${mode}: did not load within 300s`);
+                }
+                // let streaming and the first sorts settle
+                await pump(app, 30);
+                return { viewer, app, renderer, settle, picking };
+            };
+
+            // A moving camera exercises the work-buffer colour refresh, lod changes, the occlusion
+            // cull's reprojection and the temporal history: the camera orbits its focus point
+            // (position + forward * distance, the snapshot's own convention) by `move` degrees a
+            // frame, restarting from the pose every round
+            const orbitStep = (snapshot, i) => {
+                const degToRad = Math.PI / 180;
+                const forward = (pitch, yaw) => [
+                    -Math.sin(yaw * degToRad) * Math.cos(pitch * degToRad),
+                    Math.sin(pitch * degToRad),
+                    -Math.cos(yaw * degToRad) * Math.cos(pitch * degToRad)
+                ];
+                const [pitch, yaw] = snapshot.angles;
+                if (motion === 'strafe') {
+                    // sideways at the orbit's speed at the focus, the view direction fixed: the
+                    // parallax uncovers what the foreground hid
+                    const step = i * move * degToRad * snapshot.distance;
+                    const right = [Math.cos(yaw * degToRad), 0, -Math.sin(yaw * degToRad)];
+                    window.setCameraState({
+                        ...snapshot,
+                        position: snapshot.position.map((p, k) => p + right[k] * step)
+                    });
+                    return;
+                }
+                const f0 = forward(pitch, yaw);
+                const focus = snapshot.position.map((p, k) => p + f0[k] * snapshot.distance);
+                const f1 = forward(pitch, yaw + i * move);
+                window.setCameraState({
+                    ...snapshot,
+                    position: focus.map((c, k) => c - f1[k] * snapshot.distance),
+                    angles: [pitch, yaw + i * move, snapshot.angles[2]]
+                });
+            };
+            // the orbit frames photographed for the moving-image comparison
+            const MOVE_FRAMES = [60, 180];
+
+            // pick noise: a 9 x 5 grid of normalised screen points, picked on this many frames
+            const PICK_POINTS = [];
+            for (let j = 0; j < 5; j++) {
+                for (let i = 0; i < 9; i++) PICK_POINTS.push([0.1 + i * 0.1, 0.1 + j * 0.2]);
+            }
+            const PICK_FRAMES = 8;
+            const sortedPicks = new Map(); // pose name -> mean pick positions of the sorted mode
+            // Per point: the mean position, the rms distance of the frames' positions from it and
+            // the mean angle of their normals from the mean normal; distances in % of the distance
+            // from the camera. With the sorted means, each point's offset from the sorted pick
+            const pickStats = (samples, cam, reference) => {
+                const means = [];
+                let hits = 0;
+                let spread = 0;
+                let angle = 0;
+                let counted = 0;
+                const offsets = [];
+                samples.forEach((list, i) => {
+                    hits += list.length;
+                    if (list.length === 0) {
+                        means.push(null);
+                        return;
+                    }
+                    const m = list[0].p.clone().set(0, 0, 0);
+                    const nm = m.clone();
+                    list.forEach(({ p, n }) => {
+                        m.add(p);
+                        nm.add(n);
+                    });
+                    m.mulScalar(1 / list.length);
+                    nm.normalize();
+                    means.push(m);
+                    const dist = m.distance(cam);
+                    let sq = 0;
+                    let deg = 0;
+                    list.forEach(({ p, n }) => {
+                        sq += p.distance(m) ** 2;
+                        deg += (Math.acos(Math.max(-1, Math.min(1, n.dot(nm)))) * 180) / Math.PI;
+                    });
+                    spread += (100 * Math.sqrt(sq / list.length)) / dist;
+                    angle += deg / list.length;
+                    counted++;
+                    if (reference?.[i]) offsets.push((100 * m.distance(reference[i])) / dist);
+                });
+                offsets.sort((a, b) => a - b);
+                return {
+                    hitRate: hits / (samples.length * PICK_FRAMES),
+                    spreadPct: counted ? spread / counted : 0,
+                    normalSpreadDeg: counted ? angle / counted : 0,
+                    biasPct: offsets.length ? offsets.reduce((s, v) => s + v, 0) / offsets.length : null,
+                    biasMedianPct: offsets.length ? offsets[offsets.length >> 1] : null,
+                    means
+                };
+            };
+
+            const measure = async (app, profiler, label, snapshot) => {
+                profiler.samples.length = 0;
+                const orbit = move ? (i) => orbitStep(snapshot, i) : undefined;
+                // only the frames rendered here count: a report that trails in from an earlier
+                // measurement carries an earlier frame
+                const device = app.graphicsDevice;
+                const first = device.renderVersion;
+                await pump(app, warmup, orbit);
+                // console markers around the measured frames, for a host sampling gpu hardware
+                // counters alongside (the frames trail the cpu by at most FRAMES_IN_FLIGHT)
+                console.log(`measure-begin ${label} ${frames}`);
+                await pump(app, frames, orbit ? (i) => orbit(warmup + i) : undefined);
+                console.log(`measure-end ${label}`);
+                const last = device.renderVersion;
+                const ours = () => profiler.samples.filter((s) => s.version >= first && s.version <= last);
+                // reports trail the frames; pump until they have arrived
+                await pumpUntil(app, () => ours().length >= warmup + frames - 5, 30000);
+                const samples = ours()
+                    .sort((a, b) => a.version - b.version)
+                    .slice(warmup, warmup + frames);
+                const frameTimes = samples.map((s) => s.frame);
+                const passNames = new Set();
+                samples.forEach((s) => Object.keys(s.passes).forEach((n) => passNames.add(n)));
+                const passes = {};
+                for (const name of passNames) {
+                    passes[name] = median(samples.map((s) => s.passes[name] ?? 0));
+                }
+                return {
+                    label,
+                    samples: samples.length,
+                    median: median(frameTimes),
+                    min: Math.min(...frameTimes),
+                    // timestamps come in 65.5 us ticks: a mean over many frames resolves the
+                    // differences smaller than one, which the median and minimum cannot
+                    mean: frameTimes.reduce((s, t) => s + t, 0) / frameTimes.length,
+                    passes
+                };
+            };
+
+            // a flythrough's frame times (ms; a frame whose report never arrived is null)
+            const frameStats = (values) => {
+                const times = values.filter((t) => t !== null);
+                const sorted = [...times].sort((a, b) => a - b);
+                const pct = (p) => sorted[Math.min(sorted.length - 1, Math.floor(p * sorted.length))];
+                return {
+                    frames: times.length,
+                    mean: times.reduce((s, t) => s + t, 0) / times.length,
+                    p50: pct(0.5),
+                    p90: pct(0.9),
+                    p99: pct(0.99),
+                    max: sorted[sorted.length - 1],
+                    // frames that alone would miss a 60 or a 30 Hz display
+                    over16: times.filter((t) => t > 1000 / 60).length,
+                    over33: times.filter((t) => t > 1000 / 30).length
+                };
+            };
+            const statsText = (s) =>
+                `mean ${s.mean.toFixed(2)}, p50 ${s.p50.toFixed(2)}, p90 ${s.p90.toFixed(2)}, p99 ${s.p99.toFixed(2)}, max ${s.max.toFixed(2)} ms; ${s.over16} frames over 16.7 ms, ${s.over33} over 33.3 (of ${s.frames})`;
+
+            // One pass along the path with every frame's gpu time: the camera moves into frame i's
+            // pose inside frame i, as a user's camera does. With pathHold n each pose is held for
+            // n frames, so the same views are also timed still (the last frame of each hold).
+            // Versions count up from frameStart, so frame i reports as first + 1 + i
+            const flyPath = async (app, profiler, label) => {
+                const device = app.graphicsDevice;
+                const frames = pathSnapshot.frames * pathHold;
+                if (pathCooldown) await new Promise((resolve) => setTimeout(resolve, pathCooldown * 1000));
+                window.setCameraState(pathSnapshot(0));
+                for (let f = 0; f < 3; f++) await renderFrame(app);
+                profiler.samples.length = 0;
+                const first = device.renderVersion;
+                const active = [];
+                // each frame's cpu time, and the wall time from the previous frame's end: with
+                // FRAMES_IN_FLIGHT queued that interval is the frame rate, whichever of the cpu and
+                // the gpu limits it
+                const cpu = [];
+                const wall = [];
+                let last = performance.now();
+                console.log(`measure-begin ${label} ${frames}`);
+                await pump(app, frames, (i, cpuMs) => {
+                    const now = performance.now();
+                    cpu.push(cpuMs);
+                    wall.push(now - last);
+                    last = now;
+                    active.push(app.stats.frame.gsplats);
+                    if (i + 1 < frames) window.setCameraState(pathSnapshot(Math.floor((i + 1) / pathHold) / pathFps));
+                });
+                console.log(`measure-end ${label}`);
+                const ours = () => profiler.samples.filter((s) => s.version > first && s.version <= first + frames);
+                await pumpUntil(app, () => ours().length >= frames, 30000);
+                const all = new Array(frames).fill(null);
+                for (const s of ours()) all[s.version - first - 1] = s.frame;
+                const nth = (values, k) => values.filter((_, i) => i % pathHold === k);
+                const stillPhase = pathHold - 1;
+                return {
+                    times: nth(all, 0),
+                    still: pathHold > 1 ? nth(all, stillPhase) : null,
+                    cpu: nth(cpu, 0),
+                    cpuStill: pathHold > 1 ? nth(cpu, stillPhase) : null,
+                    wall: nth(wall, 0),
+                    wallStill: pathHold > 1 ? nth(wall, stillPhase) : null,
+                    active: nth(active, 0)
+                };
+            };
+
+            // A flythrough variant may carry engine splat settings as gs.<name>:<value> (the
+            // moving-camera work: gs.colorUpdateAngle, gs.lodUpdateAngle, gs.lodUpdateDistance);
+            // the rest is the stochastic renderer's variant
+            const gsDefaults = new Map();
+            const applyVariant = (app, renderer, variant) => {
+                const gsplat = app.scene.gsplat;
+                for (const [key, value] of gsDefaults) gsplat[key] = value;
+                const rest = [];
+                for (const part of variant.split(',')) {
+                    const m = part.match(/^gs\.(\w+):(.+)$/);
+                    if (!m) {
+                        rest.push(part);
+                        continue;
+                    }
+                    if (!gsDefaults.has(m[1])) gsDefaults.set(m[1], gsplat[m[1]]);
+                    gsplat[m[1]] = Number(m[2]);
+                }
+                if (renderer) renderer.setVariant(rest.join(','));
+            };
+
+            // The overdraw along the path, every overdrawEvery frames: the projected cache read
+            // back and its quads (clipped where alpha falls below the clip, as both renderers draw
+            // them, and to the screen) summed in pixels over the screen's. With the cull off the
+            // cache holds every splat the sorted renderer draws
+            const overdrawPath = async (app, renderer) => {
+                renderer.setVariant('cull:off,taa:off');
+                const W = app.graphicsDevice.width;
+                const H = app.graphicsDevice.height;
+                const WORDS = 6;
+                const f16 = (h) => {
+                    const s = h & 0x8000 ? -1 : 1;
+                    const e = (h >> 10) & 0x1f;
+                    const m = h & 0x3ff;
+                    if (e === 0) return s * m * 2 ** -24;
+                    return e === 31 ? NaN : s * (1 + m / 1024) * 2 ** (e - 15);
+                };
+                const snorm = (v) => Math.max(-1, ((v << 16) >> 16) / 32767);
+                const maxRadius = Math.min(1024, Math.min(W, H));
+                const rangeX = 1 + (4 * maxRadius) / W;
+                const rangeY = 1 + (4 * maxRadius) / H;
+                const samples = [];
+                window.setCameraState(pathSnapshot(0));
+                for (let f = 0; f < 3; f++) await renderFrame(app);
+                for (let i = 0; i < pathSnapshot.frames; i++) {
+                    window.setCameraState(pathSnapshot(i / pathFps));
+                    await renderFrame(app);
+                    if (i % overdrawEvery !== 0) continue;
+                    const alphaClip = app.scene.gsplat.alphaClipForward;
+                    const { survivors } = await renderer.readStats();
+                    const bytes = await renderer.cacheBuffer.read(0, survivors * WORDS * 4, null, true);
+                    const u32 = new Uint32Array(bytes.buffer, bytes.byteOffset, survivors * WORDS);
+                    let pixels = 0;
+                    for (let k = 0; k < survivors; k++) {
+                        const w0 = u32[k * WORDS];
+                        const w2 = u32[k * WORDS + 2];
+                        const w3 = u32[k * WORDS + 3];
+                        const a1x = f16(w2 & 0xffff);
+                        const a1y = f16(w2 >>> 16);
+                        const len2 = f16(w3 & 0xffff);
+                        const len1 = Math.hypot(a1x, a1y);
+                        if (!(len1 > 0)) continue;
+                        const opacity = ((w3 >>> 16) & 0xff) / 255;
+                        const clip = Math.min(1, Math.sqrt(Math.max(0, Math.log(opacity / alphaClip))) * 0.5);
+                        const ex = clip * (Math.abs(a1x) + Math.abs((len2 * a1y) / len1));
+                        const ey = clip * (Math.abs(a1y) + Math.abs((len2 * a1x) / len1));
+                        const cx = (snorm(w0 & 0xffff) * rangeX * 0.5 + 0.5) * W;
+                        const cy = (snorm(w0 >>> 16) * rangeY * 0.5 + 0.5) * H;
+                        const visW = Math.max(0, Math.min(W, cx + ex) - Math.max(0, cx - ex));
+                        const visH = Math.max(0, Math.min(H, cy + ey) - Math.max(0, cy - ey));
+                        if (ex > 0 && ey > 0) pixels += 4 * clip * clip * len1 * len2 * ((visW * visH) / (4 * ex * ey));
+                    }
+                    samples.push({ frame: i, splats: survivors, overdraw: pixels / (W * H) });
+                }
+                return samples;
+            };
+
+            // Every variant along the path, round-robin so drift touches each alike, after a first
+            // pass that streams the path's detail in (kept as the cold pass)
+            const flythrough = async (app, profiler, renderer, mode, modeVariants) => {
+                const result = {
+                    fps: pathFps,
+                    frames: pathSnapshot.frames,
+                    hold: pathHold,
+                    keyTimes: pathSnapshot.keyTimes,
+                    variants: {}
+                };
+                gsDefaults.clear();
+                applyVariant(app, renderer, modeVariants[0]);
+                const cold = await flyPath(app, profiler, `${modeVariants[0]} cold`);
+                result.cold = { variant: modeVariants[0], ...cold, stats: frameStats(cold.times) };
+                log(`${mode} flythrough ${modeVariants[0]} (cold, streaming): ${statsText(result.cold.stats)}`);
+                const runs = new Map(modeVariants.map((v) => [v, []]));
+                for (let round = 0; round < rounds; round++) {
+                    for (const variant of modeVariants) {
+                        applyVariant(app, renderer, variant);
+                        runs.get(variant).push(await flyPath(app, profiler, variant));
+                    }
+                }
+                applyVariant(app, renderer, '');
+                // the per-frame median over the passes, which a one-frame hitch in one pass does not
+                // move; its statistics are the headline ones, the raw frames' alongside
+                const perFrameOf = (lists) =>
+                    lists[0].map((_, i) => {
+                        const values = lists.map((times) => times[i]).filter((t) => t !== null);
+                        return values.length ? median(values) : null;
+                    });
+                for (const [variant, list] of runs) {
+                    const perFrame = perFrameOf(list.map((r) => r.times));
+                    const entry = {
+                        perFrame,
+                        rounds: list.map((r) => r.times),
+                        active: list[0].active,
+                        stats: frameStats(perFrame),
+                        raw: frameStats(list.flatMap((r) => r.times))
+                    };
+                    entry.cpu = perFrameOf(list.map((r) => r.cpu));
+                    entry.wall = perFrameOf(list.map((r) => r.wall));
+                    if (pathHold > 1) {
+                        entry.stillPerFrame = perFrameOf(list.map((r) => r.still));
+                        entry.stillStats = frameStats(entry.stillPerFrame);
+                        entry.cpuStill = perFrameOf(list.map((r) => r.cpuStill));
+                        entry.wallStill = perFrameOf(list.map((r) => r.wallStill));
+                    }
+                    result.variants[variant] = entry;
+                    const meanOf = (values) => values.reduce((s, t) => s + t, 0) / values.length;
+                    log(
+                        `${mode} flythrough ${variant}: ${statsText(entry.stats)}${rounds > 1 ? ` [per-frame median of ${rounds} passes; raw max ${entry.raw.max.toFixed(2)}, ${entry.raw.over16} raw frames over 16.7 ms]` : ''}; cpu ${meanOf(entry.cpu).toFixed(2)} ms, frame interval ${meanOf(entry.wall).toFixed(2)} ms mean`
+                    );
+                    if (entry.stillStats)
+                        log(
+                            `${mode} flythrough ${variant} still at the same poses: ${statsText(entry.stillStats)}; cpu ${meanOf(entry.cpuStill).toFixed(2)} ms, frame interval ${meanOf(entry.wallStill).toFixed(2)} ms mean`
+                        );
+                }
+                if (overdrawEvery && renderer) {
+                    result.overdraw = await overdrawPath(app, renderer);
+                    const values = result.overdraw.map((s) => s.overdraw);
+                    log(
+                        `${mode} flythrough overdraw: mean ${(values.reduce((s, v) => s + v, 0) / values.length).toFixed(1)}x, max ${Math.max(...values).toFixed(1)}x over ${values.length} samples`
+                    );
+                }
+                return result;
+            };
+
+            const adapter = await navigator.gpu?.requestAdapter();
+            const adapterInfo = adapter?.info ?? (await adapter?.requestAdapterInfo?.()) ?? {};
+            const results = {
+                date: new Date().toISOString(),
+                userAgent: navigator.userAgent,
+                adapter: {
+                    vendor: adapterInfo.vendor,
+                    architecture: adapterInfo.architecture,
+                    device: adapterInfo.device,
+                    description: adapterInfo.description
+                },
+                content: contentUrl,
+                dpr: window.devicePixelRatio,
+                host: { width, height },
+                splatSource,
+                move,
+                rounds,
+                warmup,
+                frames,
+                budget,
+                variants,
+                save: saveTag,
+                against: againstTag,
+                modes: {}
+            };
+
+            const references = new Map(); // pose name -> sorted frame bytes
+            let target = null;
+            let poseList = poses;
+
+            for (const mode of modes) {
+                log(`loading ${mode}...`);
+                const { viewer, app, renderer, settle, picking } = await loadViewer(mode);
+                const device = app.graphicsDevice;
+                target = { width: device.width, height: device.height };
+                results.target = target;
+                log(
+                    `${mode}: loaded, ${app.stats.frame.gsplats} splats resident, target ${target.width}x${target.height}`
+                );
+                if (mode === 'stochastic' && !renderer) {
+                    log('stochastic renderer not created (webgl fallback?)', true);
+                    viewer.destroy();
+                    continue;
+                }
+
+                // the frame stat is only filled by a rendered frame; fall back to the resource
+                const resident =
+                    app.stats.frame.gsplats || app.root.findByName('gsplat')?.gsplat?.resource?.numSplats || 0;
+                const modeResult = { resident, poses: [] };
+                results.modes[mode] = modeResult;
+                const profiler = attachProfiler(device);
+                // No poses: frame the whole scene, plus a pose at the subject. The subject is the
+                // per-axis median of the splat centres (robust to the sky and background that
+                // dominate a capture's bound), viewed from 1.5 spreads away, the spread being the
+                // median absolute deviation. Centres exist on the cpu only for the sorted mode
+                // (the stochastic mode switches them off), so poses are computed once and reused.
+                if (!poseList && !pathSnapshot) {
+                    viewer.frameScene();
+                    await pump(app, 120);
+                    poseList = [{ name: 'framed', snapshot: window.getCameraState() }];
+                    const gsplat = app.root.findByName('gsplat')?.gsplat;
+                    const centers = gsplat?.resource?.centers;
+                    if (centers && centers.length >= 3) {
+                        const count = centers.length / 3;
+                        const step = Math.max(1, Math.floor(count / 200000));
+                        const axis = (k) => {
+                            const values = [];
+                            for (let i = 0; i < count; i += step) values.push(centers[i * 3 + k]);
+                            const med = median(values);
+                            const mad = median(values.map((v) => Math.abs(v - med)));
+                            return { med, mad };
+                        };
+                        const [x, y, z] = [axis(0), axis(1), axis(2)];
+                        const transform = gsplat.entity.getWorldTransform();
+                        const local = new (app.root.getPosition().constructor)(x.med, y.med, z.med);
+                        const subject = transform.transformPoint(local);
+                        const spread = Math.hypot(x.mad, y.mad, z.mad) * transform.getScale().x;
+                        const dir = [0.5, 0.35, 1];
+                        const len = Math.hypot(...dir);
+                        const subjectPose = (name, distance) => ({
+                            name,
+                            snapshot: toSnapshot({
+                                position: [
+                                    subject.x + (dir[0] / len) * distance,
+                                    subject.y + (dir[1] / len) * distance,
+                                    subject.z + (dir[2] / len) * distance
+                                ],
+                                target: [subject.x, subject.y, subject.z],
+                                fov: 85
+                            })
+                        });
+                        poseList.push(subjectPose('subject', 1.5 * spread));
+                        // closer in, where overlapping splats meet at grazing angles
+                        if (params.has('closeup')) poseList.push(subjectPose('closeup', 0.3 * spread));
+                    } else {
+                        log('no cpu centres: run the sorted mode first for a subject pose');
+                    }
+                }
+                const modeVariants = mode === 'stochastic' ? variants : pathSnapshot ? sortedVariants : ['sorted'];
+
+                if (pathSnapshot) {
+                    modeResult.flythrough = await flythrough(app, profiler, renderer, mode, modeVariants);
+                }
+
+                for (const pose of pathSnapshot ? [] : poseList) {
+                    window.setCameraState(pose.snapshot);
+                    for (let i = 0; i < 3; i++) await renderFrame(app);
+                    await settle();
+                    log(`${mode} ${pose.name}: ${app.stats.frame.gsplats} splats active`);
+                    const poseResult = { name: pose.name, variants: {}, images: null, active: app.stats.frame.gsplats };
+                    modeResult.poses.push(poseResult);
+
+                    // the frame at orbit step k, for the moving comparison: the camera moves into
+                    // step k inside the captured frame itself, so it is a moving frame
+                    const movingCapture = async (k) => {
+                        window.setCameraState(pose.snapshot);
+                        for (let f = 0; f < 2; f++) await renderFrame(app);
+                        for (let i = 0; i < k; i++) {
+                            orbitStep(pose.snapshot, i);
+                            pumpFrame(app, 1 / 60);
+                        }
+                        orbitStep(pose.snapshot, k);
+                        return capture(viewer, target.width, target.height);
+                    };
+
+                    if (diff) {
+                        if (mode === 'sorted') {
+                            const bytes = await capture(viewer, target.width, target.height);
+                            references.set(pose.name, bytes);
+                            preview(bytes, target.width, target.height, `${pose.name} sorted`);
+                            if (move) {
+                                for (const k of MOVE_FRAMES) {
+                                    const frame = await movingCapture(k);
+                                    references.set(`${pose.name}@${k}`, frame);
+                                    preview(frame, target.width, target.height, `${pose.name}@${k} sorted`);
+                                }
+                                window.setCameraState(pose.snapshot);
+                            }
+                        } else {
+                            // every variant against the sorted frame; the noise floor once, from a
+                            // second frame of the first variant with another seed (for a taa
+                            // variant: the converged frame, and the next frame as its residual)
+                            const reference = references.get(pose.name);
+                            poseResult.images = {};
+                            // The stochastic renderer's own expectation at this pose: the mean of
+                            // many raw frames with different seeds. A converged accumulation is
+                            // judged against this; its difference to the sorted frame is the
+                            // renderer's, not the accumulation's
+                            const TRUTH_FRAMES = Number(params.get('truth') ?? 32);
+                            renderer.setVariant(params.get('truthVariant') ?? 'cull:off,taa:off');
+                            renderer.seed = 0;
+                            window.setCameraState(pose.snapshot);
+                            for (let f = 0; f < 2; f++) await renderFrame(app);
+                            const sum = new Float32Array(target.width * target.height * 4);
+                            for (let k = 1; k <= TRUTH_FRAMES; k++) {
+                                renderer.seed = k;
+                                const frame = await capture(viewer, target.width, target.height);
+                                for (let i = 0; i < sum.length; i++) sum[i] += frame[i];
+                            }
+                            const truth = new Uint8ClampedArray(sum.length);
+                            for (let i = 0; i < sum.length; i++) truth[i] = Math.round(sum[i] / TRUTH_FRAMES);
+                            renderer.seed = 0;
+                            preview(truth, target.width, target.height, `${pose.name} truth`);
+                            const truthVsSorted = reference ? imageDiff(truth, reference) : null;
+                            poseResult.truthVsSorted = truthVsSorted;
+                            if (reference) {
+                                preview(
+                                    diffImage(truth, reference),
+                                    target.width,
+                                    target.height,
+                                    `${pose.name} |truth - sorted| x4`
+                                );
+                            }
+                            log(
+                                `${mode} ${pose.name}: mean of ${TRUTH_FRAMES} raw frames vs sorted ${truthVsSorted ? diffText(truthVsSorted) : 'n/a'}`
+                            );
+                            // the first variant's captures, which the others are diffed against
+                            // (vsFirst): at the same seeds, the difference is the switch alone
+                            const first = { rest: null, moving: {} };
+                            for (const [i, variant] of variants.entries()) {
+                                renderer.setVariant(variant);
+                                renderer.seed = 0;
+                                const taa = renderer.variant.taa === 'on';
+                                window.setCameraState(pose.snapshot);
+                                // rendered frames first, so the cull has a previous on-screen frame
+                                // and the history has converged
+                                for (let f = 0; f < (taa ? renderer.variant.taaMax + 4 : 2); f++)
+                                    await renderFrame(app);
+                                const a = await capture(viewer, target.width, target.height);
+                                let noiseFloor = null;
+                                if (i === 0 || taa) {
+                                    if (!taa) renderer.seed = 1;
+                                    for (let f = 0; f < 2; f++) await renderFrame(app);
+                                    const b = await capture(viewer, target.width, target.height);
+                                    renderer.seed = 0;
+                                    noiseFloor = imageDiff(a, b);
+                                    preview(a, target.width, target.height, `${pose.name} ${variant}`);
+                                    if (reference && taa) {
+                                        preview(
+                                            diffImage(a, reference),
+                                            target.width,
+                                            target.height,
+                                            `${pose.name} ${variant} |a - sorted| x4`
+                                        );
+                                    }
+                                }
+                                const captureKey = (suffix) => `${contentUrl}|${pose.name}|${variant}|${suffix}`;
+                                const kept = await keepCapture(captureKey('rest'), a, target.width, target.height);
+                                if (kept) {
+                                    preview(
+                                        diffImage(a, kept.saved),
+                                        target.width,
+                                        target.height,
+                                        `${pose.name} ${variant} |a - ${againstTag}| x4`
+                                    );
+                                }
+                                if (i === 0) first.rest = a;
+                                const vsFirst =
+                                    i > 0 && !variant.includes('compose:depth') ? imageDiff(a, first.rest) : null;
+                                let movingVsFirst = null;
+                                let moving = null;
+                                let movingVsSaved = null;
+                                if (move && !variant.includes('compose:depth')) {
+                                    moving = {};
+                                    movingVsSaved = againstTag ? {} : null;
+                                    for (const k of MOVE_FRAMES) {
+                                        const ref = references.get(`${pose.name}@${k}`);
+                                        const frame = await movingCapture(k);
+                                        moving[k] = ref ? imageDiff(frame, ref) : null;
+                                        const keptMoving = await keepCapture(
+                                            captureKey(`@${k}`),
+                                            frame,
+                                            target.width,
+                                            target.height
+                                        );
+                                        if (movingVsSaved) movingVsSaved[k] = keptMoving?.diff ?? null;
+                                        if (i === 0) first.moving[k] = frame;
+                                        else (movingVsFirst ??= {})[k] = imageDiff(frame, first.moving[k]);
+                                        if (taa) {
+                                            preview(frame, target.width, target.height, `${pose.name}@${k} ${variant}`);
+                                            if (ref) {
+                                                preview(
+                                                    diffImage(frame, ref),
+                                                    target.width,
+                                                    target.height,
+                                                    `${pose.name}@${k} ${variant} |a - sorted| x4`
+                                                );
+                                            }
+                                        }
+                                    }
+                                    window.setCameraState(pose.snapshot);
+                                    log(
+                                        `${mode} ${pose.name} ${variant}: moving vs sorted rms ${MOVE_FRAMES.map((k) => `@${k} ${moving[k] ? `${moving[k].rms.toFixed(2)} (far ${moving[k].farPct.toFixed(2)}%)` : 'n/a'}`).join(', ')}`
+                                    );
+                                }
+                                const depthView = variant.includes('compose:depth');
+                                poseResult.images[variant] = {
+                                    vsSorted: reference && !depthView ? imageDiff(a, reference) : null,
+                                    vsTruth: !depthView ? imageDiff(a, truth) : null,
+                                    vsSaved: kept?.diff ?? null,
+                                    vsFirst,
+                                    movingVsFirst,
+                                    noiseFloor,
+                                    moving,
+                                    movingVsSaved,
+                                    depthRoughness: depthView ? depthRoughness(a, target.width, target.height) : null
+                                };
+                                const v = poseResult.images[variant].vsSorted;
+                                const rough = poseResult.images[variant].depthRoughness;
+                                const vt = poseResult.images[variant].vsTruth;
+                                log(
+                                    `${mode} ${pose.name} ${variant}: ${depthView ? `depth roughness ${rough.toFixed(3)}` : `vs sorted ${v ? diffText(v) : 'n/a'}; vs truth ${diffText(vt)}`}${noiseFloor ? `; noise floor rms ${noiseFloor.rms.toFixed(2)}` : ''}`
+                                );
+                                if (kept) {
+                                    log(`${mode} ${pose.name} ${variant}: vs ${againstTag} ${diffText(kept.diff)}`);
+                                }
+                                if (vsFirst) {
+                                    log(
+                                        `${mode} ${pose.name} ${variant}: vs ${variants[0]} ${diffText(vsFirst)}${movingVsFirst ? `; moving ${MOVE_FRAMES.map((k) => `@${k} rms ${movingVsFirst[k].rms.toFixed(2)}`).join(', ')}` : ''}`
+                                    );
+                                }
+                                if (movingVsSaved) {
+                                    log(
+                                        `${mode} ${pose.name} ${variant}: moving vs ${againstTag} ${MOVE_FRAMES.map((k) => `@${k} ${movingVsSaved[k] ? diffText(movingVsSaved[k]) : 'n/a'}`).join('; ')}`
+                                    );
+                                }
+                            }
+                        }
+                    }
+
+                    // Pick noise (pick): surface picks over a grid of screen points on consecutive
+                    // frames. A stochastic frame is a fresh sample while the accumulation runs, so
+                    // the spread across frames is the pick's own noise; the sorted pass picker is
+                    // the reference its mean positions are measured against
+                    if (params.has('pick') && picking.picker) {
+                        poseResult.picks = {};
+                        for (const variant of modeVariants) {
+                            if (renderer) renderer.setVariant(variant);
+                            window.setCameraState(pose.snapshot);
+                            for (let f = 0; f < 4; f++) await renderFrame(app);
+                            const cam = app.root.findComponents('camera')[0].entity.getPosition();
+                            const samples = PICK_POINTS.map(() => []);
+                            for (let k = 0; k < PICK_FRAMES; k++) {
+                                await renderFrame(app);
+                                const results = await Promise.all(
+                                    PICK_POINTS.map(([x, y]) => picking.picker.pickSurface(x, y))
+                                );
+                                results.forEach((r, i) => {
+                                    if (r) samples[i].push({ p: r.position.clone(), n: r.normal.clone() });
+                                });
+                            }
+                            poseResult.picks[variant] = pickStats(samples, cam, sortedPicks.get(pose.name));
+                            if (mode === 'sorted') sortedPicks.set(pose.name, poseResult.picks[variant].means);
+                            const st = poseResult.picks[variant];
+                            log(
+                                `${mode} ${pose.name} ${variant}: picks hit ${(100 * st.hitRate).toFixed(0)}%, position spread ${st.spreadPct.toFixed(3)}% of distance, normal spread ${st.normalSpreadDeg.toFixed(1)} deg${st.biasPct != null ? `, offset from sorted ${st.biasPct.toFixed(3)}% (median ${st.biasMedianPct.toFixed(3)}%)` : ''}`
+                            );
+                        }
+                    }
+
+                    // three round-robin rounds so drift affects every variant equally
+                    const runs = new Map();
+                    for (let round = 0; round < rounds; round++) {
+                        for (const variant of modeVariants) {
+                            if (renderer) renderer.setVariant(variant);
+                            const run = await measure(app, profiler, variant, pose.snapshot);
+                            if (!runs.has(variant)) runs.set(variant, []);
+                            runs.get(variant).push(run);
+                        }
+                    }
+                    for (const [variant, list] of runs) {
+                        // survivors and culled count of a fresh frame in this variant
+                        let stats = null;
+                        if (renderer) {
+                            renderer.setVariant(variant);
+                            await pump(app, 3);
+                            stats = await renderer.readStats();
+                        }
+                        const passes = {};
+                        for (const name of Object.keys(list[0].passes)) {
+                            passes[name] = median(list.map((r) => r.passes[name] ?? 0));
+                        }
+                        poseResult.variants[variant] = {
+                            median: median(list.map((r) => r.median)),
+                            min: Math.min(...list.map((r) => r.min)),
+                            mean: list.reduce((s, r) => s + r.mean, 0) / list.length,
+                            samples: list.reduce((s, r) => s + r.samples, 0),
+                            passes,
+                            survivors: stats?.survivors ?? null,
+                            occluded: stats?.occluded ?? null
+                        };
+                        const passText = Object.entries(passes)
+                            .filter(([, ms]) => ms >= 0.01)
+                            .map(([name, ms]) => `${name} ${ms.toFixed(3)}`)
+                            .join(', ');
+                        const counts = stats ? ` survivors ${stats.survivors}, occluded ${stats.occluded};` : '';
+                        log(
+                            `${mode} ${pose.name} ${variant}: ${poseResult.variants[variant].median.toFixed(3)} / ${poseResult.variants[variant].min.toFixed(3)} ms, mean ${poseResult.variants[variant].mean.toFixed(3)} (${poseResult.variants[variant].samples} samples)${counts} [${passText}]`
+                        );
+                    }
+                    await nextFrame(app);
+
+                    const vram = app.stats.vram;
+                    poseResult.memory = {
+                        vramTotal: vram.tex + vram.vb + vram.ib + vram.sb + vram.ub,
+                        vramTex: vram.tex,
+                        vramSb: vram.sb,
+                        rendererBytes: renderer ? renderer.gpuBytes : null,
+                        survivors: renderer ? (await renderer.readStats()).survivors : app.stats.frame.gsplats
+                    };
+                }
+
+                profiler.detach();
+                if (params.has('keep') && mode === modes[modes.length - 1]) {
+                    // left alive for inspection from the console: frames only render when pumped
+                    window.bench = { viewer, app, renderer, pump: (count = 1) => pump(app, count) };
+                    log('keep: window.bench holds the last viewer');
+                } else {
+                    viewer.destroy();
+                }
+            }
+
+            // summary table
+            const tables = document.getElementById('tables');
+            const table = document.createElement('table');
+            const header = document.createElement('tr');
+            [
+                'pose',
+                'mode',
+                'variant',
+                'median ms',
+                'mean ms',
+                'min ms',
+                'survivors',
+                'occluded',
+                'vram MB',
+                'renderer MB',
+                'vs sorted rms',
+                'vs truth rms',
+                'noise rms',
+                'moving rms',
+                'vs saved rms'
+            ].forEach((h) => {
+                const th = document.createElement('th');
+                th.textContent = h;
+                header.appendChild(th);
+            });
+            table.appendChild(header);
+            for (const [mode, modeResult] of Object.entries(results.modes)) {
+                for (const pose of modeResult.poses) {
+                    for (const [variant, run] of Object.entries(pose.variants)) {
+                        const row = document.createElement('tr');
+                        const cells = [
+                            pose.name,
+                            mode,
+                            variant,
+                            run.median.toFixed(3),
+                            run.mean.toFixed(3),
+                            run.min.toFixed(3),
+                            String(run.survivors ?? pose.memory?.survivors ?? ''),
+                            run.occluded != null ? String(run.occluded) : '',
+                            ((pose.memory?.vramTotal ?? 0) / 1048576).toFixed(1),
+                            pose.memory?.rendererBytes != null ? (pose.memory.rendererBytes / 1048576).toFixed(1) : '',
+                            pose.images?.[variant]?.vsSorted ? pose.images[variant].vsSorted.rms.toFixed(2) : '',
+                            pose.images?.[variant]?.vsTruth ? pose.images[variant].vsTruth.rms.toFixed(2) : '',
+                            pose.images?.[variant]?.noiseFloor ? pose.images[variant].noiseFloor.rms.toFixed(2) : '',
+                            pose.images?.[variant]?.moving
+                                ? Object.values(pose.images[variant].moving)
+                                      .map((m) => (m ? m.rms.toFixed(2) : 'n/a'))
+                                      .join(' / ')
+                                : '',
+                            pose.images?.[variant]?.vsSaved ? pose.images[variant].vsSaved.rms.toFixed(3) : ''
+                        ];
+                        cells.forEach((c) => {
+                            const td = document.createElement('td');
+                            td.textContent = c;
+                            row.appendChild(td);
+                        });
+                        table.appendChild(row);
+                    }
+                }
+            }
+            tables.appendChild(table);
+            window.benchResults = results;
+            const download = document.getElementById('download');
+            download.disabled = false;
+            download.onclick = () => {
+                const blob = new Blob([JSON.stringify(results, null, 2)], { type: 'application/json' });
+                const a = document.createElement('a');
+                a.href = URL.createObjectURL(blob);
+                a.download = `bench-${contentUrl.split('/').pop()}-${Date.now()}.json`;
+                a.click();
+            };
+            log('done');
+        </script>
+    </body>
+</html>

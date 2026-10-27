@@ -18,7 +18,9 @@ import { EmbedInputDevice } from './input/devices/external';
 import { initLocalization } from './localization';
 import type { CreateViewerOptions } from './options';
 import { persistPreferences, readPreferences } from './preferences';
+import { Quality, resolutionScaleFor } from './quality';
 import { importSettings } from './settings';
+import { resolveTouchInsetBottom } from './touch-inset-bottom';
 import type { Config, Global, ViewerHandle } from './types';
 import { initPoster, initUI } from './ui';
 import uiHtml from './ui.html';
@@ -44,6 +46,7 @@ const resolveConfig = (options: CreateViewerOptions): Config => ({
         (isPrefetchable(options.contentUrl, options.contentFilename) ? fetch(options.contentUrl) : undefined),
     renderer: options.renderer,
     ui: options.ui ?? true,
+    experimentalTouchInsetBottom: resolveTouchInsetBottom(options.experimentalTouchInsetBottom),
     reticle: options.reticle ?? false,
     noanim: options.noanim ?? false,
     nofx: options.nofx ?? false,
@@ -51,8 +54,13 @@ const resolveConfig = (options: CreateViewerOptions): Config => ({
     ministats: options.ministats ?? false,
     colorize: options.colorize ?? false,
     fullload: options.fullload ?? false,
+    vr: options.vr ?? false,
     aa: options.aa ?? false,
+    stochastic: options.stochastic ?? false,
+    splatSource: options.splatSource ?? 'direct',
+    variant: options.variant ?? '',
     budget: options.budget,
+    framesInFlight: options.framesInFlight ?? 2,
     heatmap: options.heatmap ?? false,
     debug: options.debug ?? false,
     lang: options.lang,
@@ -83,6 +91,9 @@ const createViewer = async (options: CreateViewerOptions): Promise<ViewerHandle>
         root.appendChild(document.createElement('canvas'));
     }
 
+    // the stylesheet lifts what sits on the bottom edge by this, on touch devices alone
+    root.style.setProperty('--sse-experimental-touch-inset-bottom', `${config.experimentalTouchInsetBottom}px`);
+
     container.appendChild(root);
     const canvas = root.querySelector('canvas');
 
@@ -105,8 +116,10 @@ const createViewer = async (options: CreateViewerOptions): Promise<ViewerHandle>
     // size the canvas backbuffer before the graphics device is created, so the swap
     // chain and any backbuffer-sized resources start at the correct resolution instead
     // of being recreated on the first frame's resize. a hidden embed keeps the default
-    // canvas size here; the resize observer sizes it on reveal
-    resizeCanvas(canvas, measureCanvas(canvas), preferences.performanceMode);
+    // canvas size here; the resize observer sizes it on reveal. Whether the stochastic renderer
+    // draws is only known once the device exists, so this guesses from the flag and the setting
+    const stochastic = config.stochastic === 'off' ? false : config.stochastic !== false || preferences.performanceMode;
+    resizeCanvas(canvas, measureCanvas(canvas), resolutionScaleFor(preferences.quality, stochastic));
 
     const { app, camera, renderer } = await createApp(canvas, config);
 
@@ -117,6 +130,10 @@ const createViewer = async (options: CreateViewerOptions): Promise<ViewerHandle>
     // bundles cannot drift (a missing field reads as `undefined` at runtime)
     const state = createViewerState(events, config);
 
+    // the budget, renderer and resolution decisions, from the Quality slider and the Performance
+    // Mode setting and the device class
+    const quality = new Quality(app, config, state, events, renderer);
+
     const global: Global = {
         app,
         settings: importSettings(settingsJson),
@@ -126,7 +143,8 @@ const createViewer = async (options: CreateViewerOptions): Promise<ViewerHandle>
         camera,
         renderer,
         root,
-        localize
+        localize,
+        quality
     };
 
     const disposeCanvas = initCanvas(global);
@@ -203,6 +221,7 @@ const createViewer = async (options: CreateViewerOptions): Promise<ViewerHandle>
     // Create the viewer
     const viewer = new Viewer(global, gsplatLoad, skyboxLoad, collisionLoad);
     viewer.onDestroy(persistPreferences(events));
+    viewer.onDestroy(() => quality.destroy());
 
     // Enable the host-page bridge when embedded
     if (config.embed) {
@@ -288,7 +307,14 @@ const createViewer = async (options: CreateViewerOptions): Promise<ViewerHandle>
     };
 
     // The built-in controls use the same handle returned to an embedding host.
-    const disposeUI = config.ui ? initUI(global, handle, !!viewer.cameraFrame) : null;
+    const disposeUI = config.ui
+        ? initUI(
+              global,
+              handle,
+              () => viewer.picker,
+              () => viewer.cameraManager?.transitionProgress() ?? 1
+          )
+        : null;
     viewer.onDestroy(() => {
         destroyed = true;
     });
@@ -307,5 +333,5 @@ console.log(`SuperSplat Viewer v${appVersion} | Engine v${engineVersion} (${engi
 
 export type { CaptureResult } from './capture';
 export type { CreateViewerOptions, ViewerAssets, ViewerFlags } from './options';
-export type { CameraPose, CaptureOptions, ViewerHandle, ViewerState, XrMode } from './types';
+export type { CameraPose, CaptureOptions, QualityLevel, ViewerHandle, ViewerState, XrMode } from './types';
 export { createViewer };

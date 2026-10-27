@@ -1,57 +1,17 @@
-import {
-    CULLFACE_NONE,
-    FILTER_LINEAR,
-    PIXELFORMAT_RGBA8,
-    BlendState,
-    Color,
-    Entity,
-    Layer,
-    Mesh,
-    MeshInstance,
-    PlaneGeometry,
-    Script,
-    StandardMaterial,
-    Texture,
-    Vec3,
-    BLENDEQUATION_ADD,
-    BLENDMODE_ONE,
-    BLENDMODE_ONE_MINUS_SRC_ALPHA,
-    BLENDMODE_SRC_ALPHA
-} from 'playcanvas';
-import type { AppBase, Quat } from 'playcanvas';
-
-// clamp the vertices of the hotspot so it is never clipped by the near or far plane
-const depthClampGlsl = `
-    float f = gl_Position.z / gl_Position.w;
-    if (f > 1.0) {
-        gl_Position.z = gl_Position.w;
-    } else if (f < -1.0) {
-        gl_Position.z = -gl_Position.w;
-    }
-`;
-
-const depthClampWgsl = `
-    let f = output.position.z / output.position.w;
-    if (f > 1.0) {
-        output.position.z = output.position.w;
-    } else if (f < -1.0) {
-        output.position.z = -output.position.w;
-    }
-`;
+import { Script, Vec3 } from 'playcanvas';
+import type { Entity } from 'playcanvas';
 
 const vec = new Vec3();
-
-const HOTSPOT_SIZE = 25;
-const HOTSPOT_COLOR = new Color(0.8, 0.8, 0.8);
-const HOVER_COLOR = new Color(1.0, 0.4, 0.0);
 
 /**
  * A script for creating interactive 3D annotations in a scene. Each annotation consists of:
  *
- * - A 3D hotspot that maintains constant screen-space size. The hotspot is rendered with muted
- * appearance when obstructed by geometry but is still clickable. The hotspot relies on an
- * invisible DOM element that matches the hotspot's size and position to detect clicks.
- * - An annotation panel that shows title and description text.
+ * - A hotspot: a dom circle with the annotation's number, kept over the annotation's position.
+ * `Annotations` tests it against the scene and marks it occluded, which fades it rather than
+ * letting the scene cover it pixel by pixel. It stays clickable either way.
+ * - An annotation panel that shows title and description text, shared by every annotation.
+ *
+ * Styles live in `index.scss`, under `.sse-annotations`.
  */
 export class Annotation extends Script {
     static scriptName = 'annotation';
@@ -83,14 +43,12 @@ export class Annotation extends Script {
     hotspotDom: HTMLDivElement | null = null;
 
     /**
+     * The hotspot's position in canvas pixels, its distance from the camera and its depth
+     * along the view, as of the last update; null while it is behind the camera. Read by the
+     * occlusion test.
      * @private
      */
-    texture: Texture | null = null;
-
-    /**
-     * @private
-     */
-    materials: StandardMaterial[] = [];
+    screen: { x: number; y: number; distance: number; depth: number } | null = null;
 
     /**
      * Set once the entity is destroyed, so a prerender still queued for this frame does not
@@ -99,276 +57,22 @@ export class Annotation extends Script {
      */
     destroyed = false;
 
-    /**
-     * Creates the stylesheet the annotation dom needs.
-     * @param {number} size - The size of the hotspot in screen pixels.
-     * @returns {HTMLStyleElement} The style element, not yet attached.
-     * @private
-     */
-    static _createStyleSheet(size: number) {
-        const css = `
-            .sse-annotation {
-                display: block;
-                position: absolute;
-                background-color: rgba(0, 0, 0, 0.8);
-                color: white;
-                padding: 8px;
-                border-radius: 4px;
-                font-size: 14px;
-                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji";
-                pointer-events: none;
-                max-width: 200px;
-                word-wrap: break-word;
-                overflow-x: visible;
-                white-space: normal;
-                width: fit-content;
-                opacity: 0;
-                transition: opacity 0.2s ease-in-out;
-                visibility: hidden;
-            }
-
-            .sse-annotation-title {
-                font-weight: bold;
-                margin-bottom: 4px;
-            }
-
-            /* Tooltip arrow */
-            .sse-annotation.sse-arrow-right::before,
-            .sse-annotation.sse-arrow-left::before {
-                content: "";
-                position: absolute;
-                top: var(--arrow-top, 50%);
-                transform: translateY(-50%);
-                border-top: 8px solid transparent;
-                border-bottom: 8px solid transparent;
-            }
-
-            .sse-annotation.sse-arrow-right::before {
-                left: -8px;
-                border-right: 8px solid rgba(0, 0, 0, 0.8);
-            }
-
-            .sse-annotation.sse-arrow-left::before {
-                right: -8px;
-                border-left: 8px solid rgba(0, 0, 0, 0.8);
-            }
-
-            .sse-annotation-hotspot {
-                display: none;
-                position: absolute;
-                width: ${size + 5}px;
-                height: ${size + 5}px;
-                opacity: 0;
-                cursor: pointer;
-                transform: translate(-50%, -50%);
-            }
-        `;
-
-        const style = document.createElement('style');
-        style.textContent = css;
-        return style;
-    }
-
-    /**
-     * Creates a circular hotspot texture.
-     * @param {AppBase} app - The PlayCanvas AppBase
-     * @param {string} label - Label text to draw on the hotspot
-     * @param {number} [size] - The texture size (should be power of 2)
-     * @param {number} [borderWidth] - The border width in pixels
-     * @returns {Texture} The hotspot texture
-     * @private
-     */
-    static _createHotspotTexture(app: AppBase, label: string, size = 64, borderWidth = 6) {
-        // Create canvas for hotspot texture
-        const canvas = document.createElement('canvas');
-        canvas.width = size;
-        canvas.height = size;
-        const ctx = canvas.getContext('2d');
-
-        // First clear with stroke color at zero alpha
-        ctx.fillStyle = 'white';
-        ctx.globalAlpha = 0;
-        ctx.fillRect(0, 0, size, size);
-        ctx.globalAlpha = 1.0;
-
-        // Draw dark circle with light border
-        const centerX = size / 2;
-        const centerY = size / 2;
-        const radius = size / 2 - 4; // Leave space for border
-
-        // Draw main circle
-        ctx.beginPath();
-        ctx.arc(centerX, centerY, radius, 0, Math.PI * 2);
-        ctx.fillStyle = 'black';
-        ctx.fill();
-
-        // Draw border
-        ctx.beginPath();
-        ctx.arc(centerX, centerY, radius, 0, Math.PI * 2);
-        ctx.lineWidth = borderWidth;
-        ctx.strokeStyle = 'white';
-        ctx.stroke();
-
-        // Draw text
-        ctx.font = 'bold 32px Arial';
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        ctx.fillStyle = 'white';
-        ctx.fillText(label, Math.floor(canvas.width / 2), Math.floor(canvas.height / 2) + 1);
-
-        // get pixel data
-        const imageData = ctx.getImageData(0, 0, size, size);
-        const data = imageData.data;
-
-        // set the color channel of semitransparent pixels to white so the blending at
-        // the edges is correct
-        for (let i = 0; i < data.length; i += 4) {
-            const a = data[i + 3];
-            if (a < 255) {
-                data[i] = 255;
-                data[i + 1] = 255;
-                data[i + 2] = 255;
-            }
-        }
-
-        const texture = new Texture(app.graphicsDevice, {
-            width: size,
-            height: size,
-            format: PIXELFORMAT_RGBA8,
-            magFilter: FILTER_LINEAR,
-            minFilter: FILTER_LINEAR,
-            mipmaps: false,
-            levels: [new Uint8Array(data.buffer)]
-        });
-
-        return texture;
-    }
-
-    /**
-     * Creates a material for hotspot rendering.
-     * @param {Texture} texture - The texture to use for emissive and opacity
-     * @param {Color} color - The emissive colour
-     * @param {object} [options] - Material options
-     * @param {number} [options.opacity] - Base opacity multiplier
-     * @param {boolean} [options.depthTest] - Whether to perform depth testing
-     * @param {boolean} [options.depthWrite] - Whether to write to depth buffer
-     * @returns {StandardMaterial} The configured material
-     * @private
-     */
-    static _createHotspotMaterial(
-        texture: Texture,
-        color: Color,
-        { opacity = 1, depthTest = true, depthWrite = true } = {}
-    ) {
-        const material = new StandardMaterial();
-
-        // Base properties
-        material.diffuse = Color.BLACK;
-        material.emissive.copy(color);
-        material.emissiveMap = texture;
-        material.opacityMap = texture;
-
-        // Alpha properties
-        material.opacity = opacity;
-        material.alphaTest = 0.01;
-        material.blendState = new BlendState(
-            true,
-            BLENDEQUATION_ADD,
-            BLENDMODE_SRC_ALPHA,
-            BLENDMODE_ONE_MINUS_SRC_ALPHA,
-            BLENDEQUATION_ADD,
-            BLENDMODE_ONE,
-            BLENDMODE_ONE
-        );
-
-        // Depth properties
-        material.depthTest = depthTest;
-        material.depthWrite = depthWrite;
-
-        // Rendering properties
-        material.cull = CULLFACE_NONE;
-        material.useLighting = false;
-
-        material.shaderChunks.glsl.add({
-            litUserMainEndVS: depthClampGlsl
-        });
-        material.shaderChunks.wgsl.add({
-            litUserMainEndVS: depthClampWgsl
-        });
-
-        material.update();
-        return material;
-    }
-
     initialize() {
         const ctx = this.context;
 
-        // Create texture
-        this.texture = Annotation._createHotspotTexture(this.app, this.label);
-
-        // Create material the base and overlay material
-        this.materials = [
-            Annotation._createHotspotMaterial(this.texture, ctx.hotspotColor, {
-                opacity: 1,
-                depthTest: true,
-                depthWrite: true
-            }),
-            Annotation._createHotspotMaterial(this.texture, ctx.hotspotColor, {
-                opacity: 0.25,
-                depthTest: false,
-                depthWrite: false
-            })
-        ];
-
-        const base = new Entity('base', this.app);
-        const baseMi = new MeshInstance(ctx.mesh, this.materials[0]);
-        baseMi.cull = false;
-        base.addComponent('render', {
-            layers: [ctx.layers[0].id],
-            meshInstances: [baseMi]
-        });
-
-        const overlay = new Entity('overlay', this.app);
-        const overlayMi = new MeshInstance(ctx.mesh, this.materials[1]);
-        overlayMi.cull = false;
-        overlay.addComponent('render', {
-            layers: [ctx.layers[1].id],
-            meshInstances: [overlayMi]
-        });
-
-        this.entity.addChild(base);
-        this.entity.addChild(overlay);
-
-        // Create hotspot dom
         this.hotspotDom = document.createElement('div');
-        this.hotspotDom.className = 'sse-annotation-hotspot';
+        // dimmed until the occlusion test first shows it in view, rather than every hotspot
+        // showing at full strength on the reveal and the hidden ones fading afterwards
+        this.hotspotDom.className = 'sse-annotation-hotspot sse-occluded';
+        this.hotspotDom.textContent = this.label;
 
-        // Add click handlers
         const onClick = (e: MouseEvent) => {
             e.stopPropagation();
             this.fire('select');
         };
         this.hotspotDom.addEventListener('click', onClick);
 
-        const leave = () => {
-            if (ctx.hoverAnnotation === this) {
-                ctx.hoverAnnotation = null;
-                this.setHover(false);
-            }
-        };
-
-        const enter = () => {
-            if (ctx.hoverAnnotation !== null) {
-                ctx.hoverAnnotation.setHover(false);
-            }
-            ctx.hoverAnnotation = this;
-            this.setHover(true);
-        };
-
-        this.hotspotDom.addEventListener('pointerenter', enter);
-        this.hotspotDom.addEventListener('pointerleave', leave);
-
-        ctx.parentDom.appendChild(this.hotspotDom);
+        ctx.hotspotsDom.appendChild(this.hotspotDom);
 
         const onPrerender = () => this._update();
         this.app.on('prerender', onPrerender);
@@ -378,28 +82,18 @@ export class Annotation extends Script {
             this.destroyed = true;
             this.app.off('prerender', onPrerender);
             this.hotspotDom.removeEventListener('click', onClick);
-            this.hotspotDom.removeEventListener('pointerenter', enter);
-            this.hotspotDom.removeEventListener('pointerleave', leave);
             this.hotspotDom.remove();
-            if (ctx.hoverAnnotation === this) {
-                ctx.hoverAnnotation = null;
-            }
             if (ctx.activeAnnotation === this) {
                 this.hideTooltip();
             }
-
-            this.materials.forEach((mat) => mat.destroy());
-            this.materials = [];
-
-            this.texture.destroy();
-            this.texture = null;
         });
     }
 
     /**
-     * Update screen-space elements and materials for this annotation. Called each frame from the
-     * prerender callback, and also directly from showTooltip to ensure the tooltip is positioned
-     * correctly even when the camera hasn't moved (e.g. annotations sharing the same camera pose).
+     * Update the screen-space elements for this annotation. Called each frame from the
+     * prerender callback, and also directly from revealTooltip to ensure the tooltip is
+     * positioned correctly even when the camera hasn't moved (e.g. annotations sharing the same
+     * camera pose).
      * @private
      */
     _update() {
@@ -407,54 +101,59 @@ export class Annotation extends Script {
 
         const { camera } = this.context;
         const position = this.entity.getPosition();
-        const screenPos = camera.camera.worldToScreen(position);
 
-        const { viewMatrix } = camera.camera;
-        viewMatrix.transformPoint(position, vec);
+        camera.camera.viewMatrix.transformPoint(position, vec);
         if (vec.z >= 0) {
+            this.screen = null;
             this._hideElements();
             return;
         }
 
-        this._updatePositions(screenPos);
-        this._updateRotationAndScale(-vec.z);
-
-        // update material opacity and also directly on the uniform so we
-        // can avoid a full material update
-        const { opacity } = this.context;
-        this.materials[0].opacity = opacity;
-        this.materials[1].opacity = 0.25 * opacity;
-        this.materials[0].setParameter('material_opacity', opacity);
-        this.materials[1].setParameter('material_opacity', 0.25 * opacity);
+        const screenPos = camera.camera.worldToScreen(position);
+        const distance = camera.getPosition().distance(position);
+        this.screen = { x: screenPos.x, y: screenPos.y, distance, depth: -vec.z };
+        this._updatePositions(screenPos, distance);
     }
 
     /**
-     * Set the hover state of the annotation.
-     * @param hover - Whether the annotation is hovered
+     * Mark the hotspot as hidden behind the scene, which fades it to a faint outline.
+     * @param occluded - Whether scene content covers the annotation's position.
      * @private
      */
-    setHover(hover: boolean) {
-        this.materials.forEach((material) => {
-            material.emissive.copy(hover ? this.context.hoverColor : this.context.hotspotColor);
-            material.update();
-        });
-        this.fire('hover', hover);
+    setOccluded(occluded: boolean) {
+        this.hotspotDom.classList.toggle('sse-occluded', occluded);
     }
 
     /**
+     * Make this the annotation whose tooltip shows. The tooltip itself waits for the camera to
+     * near the end of its move here, when `Annotations` calls `revealTooltip`, rather than
+     * chasing the hotspot across the screen during the flight.
      * @private
      */
     showTooltip() {
         const ctx = this.context;
-        clearTimeout(ctx.hideTimeout);
-        ctx.hideTimeout = null;
         ctx.activeAnnotation = this;
-        ctx.tooltipDom.style.visibility = 'visible';
-        ctx.tooltipDom.style.opacity = '1';
-        ctx.titleDom.textContent = this.title;
-        ctx.textDom.textContent = this.text;
+        ctx.revealed = false;
+        this.hotspotDom.classList.add('sse-active');
+    }
 
-        // Immediately update incase the camera doesn't move
+    /**
+     * Show the tooltip beside this annotation, the camera being at or nearly at rest.
+     * @private
+     */
+    revealTooltip() {
+        const ctx = this.context;
+        ctx.revealed = true;
+        if (ctx.tooltipOwner !== this) {
+            // taken over only now, so the tooltip fades out with the previous annotation's text,
+            // beside its hotspot; and with no side yet, rather than the one it left it on
+            ctx.tooltipOwner = this;
+            ctx.titleDom.textContent = this.title;
+            ctx.textDom.textContent = this.text;
+            ctx.tooltipDom.classList.remove('sse-arrow-left', 'sse-arrow-right');
+        }
+
+        // the camera may be still, so no prerender may follow
         this._update();
     }
 
@@ -463,18 +162,9 @@ export class Annotation extends Script {
      */
     hideTooltip() {
         const ctx = this.context;
-        const { tooltipDom } = ctx;
         ctx.activeAnnotation = null;
-        tooltipDom.style.opacity = '0';
-
-        // Wait for fade out before hiding
-        clearTimeout(ctx.hideTimeout);
-        ctx.hideTimeout = setTimeout(() => {
-            ctx.hideTimeout = null;
-            if (tooltipDom.style.opacity === '0') {
-                tooltipDom.style.visibility = 'hidden';
-            }
-        }, 200); // Match the transition duration
+        ctx.tooltipDom.classList.remove('sse-visible');
+        this.hotspotDom.classList.remove('sse-active');
     }
 
     /**
@@ -483,132 +173,101 @@ export class Annotation extends Script {
      */
     _hideElements() {
         this.hotspotDom.style.display = 'none';
-        if (this.context.activeAnnotation === this) {
-            this.context.tooltipDom.style.visibility = 'hidden';
-            this.context.tooltipDom.style.opacity = '0';
+        if (this.context.tooltipOwner === this) {
+            this.context.tooltipDom.classList.remove('sse-visible');
         }
     }
 
     /**
      * Update screen-space positions of HTML elements.
      * @param {Vec3} screenPos - Screen coordinate
+     * @param {number} distance - Distance from the camera, which orders overlapping hotspots
      * @private
      */
-    _updatePositions(screenPos: Vec3) {
-        // Show and position hotspot
-        this.hotspotDom.style.display = 'block';
-        this.hotspotDom.style.left = `${screenPos.x}px`;
-        this.hotspotDom.style.top = `${screenPos.y}px`;
+    _updatePositions(screenPos: Vec3, distance: number) {
+        // Show and position hotspot; a transform rather than left/top, so moving it each frame
+        // does not trigger layout
+        const hotspot = this.hotspotDom;
+        hotspot.style.display = 'flex';
+        hotspot.style.transform = `translate(${screenPos.x}px, ${screenPos.y}px) translate(-50%, -50%)`;
+        // nearer hotspots draw over farther ones
+        hotspot.style.zIndex = String(Math.round(100000 / (1 + distance)));
 
         const ctx = this.context;
-
-        // Re-show tooltip if it was hidden while behind camera
-        if (ctx.activeAnnotation === this) {
-            ctx.tooltipDom.style.visibility = 'visible';
-            ctx.tooltipDom.style.opacity = '1';
+        if (ctx.tooltipOwner !== this) {
+            return;
         }
 
-        // Position tooltip, clamped to the canvas (screenPos is in canvas pixels)
-        if (ctx.activeAnnotation === this) {
-            const tooltip = ctx.tooltipDom;
-            const margin = 8;
-            const arrowOffset = 25;
-            const tw = tooltip.offsetWidth;
-            const th = tooltip.offsetHeight;
-            const vw = ctx.canvas.clientWidth;
-            const vh = ctx.canvas.clientHeight;
-
-            // Default position: to the right of hotspot, vertically centered
-            let left = screenPos.x + arrowOffset;
-            let top = screenPos.y - th / 2;
-            let flipped = false;
-
-            // If tooltip overflows right edge, flip to left side of hotspot
-            if (left + tw > vw - margin) {
-                left = screenPos.x - arrowOffset - tw;
-                flipped = true;
+        // Shown while this annotation is selected and revealed, clamped to the canvas when the
+        // hotspot is beyond it, so moving the camera yourself does not lose it. Hidden, it fades
+        // out, moving with the hotspot at the offset it last had rather than standing still while
+        // the camera moves on
+        const tooltip = ctx.tooltipDom;
+        const vw = ctx.canvas.clientWidth;
+        const vh = ctx.canvas.clientHeight;
+        const onCanvas = screenPos.x >= 0 && screenPos.x <= vw && screenPos.y >= 0 && screenPos.y <= vh;
+        if (ctx.activeAnnotation !== this || !ctx.revealed) {
+            tooltip.classList.remove('sse-visible');
+            const offset = ctx.tooltipOffset;
+            if (offset) {
+                tooltip.style.transform = `translate(${screenPos.x + offset.x}px, ${screenPos.y + offset.y}px)`;
             }
-
-            // Clamp horizontal
-            left = Math.max(margin, Math.min(left, vw - tw - margin));
-
-            // Clamp vertical
-            top = Math.max(margin, Math.min(top, vh - th - margin));
-
-            // Position arrow to point at the hotspot, clamped within the tooltip
-            const arrowY = Math.max(16, Math.min(screenPos.y - top, th - 16));
-            tooltip.style.setProperty('--arrow-top', `${arrowY}px`);
-
-            tooltip.classList.toggle('sse-arrow-right', !flipped);
-            tooltip.classList.toggle('sse-arrow-left', flipped);
-            tooltip.style.transform = 'none';
-            tooltip.style.left = `${left}px`;
-            tooltip.style.top = `${top}px`;
+            return;
         }
-    }
 
-    /**
-     * Update 3D rotation and scale of hotspot planes.
-     * @param {number} viewDepth - The view-space depth (positive distance along the camera's forward direction)
-     * @private
-     */
-    _updateRotationAndScale(viewDepth: number) {
-        // Copy camera rotation to align with view plane
-        const cameraRotation = this.context.camera.getRotation();
-        this._updateHotspotTransform(this.entity, cameraRotation);
+        // Position tooltip, clamped to the canvas (screenPos is in canvas pixels). Measured
+        // before it is shown, which also lets a tooltip that was empty, and so not displayed,
+        // fade in rather than appear at once
+        const margin = 8;
+        const arrowOffset = 24;
+        const tw = tooltip.offsetWidth;
+        const th = tooltip.offsetHeight;
 
-        // Calculate scale based on view depth to maintain constant screen size
-        const scale = this._calculateScreenSpaceScale(viewDepth);
-        this.entity.setLocalScale(scale, scale, scale);
-    }
+        // Beside the hotspot, vertically centered, on the side it is already on: changing sides
+        // jumps it across the hotspot, so it does only when it no longer fits there and does on
+        // the other side. With no side yet, the right unless that overflows
+        const onRight = screenPos.x + arrowOffset;
+        const onLeft = screenPos.x - arrowOffset - tw;
+        let flipped = tooltip.classList.contains('sse-arrow-left');
+        if (flipped ? onLeft < margin && onRight + tw <= vw - margin : onRight + tw > vw - margin) {
+            flipped = !flipped;
+        }
+        let left = flipped ? onLeft : onRight;
+        let top = screenPos.y - th / 2;
 
-    /**
-     * Update rotation of a single hotspot entity.
-     * @param {Entity} hotspot - The hotspot entity to update
-     * @param {Quat} cameraRotation - The camera's current rotation
-     * @private
-     */
-    _updateHotspotTransform(hotspot: Entity, cameraRotation: Quat) {
-        hotspot.setRotation(cameraRotation);
-        hotspot.rotateLocal(90, 0, 0);
-    }
+        // Clamp horizontal
+        left = Math.max(margin, Math.min(left, vw - tw - margin));
 
-    /**
-     * Calculate scale factor to maintain constant screen-space size.
-     * @param {number} viewDepth - The view-space depth (positive distance along the camera's forward direction)
-     * @returns {number} The scale to apply to hotspot entities
-     * @private
-     */
-    _calculateScreenSpaceScale(viewDepth: number) {
-        // Use the canvas's CSS/client height instead of graphics device height
-        const canvas = this.app.graphicsDevice.canvas;
-        const screenHeight = canvas.clientHeight;
+        // Clamp vertical
+        top = Math.max(margin, Math.min(top, vh - th - margin));
 
-        // Use view-space depth (not Euclidean distance) to match the projection matrix
-        const projMatrix = this.context.camera.camera.projectionMatrix;
-        const worldSize = (HOTSPOT_SIZE / screenHeight) * ((2 * viewDepth) / projMatrix.data[5]);
+        // Position arrow to point at the hotspot, clamped within the tooltip
+        const arrowY = Math.max(16, Math.min(screenPos.y - top, th - 16));
+        tooltip.style.setProperty('--arrow-top', `${arrowY}px`);
 
-        return worldSize;
+        tooltip.classList.toggle('sse-arrow-right', !flipped);
+        tooltip.classList.toggle('sse-arrow-left', flipped);
+        tooltip.style.transform = `translate(${left}px, ${top}px)`;
+        tooltip.classList.add('sse-visible');
+        ctx.tooltipOffset = onCanvas ? { x: left - screenPos.x, y: top - screenPos.y } : null;
     }
 }
 
 /**
- * Everything the annotations of one viewer share: the dom they live in and its stylesheet, the
- * camera they face, their render layers and quad mesh, the single tooltip, and the hover and
- * active bookkeeping. One per viewer, so two viewers on a page never fight over shared state.
- * Owned by `Annotations`, which removes `parentDom` on destroy; the mesh is released through
- * the mesh instances when the annotation entities go.
+ * Everything the annotations of one viewer share: the dom they live in, the camera they follow,
+ * the single tooltip, and the active bookkeeping. One per viewer, so two viewers on a page never
+ * fight over shared state. Owned by `Annotations`, which removes `parentDom` on destroy.
  */
 class AnnotationContext {
     parentDom: HTMLElement;
 
+    // the hotspots' own layer, beneath the tooltip: their depth ordering stays inside it, so
+    // no hotspot can draw over the tooltip
+    hotspotsDom: HTMLDivElement;
+
     canvas: HTMLCanvasElement;
 
     camera: Entity;
-
-    layers: Layer[];
-
-    mesh: Mesh;
 
     tooltipDom: HTMLDivElement;
 
@@ -616,60 +275,41 @@ class AnnotationContext {
 
     textDom: HTMLDivElement;
 
-    // Mutable copies: `Annotations` converts them to gamma space when post effects are active.
-    hotspotColor = HOTSPOT_COLOR.clone();
-
-    hoverColor = HOVER_COLOR.clone();
-
     activeAnnotation: Annotation | null = null;
 
-    hoverAnnotation: Annotation | null = null;
+    // whether the active annotation's tooltip has been revealed: it hides for each camera
+    // transition, the move to the annotation among them, until the transition nearly ends
+    revealed = false;
 
-    opacity = 1.0;
+    // the annotation the tooltip belongs to: the active one once revealed, until then the one
+    // before it, beside whose hotspot it fades out. And its offset from that hotspot when it
+    // last showed, which it keeps while fading; null when it last showed clamped to the canvas
+    // with the hotspot beyond it, since it is not beside the hotspot, and then it fades in place
+    tooltipOwner: Annotation | null = null;
 
-    hideTimeout: ReturnType<typeof setTimeout> | null = null;
+    tooltipOffset: { x: number; y: number } | null = null;
 
-    constructor(app: AppBase, camera: Entity, parentDom: HTMLElement) {
+    constructor(canvas: HTMLCanvasElement, camera: Entity, parentDom: HTMLElement) {
         this.parentDom = parentDom;
-        this.canvas = app.graphicsDevice.canvas as HTMLCanvasElement;
+        this.canvas = canvas;
         this.camera = camera;
 
-        parentDom.appendChild(Annotation._createStyleSheet(HOTSPOT_SIZE));
+        this.hotspotsDom = document.createElement('div');
+        this.hotspotsDom.className = 'sse-annotation-hotspots';
+        parentDom.appendChild(this.hotspotsDom);
 
-        const { layers } = app.scene;
-        const worldLayer = layers.getLayerByName('World');
-
-        const createLayer = (name: string, semitrans: boolean) => {
-            const layer = new Layer({ name: name });
-            const idx = semitrans ? layers.getTransparentIndex(worldLayer) : layers.getOpaqueIndex(worldLayer);
-            layers.insert(layer, idx + 1);
-            return layer;
-        };
-
-        this.layers = [createLayer('HotspotBase', false), createLayer('HotspotOverlay', true)];
-
-        camera.camera.layers = [...camera.camera.layers, ...this.layers.map((layer) => layer.id)];
-
-        this.mesh = Mesh.fromGeometry(
-            app.graphicsDevice,
-            new PlaneGeometry({
-                widthSegments: 1,
-                lengthSegments: 1
-            })
-        );
-
-        // Initialize tooltip dom
+        // the tooltip: the title, then the text. No number: the selected hotspot beside it
+        // already shows it
         this.tooltipDom = document.createElement('div');
         this.tooltipDom.className = 'sse-annotation';
 
         this.titleDom = document.createElement('div');
         this.titleDom.className = 'sse-annotation-title';
-        this.tooltipDom.appendChild(this.titleDom);
 
         this.textDom = document.createElement('div');
         this.textDom.className = 'sse-annotation-text';
-        this.tooltipDom.appendChild(this.textDom);
 
+        this.tooltipDom.append(this.titleDom, this.textDom);
         parentDom.appendChild(this.tooltipDom);
     }
 }

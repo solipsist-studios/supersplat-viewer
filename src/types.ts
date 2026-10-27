@@ -8,6 +8,7 @@ import type { Entity, EventHandler, AppBase } from 'playcanvas';
 import type { CaptureResult } from './capture';
 import type { Localize } from './localization';
 import type { ViewerAssets, ViewerFlags } from './options';
+import type { Quality } from './quality';
 import type { Annotation, ExperienceSettings } from './settings';
 
 type CameraMode = 'orbit' | 'anim' | 'fly' | 'walk';
@@ -23,6 +24,15 @@ type XrMode = 'ar' | 'vr';
 type OptionalFlag =
     'hpr' | 'budget' | 'lang' | 'sogstBudget' | 'sogstRotationDeg' | 'animLoopMode' | 'position' | 'scale';
 
+/**
+ * A position of the Quality slider, left to right. Each picks the splat budget from the device
+ * class's ladder (desktop 2 / 4 / 8 / 16 million, phones and tablets 1 / 2 / 4 / 8), and on the
+ * sorted renderer `performance` also renders at half resolution (the stochastic renderer keeps
+ * full resolution). Positions the device cannot hold are listed out of
+ * {@link ViewerState.qualityAvailable}.
+ */
+type QualityLevel = 'performance' | 'default' | 'high' | 'max';
+
 // the createViewer options with every default applied: what the viewer reads at runtime, and
 // immutable once it starts. The flags are documented on ViewerFlags
 type Config = ViewerAssets &
@@ -36,7 +46,26 @@ type Config = ViewerAssets &
 type State = {
     /** True once the first complete frame has rendered. */
     loaded: boolean;
-    /** Halves the render resolution. Persisted in local storage; defaults on for mobile. */
+    /**
+     * The Quality slider's position: the splat budget, and at `performance` half resolution on the
+     * sorted renderer.
+     * Persisted in local storage; defaults to `performance` on phones and tablets, `default`
+     * elsewhere. A position the device cannot hold falls back to the nearest available below it.
+     * An XR session that cannot hold it draws at the nearest it can below, and leaves it unchanged.
+     */
+    quality: QualityLevel;
+    /**
+     * The positions the device can hold, in slider order. Read-only: decided from the gpu's
+     * storage-binding limit and a memory estimate per position, for both renderers where the
+     * stochastic setting can switch between them, so switching never changes the budget.
+     */
+    qualityAvailable: QualityLevel[];
+    /**
+     * Performance Mode: draw with the stochastic splat renderer (unsorted, depth-tested splats,
+     * temporally accumulated) instead of the engine's sorted one. WebGPU only, and not offered in
+     * Quest or Pico browsers, where the toggle has no effect. Persisted; off by default. Switches
+     * at runtime.
+     */
     performanceMode: boolean;
     /** Content loading progress, 0 to 100. */
     progress: number;
@@ -93,6 +122,12 @@ type State = {
     /** Mouse-look and joystick movement rather than click-to-navigate. Persisted. */
     gamingControls: boolean;
     /**
+     * In XR with tracked hands, a left fist held upright for two seconds, the right hand open,
+     * puts the scene or object in miniature on top of the fist, like an ice cream in its cone,
+     * until the hand opens. Persisted; off by default. The XR menu offers it as Ice Cream.
+     */
+    iceCream: boolean;
+    /**
      * Gates the inputs the dom cannot route by hit-testing, because their listeners sit on
      * `window`: the keyboard (both the engine's source and the viewer's own shortcuts) and the
      * gamepad. Pointer input on the canvas is unaffected. Clear it while your own controls have
@@ -107,9 +142,11 @@ type State = {
 // sets the cursor instead.
 type WritableStateKey =
     | 'cameraMode'
+    | 'quality'
     | 'performanceMode'
     | 'showAnnotations'
     | 'gamingControls'
+    | 'iceCream'
     | 'animationPaused'
     | 'collisionOverlayEnabled'
     | 'controlsHidden'
@@ -250,6 +287,8 @@ type Global = {
     root: HTMLElement;
     // ui string lookup in this instance's locale
     localize: Localize;
+    // the budget, renderer and resolution decisions (quality.ts)
+    quality: Quality;
 };
 
 export {
@@ -258,6 +297,7 @@ export {
     InputMode,
     LoopMode,
     XrMode,
+    QualityLevel,
     Config,
     State,
     Global,

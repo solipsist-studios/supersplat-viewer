@@ -2,7 +2,7 @@
     "settings.performance-mode": "パフォーマンスモード",
     "settings.gaming-controls": "ゲームコントロール",
     "settings.show-annotations": "注釈を表示",
-    "settings.show-hints": "操作ヒントを表示",
+    "settings.show-collision": "コリジョンを表示",
     "settings.frame": "フィット",
     "settings.reset": "リセット",
 
@@ -15,11 +15,9 @@
     "tooltip.walk-mode": "ウォークモード",
     "tooltip.reset-camera": "カメラをリセット",
     "tooltip.frame-scene": "シーンにフィット",
-    "tooltip.show-collision": "コリジョンを表示",
     "tooltip.settings": "設定",
     "tooltip.help": "情報",
-    "tooltip.pin-hints": "操作ヒントをピン留め",
-    "tooltip.hide-hints": "操作ヒントを非表示",
+    "tooltip.controls": "操作",
     "tooltip.enter-ar": "ARを開始",
     "tooltip.enter-vr": "VRを開始",
     "tooltip.fullscreen": "全画面表示",
@@ -51,6 +49,7 @@
     "help.action.toggle-gaming": "ゲームコントロールを切り替え",
     "help.action.show-collision": "コリジョンを表示",
     "help.action.play-pause": "再生 / 一時停止",
+    "help.action.toggle-controls": "操作の切り替え",
     "help.action.toggle-help": "情報を切り替え",
     "help.action.exit-cancel": "終了 / キャンセル",
     "help.action.release-mouse": "マウスを解放",
@@ -70,5 +69,11 @@
     "xr-modal.title": "WebGLが必要です",
     "xr-modal.message": "ARとVRはWebGPUレンダラーでは利用できません。OKを押すとWebGLでビューアーを再読み込みします。",
     "xr-modal.cancel": "キャンセル",
-    "xr-modal.ok": "OK"
+    "xr-modal.ok": "OK",
+    "vr-prompt.loading": "読み込み中…",
+    "vr-prompt.enter": "タップしてVRを開始",
+    "xr-menu.exit-vr": "VRを終了",
+    "xr-menu.exit-ar": "ARを終了",
+    "xr-menu.ice-cream": "アイスクリームモード",
+    "xr-hint.stalled": "反応がない場合は、タブを切り替えてから戻ってください。"
 }

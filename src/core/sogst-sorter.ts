@@ -76,7 +76,9 @@ const workerSource = (): string | null => {
         ${removeCase}`
     );
     src = src.replace(response, `sogstPatchSeq: globalThis.__sogstPatchSeq ?? 0, ${response}`);
-    return `const GSplatSortBinWeights = ${GSplatSortBinWeights.toString()};\n(${src})()`;
+    // the engine runs the worker as `(UnifiedSortWorker)(port)` since 2.23, and the function
+    // reads its messages from that argument; this runs in a browser worker, so the port is `self`
+    return `const GSplatSortBinWeights = ${GSplatSortBinWeights.toString()};\n(${src})(self)`;
 };
 
 const managersOf = (app: AppBase): EngineManager[] => {

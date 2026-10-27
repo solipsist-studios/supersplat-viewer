@@ -14,6 +14,7 @@ import { installSogstSorter } from './core/sogst-sorter';
 import { replaySogst, streamSogst } from './core/stream-sogst';
 import { isSogstFilename } from './parsers/sogst';
 import { readPreferences } from './preferences';
+import { canvasPixelRatio } from './quality';
 import type { Config, Global, LoopMode, State } from './types';
 
 // Shared application bootstrap used by both the standalone web app (index.ts)
@@ -513,6 +514,15 @@ const createApp = async (canvas: HTMLCanvasElement, config: Config) => {
         keyboard: new Keyboard(window)
     });
 
+    // The per-splat centres the engine reads back for its cpu sort (12 bytes each, plus a gpu
+    // readback per file) serve only that sort and non-unified rendering. On WebGPU the viewer
+    // renders unified, and neither renderer sorts on the cpu (the engine's sorts on the gpu, the
+    // stochastic renderer does not sort), so they are dead weight there. Read once per file at
+    // load, so it has to be set before any asset loads; WebGL's cpu sort keeps them
+    if (renderer === 'webgpu') {
+        app.scene.gsplatCentersEnabled = false;
+    }
+
     // enable anonymous CORS for image loading in safari (must be set before any
     // texture asset starts loading, otherwise the <img> is fetched without the
     // crossorigin attribute and WebGL rejects it with SecurityError)
@@ -547,21 +557,17 @@ const measureCanvas = (canvas: HTMLCanvasElement) => ({
 });
 
 // size the canvas backbuffer from a css size: scaled by the pixel ratio (capped to
-// limit resolution on high-DPI devices), halved in performance mode. a zero css size
-// (hidden canvas) is skipped — the canvas keeps its previous size, as a zero-sized
-// swap chain is invalid in webgpu.
+// limit resolution on high-DPI devices) and the quality module's resolution scale (half at
+// the Performance position on the sorted renderer). a zero css size (hidden canvas) is skipped,
+// the canvas keeping its previous size, as a zero-sized swap chain is invalid in webgpu.
 const resizeCanvas = (
     canvas: HTMLCanvasElement,
     cssSize: { width: number; height: number },
-    performanceMode: boolean
+    resolutionScale: number
 ) => {
     if (!cssSize.width || !cssSize.height) return;
 
-    // maximum pixel dimension we will allow along the shortest screen dimension based on platform
-    const maxPixelDim = platform.mobile ? 1080 : 2160;
-    const pixelRatio = Math.min(maxPixelDim / Math.min(screen.width, screen.height), window.devicePixelRatio);
-
-    const scale = pixelRatio * (performanceMode ? 0.5 : 1.0);
+    const scale = canvasPixelRatio() * resolutionScale;
     const width = Math.ceil(cssSize.width * scale);
     const height = Math.ceil(cssSize.height * scale);
     if (width !== canvas.width || height !== canvas.height) {
@@ -572,7 +578,7 @@ const resizeCanvas = (
 
 // initialize canvas size and resizing
 const initCanvas = (global: Global) => {
-    const { app, events, state } = global;
+    const { app, events, quality } = global;
     const { canvas } = app.graphicsDevice;
 
     // the canvas css size, kept current by the resize observer. measured directly at
@@ -584,7 +590,7 @@ const initCanvas = (global: Global) => {
         // and resetting canvas dimensions can invalidate the XRWebGLLayer
         if (app.xr?.active) return;
 
-        resizeCanvas(canvas, cssSize, state.performanceMode);
+        resizeCanvas(canvas, cssSize, quality.resolutionScale);
     };
 
     const resizeObserver = new ResizeObserver((entries: ResizeObserverEntry[]) => {
@@ -598,7 +604,7 @@ const initCanvas = (global: Global) => {
     });
     resizeObserver.observe(canvas);
 
-    events.on('performanceMode:changed', () => {
+    events.on('quality:changed', () => {
         app.renderNextFrame = true;
     });
 
@@ -629,6 +635,7 @@ const createViewerState = (events: EventHandler, config?: Config): State => {
     return observe(events, {
         loaded: false,
         ...readPreferences(platform.mobile),
+        qualityAvailable: [],
         progress: 0,
         inputMode: platform.mobile ? 'touch' : 'desktop',
         cameraMode: 'orbit',
