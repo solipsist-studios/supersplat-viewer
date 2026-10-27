@@ -640,7 +640,7 @@ const createViewerState = (events: EventHandler, config?: Config): State => {
         inputMode: platform.mobile ? 'touch' : 'desktop',
         cameraMode: 'orbit',
         hasAnimation: false,
-        hasSplatAnimation: false,
+        has4DAnimation: false,
         animationDuration: 0,
         animationTime: 0,
         animationPaused: true,

@@ -164,17 +164,17 @@ class CameraManager {
             return controllers[cameraMode] as CameraController;
         };
 
-        // state.hasSplatAnimation is true only for 4DGS content (set by setupSplatAnim
+        // state.has4DAnimation is true only for 4DGS content (set by setupSplatAnim
         // before this constructor runs) — its timeline belongs to the splat
         // animation, so leave animationDuration/cameraMode defaults alone here.
         // 3D content always has a camera track (authored, or the generated
         // rotate/figure-8 fallback below) and keeps the existing auto-orbit
         // "turntable" behaviour.
-        const isSplatAnimation = state.hasSplatAnimation;
-        state.hasAnimation = isSplatAnimation || !!controllers.anim;
-        const hasCameraAnim = !!controllers.anim && !isSplatAnimation;
+        const has4DAnim = state.has4DAnimation;
+        state.hasAnimation = has4DAnim || !!controllers.anim;
+        const hasCameraAnim = !!controllers.anim && !has4DAnim;
 
-        if (!isSplatAnimation) {
+        if (!has4DAnim) {
             state.animationDuration = controllers.anim ? controllers.anim.animState.cursor.duration : 0;
 
             // seed the transport loop-mode control from the track (authored or
@@ -293,7 +293,7 @@ class CameraManager {
             lastPosition.copy(this.camera.position);
 
             // update animation timeline (4DGS content owns the timeline instead)
-            if (state.cameraMode === 'anim' && !isSplatAnimation) {
+            if (state.cameraMode === 'anim' && !has4DAnim) {
                 const { cursor } = controllers.anim.animState;
                 state.animationTime = cursor.value;
 
@@ -336,7 +336,7 @@ class CameraManager {
                     }
                     break;
                 case 'playPause':
-                    if (isSplatAnimation) {
+                    if (has4DAnim) {
                         // 4DGS content — toggle file playback, leave the camera alone
                         state.animationPaused = !state.animationPaused;
                     } else if (state.cameraMode === 'anim') {
@@ -416,7 +416,7 @@ class CameraManager {
         });
 
         this.seek = (time) => {
-            if (!controllers.anim || isSplatAnimation) {
+            if (!controllers.anim || has4DAnim) {
                 // 4DGS content: scrubbing is handled by SplatAnimationBase.attach()
                 return;
             }

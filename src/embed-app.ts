@@ -202,7 +202,7 @@ const createEmbedViewer = async (options: EmbedViewerOptions): Promise<EmbedView
     // mirrors the play/pause buttons of the built-in ui: 3D content switches to the camera
     // track, 4DGS content toggles file playback
     const setPaused = (paused: boolean) => {
-        if (!state.hasSplatAnimation) {
+        if (!state.has4DAnimation) {
             state.cameraMode = 'anim';
         }
         state.animationPaused = paused;
