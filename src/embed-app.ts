@@ -1,22 +1,28 @@
-import { EventHandler, Vec3 } from 'playcanvas';
-import type { Entity } from 'playcanvas';
+import type { EventHandler } from 'playcanvas';
 
-import { createApp, createViewerState, initCanvas, isStatic3dgsFilename, loadContent } from './app-setup';
-import { EmbedInputDevice } from './input/devices/external';
-import { initLocalization } from './localization';
-import { importSettings } from './settings';
-import type { Config, Global, State } from './types';
-import { Viewer } from './viewer';
+import { createViewer } from './index';
+import type { CameraPose, CreateViewerOptions, ViewerHandle, ViewerState } from './index';
 
-// Embeddable library entry: creates a full viewer (engine, loaders, camera
-// pipeline, XR) on a host-page canvas with NO HTML UI and no iframe. The
-// host drives playback/input/XR through the returned handle and observes
-// state via `state` + `events` ('<prop>:changed'). Because everything runs
-// in the top-level document, XR sessions can start directly from the host's
-// own click handlers (WebKit refuses immersive sessions in iframes).
+// Embeddable library entry: creates a full viewer (engine, loaders, camera pipeline, XR) inside a
+// host-page element with NO built-in UI and no iframe. It is a thin adapter over `createViewer`,
+// keeping the shape hosts such as GaussPlay already use (play, pause, seek, input, XR) while the
+// viewer itself is upstream's. The host drives playback, input and XR through the returned handle
+// and observes state via `state` + `events` ('<prop>:changed'). Because everything runs in the
+// top-level document, XR sessions can start directly from the host's own click handlers (WebKit
+// refuses immersive sessions in iframes).
 
 type EmbedViewerOptions = {
-    canvas: HTMLCanvasElement;
+    /**
+     * The element the viewer builds its subtree in (a canvas, plus an empty wrapper). The host
+     * sizes it; the viewer fills it.
+     */
+    container?: HTMLElement;
+    /**
+     * @deprecated Pass `container`. The viewer creates its own canvas, so a host canvas cannot be
+     * rendered into: given instead of `container`, the viewer builds in this canvas's parent and
+     * hides the canvas, restoring its display when the viewer is destroyed.
+     */
+    canvas?: HTMLCanvasElement;
     /** URL of the scene file (.ply/.sog/.compressed.ply/.sogst/meta.json). */
     contentUrl: string;
     /** Original filename when contentUrl has no extension (e.g. blob URLs). */
@@ -70,35 +76,24 @@ type EmbedViewerOptions = {
 
 type XrMode = 'AR' | 'VR';
 
-/**
- * A camera pose in the same shape as a settings file's `cameras[0].initial`,
- * so a pose read back from a live viewer pastes straight into settings with
- * no conversion. The viewer stores its camera as position/angles/distance
- * internally; this is the look-at form.
- */
-type CameraPose = {
-    position: [number, number, number];
-    target: [number, number, number];
-    fov: number;
-};
-
 type EmbedViewer = {
     /** Live observed viewer state (loaded, progress, animation*, hasAR/VR…). */
-    state: State;
-    /** Fires '<prop>:changed' for every state change, plus 'xrError'. */
+    state: ViewerState;
+    /** Fires '<prop>:changed' for every state change, plus 'xrError', 'xrStart' and 'xrEnd'. */
     events: EventHandler;
     /** The actual renderer in use after any engine fallback. */
     renderer: 'webgl' | 'webgpu';
+    /** The underlying `createViewer` handle, for everything this adapter does not wrap. */
+    handle: ViewerHandle;
     play: () => void;
     pause: () => void;
     restart: () => void;
     seek: (time: number) => void;
     resetCamera: () => void;
     /**
-     * Read the live camera pose, or null before the camera exists (it is
-     * built once the scene finishes loading). This is an authoring aid: a
-     * host can orbit to the framing it wants and read out the numbers to
-     * bake in, instead of guessing settings values and reloading.
+     * Read the live camera pose, or null before the camera exists (it is built once the scene
+     * finishes loading). This is an authoring aid: a host can orbit to the framing it wants and
+     * read out the numbers to bake in, instead of guessing settings values and reloading.
      */
     getCameraPose: () => CameraPose | null;
     /** Queue orbit/zoom pixel deltas (same semantics as the site's flipbook). */
@@ -109,8 +104,6 @@ type EmbedViewer = {
     startXr: (mode: XrMode) => boolean;
     destroy: () => void;
 };
-
-const tmpTarget = new Vec3();
 
 const defaultSettings = {
     version: 2,
@@ -130,127 +123,84 @@ const defaultSettings = {
     startMode: 'default'
 };
 
-const createEmbedViewer = async (options: EmbedViewerOptions): Promise<EmbedViewer> => {
-    // Only the static 3DGS handler reads `contents`. 4DGS archives manage
-    // their own streaming/cached fetches, and an unrecognised extension is
-    // rejected by loadContent without reading the body — prefetching either
-    // downloads a file nothing goes on to read.
-    const embedFilename =
-        options.contentFilename ?? new URL(options.contentUrl, location.href).pathname.split('/').pop() ?? '';
-    const embedPrefetch = isStatic3dgsFilename(embedFilename);
+// The layout the viewer's stylesheet gives its root and canvas, which an embed does not load: the
+// root fills its container and the canvas fills the root. Injected once, scoped to the viewer's own
+// class, so a host page's own styles are untouched.
+const injectLayoutStyle = () => {
+    if (document.querySelector('style[data-sse-embed]')) {
+        return;
+    }
+    const style = document.createElement('style');
+    style.dataset.sseEmbed = '';
+    style.textContent =
+        '.sse-viewer{position:relative;width:100%;height:100%;overflow:hidden;isolation:isolate;touch-action:none}' +
+        '.sse-viewer>canvas{position:absolute;top:0;left:0;width:100%;height:100%}';
+    document.head.appendChild(style);
+};
 
-    const config: Config = {
+const createEmbedViewer = async (options: EmbedViewerOptions): Promise<EmbedViewer> => {
+    const { canvas } = options;
+    const container = options.container ?? canvas?.parentElement;
+    if (!container) {
+        throw new Error('createEmbedViewer: pass a container element');
+    }
+
+    // a host canvas cannot be rendered into (the viewer creates its own), so step it aside
+    const canvasDisplay = canvas?.style.display;
+    if (!options.container && canvas) {
+        canvas.style.display = 'none';
+    }
+    injectLayoutStyle();
+
+    const viewerOptions: CreateViewerOptions = {
+        container,
+        settings: options.settings ?? defaultSettings,
         contentUrl: options.contentUrl,
         contentFilename: options.contentFilename,
-        contents: embedPrefetch ? fetch(options.contentUrl) : undefined,
+        renderer: options.renderer,
+        aa: options.aa,
+        transparent: options.transparent,
+        noanim: options.noanim,
         sogstRotationDeg: options.sogstRotationDeg,
         animLoopMode: options.loopMode,
         sogstBudget: options.sogstBudget,
-        sogstGpuDecode: options.sogstGpuDecode ?? true,
+        sogstGpuDecode: options.sogstGpuDecode,
+        position: options.position,
+        scale: options.scale,
+        // the host owns the page, the controls and all input
         ui: false,
-        reticle: false,
-        exposeGlobals: false,
-        noanim: !!options.noanim,
-        embed: true,
-        transparent: !!options.transparent,
-        nofx: false,
-        ministats: false,
-        colorize: false,
-        fullload: false,
-        aa: !!options.aa,
-        renderer: options.renderer,
-        heatmap: false,
-        debug: false
+        hostInput: true
     };
 
-    const { app, camera, renderer } = await createApp(options.canvas, config);
+    let handle: ViewerHandle;
+    try {
+        handle = await createViewer(viewerOptions);
+    } catch (err) {
+        if (!options.container && canvas) {
+            canvas.style.display = canvasDisplay;
+        }
+        throw err;
+    }
+    const { app, state, events } = handle;
+    const renderer = app.graphicsDevice.deviceType === 'webgpu' ? 'webgpu' : 'webgl';
 
-    const events = new EventHandler();
-    const state = createViewerState(events, config);
-
-    // The viewer's instance root. The host owns the canvas and the page around it, and the
-    // viewer removes its root when destroyed, so this is a private detached element: nothing
-    // of the host's is looked up, restyled or removed. (Phase C replaces this adapter with
-    // createViewer, which owns its root outright.)
-    const root = document.createElement('div');
-
-    const global: Global = {
-        app,
-        settings: importSettings(options.settings ?? defaultSettings),
-        config,
-        state,
-        events,
-        camera,
-        renderer,
-        root,
-        localize: initLocalization(undefined, root)
-    };
-
-    const disposeCanvas = initCanvas(global);
-    app.start();
-    camera.addComponent('camera');
-
-    // Load model — loadContent picks the handler from the filename and
-    // rejects an unrecognised extension without fetching the body
-    const progressCallback = (progress: number) => {
-        state.progress = progress;
-    };
-    let destroyed = false;
-    const gsplatLoad = loadContent(app, config, global, progressCallback, () => destroyed);
-
-    const viewer = new Viewer(global, gsplatLoad, undefined, undefined);
-    viewer.onDestroy(disposeCanvas);
-
-    // Host-fed input flows through the shared controller pipeline; the
-    // input controller exists once loading completes.
-    const device = new EmbedInputDevice();
-    events.once('firstFrame', () => {
-        viewer.inputController?.extraDevices.push(device);
-    });
-
-    // Re-fire XR lifecycle on the shared event handler so hosts have a
-    // single subscription point.
+    // Re-fire XR lifecycle on the shared event handler so hosts have a single subscription point.
     app.xr?.on('error', (err: Error) => {
         events.fire('xrError', err);
     });
     app.xr?.on('start', () => events.fire('xrStart'));
     app.xr?.on('end', () => events.fire('xrEnd'));
 
-    // Position/scale the content entity (splats are authored at arbitrary
-    // origins and scales)
-    if (options.position || options.scale) {
-        const { position, scale } = options;
-        const applyTransform = (entity: Entity) => {
-            if (position) {
-                entity.setLocalPosition(position[0], position[1], position[2]);
-            }
-            if (scale) {
-                entity.setLocalScale(scale[0], scale[1], scale[2]);
-            }
-        };
+    // the handle's commands throw before the first frame; these have never thrown, since a host
+    // calls them from its own controls whenever they are pressed
+    const whenLoaded = (run: () => void) => {
+        if (state.loaded) {
+            run();
+        }
+    };
 
-        let contentEntity: Entity | null = null;
-        gsplatLoad
-            .then((entity) => {
-                contentEntity = entity;
-                applyTransform(entity);
-            })
-            .catch(() => {
-                /* load failure is reported through state */
-            });
-
-        // Re-apply on session end so the page view always returns to the
-        // configured transform, whatever happened during the XR session.
-        app.xr?.on('end', () => {
-            if (contentEntity) {
-                applyTransform(contentEntity);
-                app.renderNextFrame = true;
-            }
-        });
-    }
-
-    // mirrors the play/pause buttons in ui.ts: 3D content switches to the
-    // camera track, 4DGS content toggles file playback
+    // mirrors the play/pause buttons of the built-in ui: 3D content switches to the camera
+    // track, 4DGS content toggles file playback
     const setPaused = (paused: boolean) => {
         if (!state.has4DAnimation) {
             state.cameraMode = 'anim';
@@ -258,61 +208,36 @@ const createEmbedViewer = async (options: EmbedViewerOptions): Promise<EmbedView
         state.animationPaused = paused;
     };
 
-    const canStartXr = (mode: XrMode) => {
-        // the XR start rig (xr.ts) only runs under the WebGL renderer
-        const type = mode === 'AR' ? 'immersive-ar' : 'immersive-vr';
-        return renderer === 'webgl' && (app.xr?.isAvailable(type) ?? false);
-    };
+    const canStartXr = (mode: XrMode) => (mode === 'AR' ? state.canStartAR : state.canStartVR);
 
     return {
         state,
         events,
         renderer,
+        handle,
         play: () => setPaused(false),
         pause: () => setPaused(true),
         restart: () => {
-            events.fire('scrubAnim', 0);
+            whenLoaded(() => handle.seek(0));
             setPaused(false);
         },
-        seek: (time: number) => {
-            events.fire('scrubAnim', time);
-        },
-        resetCamera: () => {
-            events.fire('inputEvent', 'reset');
-        },
-        getCameraPose: () => {
-            // cameraManager is only assigned when loading completes
-            const active = viewer.cameraManager?.camera;
-            if (!active) {
-                return null;
-            }
-            active.calcFocusPoint(tmpTarget);
-            return {
-                position: [active.position.x, active.position.y, active.position.z],
-                target: [tmpTarget.x, tmpTarget.y, tmpTarget.z],
-                fov: active.fov
-            };
-        },
-        input: (deltas: { rotate?: [number, number]; zoom?: number }) => {
-            if (deltas.rotate) {
-                device.queueRotate(deltas.rotate[0], deltas.rotate[1]);
-            }
-            if (typeof deltas.zoom === 'number') {
-                device.queueZoom(deltas.zoom);
-            }
-            app.renderNextFrame = true;
-        },
+        seek: (time: number) => whenLoaded(() => state.hasAnimation && handle.seek(time)),
+        resetCamera: () => whenLoaded(() => handle.resetCamera()),
+        getCameraPose: () => handle.getCameraPose(),
+        input: (deltas) => handle.input(deltas),
         canStartXr,
         startXr: (mode: XrMode) => {
             if (!canStartXr(mode)) {
                 return false;
             }
-            events.fire(mode === 'AR' ? 'startAR' : 'startVR');
+            handle.startXR(mode === 'AR' ? 'ar' : 'vr').catch((err: Error) => events.fire('xrError', err));
             return true;
         },
         destroy: () => {
-            destroyed = true;
-            viewer.destroy();
+            handle.destroy();
+            if (!options.container && canvas) {
+                canvas.style.display = canvasDisplay;
+            }
         }
     };
 };
