@@ -82,12 +82,6 @@ const initXr = (global: Global) => {
         });
     }
 
-    // XR sessions require a WebGL device; under WebGPU we only expose availability so
-    // the UI can offer to reload the viewer in WebGL mode.
-    if (renderer !== 'webgl') {
-        return;
-    }
-
     const parent = camera.parent as Entity;
 
     const parentPosition = new Vec3();
