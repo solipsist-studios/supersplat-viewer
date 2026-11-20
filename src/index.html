@@ -8,6 +8,10 @@
             content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"
         />
         <base href="" />
+        <link
+            rel="icon"
+            href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Ccircle cx='32' cy='32' r='30' fill='%23111111'/%3E%3Ccircle cx='32' cy='32' r='12' fill='%23ffffff'/%3E%3C/svg%3E"
+        />
         <link rel="stylesheet" href="./index.css" />
 
         <!--
@@ -41,7 +45,70 @@
                 return img;
             };
 
+            const parseRotationParam = (value, fallback) => {
+                if (!value) {
+                    return fallback;
+                }
+
+                const parts = value.split(',').map(Number);
+                if (parts.length !== 3 || parts.some((part) => Number.isNaN(part))) {
+                    return fallback;
+                }
+
+                return [parts[0], parts[1], parts[2]];
+            };
+
+            const defaultSettings = {
+                version: 2,
+                tonemapping: 'none',
+                highPrecisionRendering: false,
+                background: {
+                    color: [0, 0, 0]
+                },
+                postEffectSettings: {
+                    sharpness: {
+                        enabled: false,
+                        amount: 0
+                    },
+                    bloom: {
+                        enabled: false,
+                        intensity: 1,
+                        blurLevel: 2
+                    },
+                    grading: {
+                        enabled: false,
+                        brightness: 0,
+                        contrast: 1,
+                        saturation: 1,
+                        tint: [1, 1, 1]
+                    },
+                    vignette: {
+                        enabled: false,
+                        intensity: 0.5,
+                        inner: 0.3,
+                        outer: 0.75,
+                        curvature: 1
+                    },
+                    fringing: {
+                        enabled: false,
+                        intensity: 0.5
+                    }
+                },
+                animTracks: [],
+                cameras: [],
+                annotations: [],
+                startMode: 'default'
+            };
+
             const url = new URL(location.href);
+
+            const ensureOk = (response) => {
+                // a real Response always has a boolean `ok`; a bare stub (as in the tests) has none
+                if (response.ok === false) {
+                    throw new Error(`Failed to load settings: ${response.status} ${response.statusText}`);
+                }
+                return response;
+            };
 
             // Embedder-supplied defaults. URL params take precedence over the asset urls below,
             // so an embed can still be overridden per-instance (e.g. `?skybox=` to preview a
@@ -53,8 +120,11 @@
             const skyboxUrl = url.searchParams.get('skybox') ?? bootstrap.skyboxUrl ?? null;
             const collisionUrl =
                 url.searchParams.get('collision') ?? url.searchParams.get('voxel') ?? bootstrap.collisionUrl ?? null;
-            const settingsUrl = url.searchParams.get('settings') ?? bootstrap.settingsUrl ?? './settings.json';
-            const contentUrl = url.searchParams.get('content') ?? bootstrap.contentUrl ?? './scene.compressed.ply';
+            // with no settings named, a data: url serves the defaults, so the fetch below needs no special case
+            const defaultSettingsUrl = `data:application/json,${encodeURIComponent(JSON.stringify(defaultSettings))}`;
+            const settingsUrl = url.searchParams.get('settings') ?? bootstrap.settingsUrl ?? defaultSettingsUrl;
+            const contentUrl = url.searchParams.get('content') ?? bootstrap.contentUrl ?? './coffee_martini.sogst';
+            const sogstRotationDeg = parseRotationParam(url.searchParams.get('sogstrot'), [0, 0, 0]);
             // the bootstrap's alone: a url param would let a link run any wasm in this origin
             const gsafDecoderUrl = bootstrap.gsafDecoderUrl ?? null;
             const zstdDecoderUrl = bootstrap.zstdDecoderUrl ?? null;
@@ -64,23 +134,32 @@
             // ?content= override replaces the url it describes.
             const contentFilename = url.searchParams.has('content') ? null : (bootstrap.contentFilename ?? null);
 
-            const renderer = url.searchParams.has('webgl') ? 'webgl' : 'webgpu';
+            // unset, the viewer chooses: WebGPU, except WebGL for .sogst clips on a Mac or Vision Pro
+            const renderer = url.searchParams.has('webgl')
+                ? 'webgl'
+                : url.searchParams.has('webgpu')
+                  ? 'webgpu'
+                  : undefined;
 
             const budgetParam = url.searchParams.get('budget');
             const budget = budgetParam !== null ? Number(budgetParam) : undefined;
 
-            // The engine's octree and lcc2 parsers fetch lod-meta.json and .lcc2 files themselves
-            // and ignore a prefetched response, so starting one here would download the metadata
-            // twice, and the spz parser cannot read a prefetched response. Every other splat
-            // parser consumes it, so they keep the head start. `isPrefetchable` in src/index.ts
-            // applies the same rule for embedders that do not pass `contents`.
+            // Only the static 3DGS path consumes the eager `contents` prefetch. 4DGS archives
+            // manage their own streaming and cached fetches, and an unrecognised extension is
+            // rejected by loadContent without reading the body, so prefetching either would pull
+            // a file nothing goes on to read. The engine's octree parser fetches lod-meta.json
+            // itself and ignores a prefetched response, so that one is skipped too. An
+            // extensionless URL carries no evidence and takes the 3DGS path. Keep in step with
+            // `isPrefetchable` in src/app-setup.ts, which applies the rule for embedders that do not
+            // pass `contents`.
             const contentName = (
-                contentFilename ??
-                new URL(contentUrl, location.href).pathname.split('/').pop() ??
+                contentFilename ||
+                new URL(contentUrl, location.href).pathname.split('/').pop() ||
                 ''
             ).toLowerCase();
+            const contentExt = /\.[^./]+$/.exec(contentName)?.[0] ?? '';
             const prefetchContent =
-                contentName !== 'lod-meta.json' && !contentName.endsWith('.lcc2') && !contentName.endsWith('.spz');
+                (!contentExt || ['.ply', '.sog', '.json'].includes(contentExt)) && contentName !== 'lod-meta.json';
 
             // createViewer's options, minus the container and the settings. The poster image and
             // the content fetch start here, before the module bundle has arrived.
@@ -117,6 +196,10 @@
                 splatSource: url.searchParams.get('splatSource') ?? undefined,
                 variant: url.searchParams.get('variant') ?? undefined,
                 budget,
+                sogstGpuDecode: !url.searchParams.has('sogstcpu'),
+                sogstRotationDeg,
+                embed: url.searchParams.has('embed'),
+                transparent: url.searchParams.has('transparent'),
                 framesInFlight: url.searchParams.has('fif') ? Number(url.searchParams.get('fif')) : undefined,
                 heatmap: url.searchParams.has('heatmap'),
                 fullload: url.searchParams.has('fullload'),
@@ -129,7 +212,9 @@
 
             window.sse = {
                 options: sseOptions,
-                settings: bootstrap.settings ?? fetch(settingsUrl).then((response) => response.json())
+                // consumers' rewriting patterns expect this assignment on one line
+                // prettier-ignore
+                settings: bootstrap.settings ?? fetch(settingsUrl).then(ensureOk).then((response) => response.json())
             };
         </script>
     </head>
@@ -142,7 +227,48 @@
 
             // the viewer builds its own subtree (canvas, ui, icons) inside the container; the
             // standalone document's container is the page itself
-            createViewer({ container: document.body, settings, ...options });
+            let viewer = null;
+            const start = async (overrides) => {
+                viewer = await createViewer({ container: document.body, settings, ...options, ...overrides });
+
+                // the Load buttons live in the viewer's own markup, so they are wired after it exists
+                document
+                    .querySelector('.sse-load3dgsBtn')
+                    ?.addEventListener('click', () => pickFile('.ply,.sog,.json'));
+                document.querySelector('.sse-load4dgsBtn')?.addEventListener('click', () => pickFile('.sogst'));
+            };
+
+            // Load a file chosen by the user: destroy the running viewer and create a new one on a
+            // blob url, so the content does not need to be re-fetched from a server
+            const loadFile = async (file) => {
+                const blobUrl = URL.createObjectURL(file);
+                try {
+                    viewer?.destroy();
+                    viewer = null;
+                    await start({
+                        contentUrl: blobUrl,
+                        contentFilename: file.name,
+                        contents: fetch(blobUrl),
+                        poster: undefined,
+                        posterUrl: undefined
+                    });
+                } catch (err) {
+                    URL.revokeObjectURL(blobUrl);
+                    throw err;
+                }
+            };
+
+            const pickFile = (accept) => {
+                const input = document.createElement('input');
+                input.type = 'file';
+                input.accept = accept;
+                input.addEventListener('change', () => {
+                    if (input.files[0]) loadFile(input.files[0]);
+                });
+                input.click();
+            };
+
+            start();
         </script>
     </body>
 </html>

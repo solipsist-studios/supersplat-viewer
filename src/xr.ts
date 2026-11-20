@@ -154,6 +154,11 @@ const initXr = (global: Global) => {
     const cameraPosition = new Vec3();
     const cameraRotation = new Quat();
 
+    // The canvas's DOM location before the session, so it can be restored to
+    // its original parent afterwards (embedded viewers don't live in <body>).
+    let canvasParent: HTMLElement | null = null;
+    let canvasNextSibling: Node | null = null;
+
     parent.addComponent('script');
     // its models by input source (the script's own typing is Script)
     const controllers = parent.script.create(XrControllers) as unknown as {
@@ -377,6 +382,11 @@ const initXr = (global: Global) => {
             app.scene.gsplat.dirty = true;
         });
 
+        // cache the canvas's DOM location
+        const canvas = app.graphicsDevice.canvas;
+        canvasParent = canvas.parentElement;
+        canvasNextSibling = canvas.nextSibling;
+
         // cache original camera rig positions and rotations
         parentPosition.copy(parent.getPosition());
         parentRotation.copy(parent.getRotation());
@@ -459,12 +469,20 @@ const initXr = (global: Global) => {
 
         // Restore the canvas to the correct position in the DOM after exiting XR. In
         // some browsers (e.g. Chrome on Android) the canvas is moved to a new root
-        // during XR, and needs to be moved back on exit.
+        // during XR, and needs to be moved back on exit. Restore it to its
+        // pre-session parent: embedded viewers keep the canvas inside the host
+        // page's own container, not directly under the viewer's root.
         if (restoreFrame !== null) cancelAnimationFrame(restoreFrame);
         restoreFrame = requestAnimationFrame(() => {
             restoreFrame = null;
             if (destroyed) return;
-            root.prepend(app.graphicsDevice.canvas);
+            const canvas = app.graphicsDevice.canvas;
+            if (canvasParent?.isConnected) {
+                const ref = canvasNextSibling?.parentNode === canvasParent ? canvasNextSibling : null;
+                canvasParent.insertBefore(canvas, ref);
+            } else {
+                root.prepend(canvas);
+            }
             app.renderNextFrame = true;
         });
     });

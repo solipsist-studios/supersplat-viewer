@@ -15,8 +15,13 @@ type CameraMode = 'orbit' | 'anim' | 'fly' | 'walk';
 
 type InputMode = 'desktop' | 'touch';
 
+type LoopMode = 'none' | 'repeat' | 'pingpong';
+
 /** Immersive session kind accepted by {@link ViewerHandle.startXR}. */
 type XrMode = 'ar' | 'vr';
+
+// the flags that have no default: unset means the viewer decides, or nothing applies
+type OptionalFlag = 'hpr' | 'aa' | 'budget' | 'lang' | 'sogstRotationDeg' | 'animLoopMode' | 'position' | 'scale';
 
 /**
  * A position of the Quality slider, left to right. Each picks the splat budget from the device
@@ -30,8 +35,8 @@ type QualityLevel = 'performance' | 'default' | 'high' | 'max';
 // the createViewer options with every default applied: what the viewer reads at runtime, and
 // immutable once it starts. The flags are documented on ViewerFlags
 type Config = ViewerAssets &
-    Required<Omit<ViewerFlags, 'hpr' | 'aa' | 'budget' | 'lang'>> &
-    Pick<ViewerFlags, 'hpr' | 'aa' | 'budget' | 'lang'> & {
+    Required<Omit<ViewerFlags, OptionalFlag>> &
+    Pick<ViewerFlags, OptionalFlag> & {
         poster?: HTMLImageElement;
         contents: Promise<Response>;
     };
@@ -68,8 +73,9 @@ type State = {
     /** The active camera controller. `anim` is the authored camera animation. */
     cameraMode: CameraMode;
     /**
-     * Whether there is an animation for the timeline to play: the authored camera animation, or
-     * the frames of an animated splat sequence ({@link ViewerState.hasSequence}).
+     * Whether there is an animation for the timeline to play: an authored camera animation, the
+     * frames of an animated splat sequence ({@link ViewerState.hasSequence}), or a 4DGS clip
+     * ({@link ViewerState.has4DAnimation}).
      */
     hasAnimation: boolean;
     /**
@@ -77,12 +83,21 @@ type State = {
      * frames in every camera mode, and the camera has no animation of its own.
      */
     hasSequence: boolean;
+    /**
+     * Whether the content is a 4DGS clip, which owns its timeline: the transport drives file
+     * playback, not the camera. Read-only: set when the clip loads.
+     */
+    has4DAnimation: boolean;
     /** Length of that animation in seconds, or 0. */
     animationDuration: number;
     /** Playhead position in seconds. Read-only: the animation cursor or the sequence owns it. */
     animationTime: number;
     /** Whether the animation is paused. */
     animationPaused: boolean;
+    /** Transport loop behaviour: play once, loop or bounce. */
+    animationLoopMode: LoopMode;
+    /** Playback rate multiplier, 1 being real time. */
+    animationSpeed: number;
     /** Whether an AR session can start, or could after reloading into WebGL. */
     hasAR: boolean;
     /** Whether a VR session can start, or could after reloading into WebGL. */
@@ -159,6 +174,17 @@ type CaptureOptions = {
     height?: number;
     /** Supersampling factor, capped at 8. Defaults to 2. */
     supersample?: number;
+};
+
+/**
+ * A camera pose in the same shape as a settings file's `cameras[0].initial`, so a pose read
+ * back from a live viewer pastes straight into settings with no conversion. The viewer stores
+ * its camera as position, angles and distance internally; this is the look-at form.
+ */
+type CameraPose = {
+    position: [number, number, number];
+    target: [number, number, number];
+    fov: number;
 };
 
 /** What `createViewer` resolves to: one viewer instance. */
@@ -238,6 +264,18 @@ type ViewerHandle = {
      * Release everything: the engine application, the graphics context, every listener, and the
      * subtree built inside the container. Idempotent, and safe before loading finishes.
      */
+    /**
+     * Read the live camera pose, or null before the camera exists (it is built once the scene
+     * finishes loading). An authoring aid: orbit to the framing you want, then read out the
+     * numbers to bake into settings.
+     */
+    getCameraPose(): CameraPose | null;
+    /**
+     * Queue orbit and zoom deltas, in pixels, through the same controller pipeline as native
+     * pointer input. Meant for a viewer created with `hostInput`, whose host owns all input.
+     * Never throws; deltas queued before the scene loads apply once it has.
+     */
+    input(deltas: { rotate?: [number, number]; zoom?: number }): void;
     destroy(): void;
 };
 
@@ -261,7 +299,9 @@ type Global = {
 
 export {
     CameraMode,
+    CameraPose,
     InputMode,
+    LoopMode,
     XrMode,
     QualityLevel,
     Config,

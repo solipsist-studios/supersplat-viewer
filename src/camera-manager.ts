@@ -16,7 +16,7 @@ import type { Collision } from './collision';
 import { easeOut } from './core/math';
 import { DEFAULT_CAMERA_FOV } from './schemas/defaults';
 import type { Annotation } from './settings';
-import type { CameraMode, Global } from './types';
+import type { CameraMode, Global, LoopMode } from './types';
 
 const tmpCamera = new Camera();
 const tmpv = new Vec3();
@@ -176,14 +176,45 @@ class CameraManager {
             return controllers[cameraMode] as CameraController;
         };
 
+        // 4DGS content (state.has4DAnimation, set by setupSplatAnim before this constructor
+        // runs) owns its timeline: the transport drives file playback, not the camera, so leave
+        // animationDuration and cameraMode defaults alone for it. A gsaf sequence also owns its
+        // timeline, and passes cameraAnimation = false. 3D content always has a camera track
+        // (authored, or the generated rotate/figure-8 fallback below) and keeps the existing
+        // auto-orbit "turntable" behaviour.
+        const has4DAnim = state.has4DAnimation;
+        const hasCameraAnim = !!controllers.anim && !has4DAnim;
+
         // set the global animation flag
         if (cameraAnimation) {
-            state.hasAnimation = !!controllers.anim;
-            state.animationDuration = controllers.anim ? controllers.anim.animState.cursor.duration : 0;
+            state.hasAnimation = has4DAnim || !!controllers.anim;
+
+            if (!has4DAnim) {
+                state.animationDuration = controllers.anim ? controllers.anim.animState.cursor.duration : 0;
+
+                // seed the transport loop-mode control from the track (authored or
+                // generated); the control then owns it for the rest of the session
+                if (controllers.anim) {
+                    state.animationLoopMode = controllers.anim.animState.cursor.loopMode;
+                }
+            }
         }
 
-        // initialize camera mode and initial camera position
-        state.cameraMode = controllers.anim ? 'anim' : isObjectExperience ? 'orbit' : walkAllowed ? 'walk' : 'fly';
+        // transport loop-mode changes drive the camera-track cursor directly
+        events.on('animationLoopMode:changed', (value: LoopMode) => {
+            const cursor = controllers.anim?.animState.cursor;
+            if (cursor) {
+                // collapse a pingpong return-leg cursor (> duration) to its
+                // mapped value so repeat/none don't inherit an out-of-range time
+                cursor.cursor = cursor.value;
+                cursor.loopMode = value;
+            }
+        });
+
+        // initialize camera mode and initial camera position. 4DGS content
+        // starts in an interactive mode — playback is driven by the timeline,
+        // not a camera track.
+        state.cameraMode = hasCameraAnim ? 'anim' : isObjectExperience ? 'orbit' : walkAllowed ? 'walk' : 'fly';
         this.camera.copy(resetCamera);
 
         const target = new Camera(this.camera); // the active controller updates this
@@ -240,8 +271,15 @@ class CameraManager {
 
         // application update
         this.update = (deltaTime: number, frame: CameraFrame) => {
-            // use dt of 0 if animation is paused
-            const dt = state.cameraMode === 'anim' && state.animationPaused ? 0 : deltaTime;
+            // use dt of 0 if animation is paused; apply the transport speed
+            // multiplier while a camera track is playing (sources are unused
+            // in anim mode, so the scaled dt only reaches the anim controller)
+            const dt =
+                state.cameraMode === 'anim'
+                    ? state.animationPaused
+                        ? 0
+                        : deltaTime * (state.animationSpeed ?? 1)
+                    : deltaTime;
 
             // update transition timer
             const prevTransitionTimer = transitionTimer;
@@ -270,12 +308,13 @@ class CameraManager {
             }
             lastPosition.copy(this.camera.position);
 
-            // update animation timeline
-            if (state.cameraMode === 'anim') {
-                state.animationTime = controllers.anim.animState.cursor.value;
+            // update animation timeline (4DGS content owns the timeline instead)
+            if (state.cameraMode === 'anim' && !has4DAnim) {
+                const { cursor } = controllers.anim.animState;
+                state.animationTime = cursor.value;
 
-                // a play-once animation pauses once it reaches the end of the track
-                if (!state.animationPaused && controllers.anim.animState.cursor.ended) {
+                // a play-once animation holds its final pose and pauses at the end of the track
+                if (!state.animationPaused && cursor.duration > 0 && cursor.ended) {
                     state.animationPaused = true;
                 }
             }
@@ -313,8 +352,9 @@ class CameraManager {
                     }
                     break;
                 case 'playPause':
-                    if (!controllers.anim) {
-                        // a sequence plays in every camera mode
+                    if (has4DAnim || !controllers.anim) {
+                        // a 4DGS clip or a gsaf sequence owns its timeline: toggle its playback in
+                        // every camera mode and leave the camera alone
                         if (state.hasAnimation) state.animationPaused = !state.animationPaused;
                     } else if (state.hasAnimation) {
                         if (state.cameraMode === 'anim') {
@@ -400,7 +440,10 @@ class CameraManager {
         });
 
         this.seek = (time) => {
-            if (!controllers.anim) return;
+            if (!controllers.anim || has4DAnim) {
+                // 4DGS content: scrubbing is handled by SplatAnimationBase.attach()
+                return;
+            }
 
             // switch to animation camera if we're not already there
             state.cameraMode = 'anim';

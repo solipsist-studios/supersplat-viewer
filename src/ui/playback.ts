@@ -14,8 +14,9 @@ const initPlayback = (
     const time = root.querySelector<HTMLElement>('.sse-time');
 
     const available = () => state.loaded && state.hasAnimation;
-    // a sequence plays in every camera mode; the camera's animation only in its own
-    const animating = () => state.hasSequence || state.cameraMode === 'anim';
+    // a sequence or a 4DGS clip owns its timeline, so it plays in every camera mode; the camera's
+    // animation only in its own
+    const animating = () => state.hasSequence || state.has4DAnimation || state.cameraMode === 'anim';
     const updateControls = () => {
         const playing = animating() && !state.animationPaused;
         play.classList.toggle('sse-hidden', !available() || playing);
@@ -31,12 +32,21 @@ const initPlayback = (
 
     const onPlay = () => {
         if (!available()) return;
-        if (!state.hasSequence) state.cameraMode = 'anim';
+        // 4DGS playback and a sequence leave the camera alone; a camera animation needs its camera
+        if (!state.hasSequence && !state.has4DAnimation) state.cameraMode = 'anim';
+        // play-once holds at the end; pressing play again restarts it
+        if (
+            state.animationLoopMode === 'none' &&
+            state.animationDuration > 0 &&
+            state.animationTime >= state.animationDuration
+        ) {
+            viewer.seek(0);
+        }
         state.animationPaused = false;
     };
     const onPause = () => {
         if (!available()) return;
-        if (!state.hasSequence) state.cameraMode = 'anim';
+        if (!state.hasSequence && !state.has4DAnimation) state.cameraMode = 'anim';
         state.animationPaused = true;
     };
     const scrub = (event: PointerEvent) => {
@@ -80,6 +90,7 @@ const initPlayback = (
         events.on('loaded:changed', updateControls),
         events.on('hasAnimation:changed', updateControls),
         events.on('hasSequence:changed', updateControls),
+        events.on('has4DAnimation:changed', updateControls),
         events.on('cameraMode:changed', updateControls),
         events.on('animationPaused:changed', updateControls),
         events.on('animationTime:changed', updateSlider),

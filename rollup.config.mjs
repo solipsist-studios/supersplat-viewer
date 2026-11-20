@@ -273,6 +273,27 @@ const buildSettings = {
     plugins: [typescriptPlugin({ noEmit: true })]
 };
 
+// Self-contained embeddable viewer library (engine bundled, no built-in UI) for hosting the
+// viewer directly in another page's element. An adapter over `createViewer`.
+const buildEmbedApp = {
+    input: 'src/embed-app.ts',
+    output: {
+        file: 'dist/embed-app.js',
+        format: 'esm',
+        sourcemap: true
+    },
+    plugins: [
+        resolve(debugEngine ? { exportConditions: ['development'] } : {}),
+        typescript(),
+        json(),
+        htmlTemplatePlugin(),
+        // the app setup this entry shares with the standalone page reaches the gsaf and zstd
+        // decoders, whose glue is bundled as a string and whose wasm ships beside the bundle
+        ...gsafDecoder(),
+        ...zstdDecoder()
+    ]
+};
+
 // Declarations are bundled from the source, so the published types cannot drift from the
 // implementation. Each entry produces one flat .d.ts with no internal modules exposed.
 const buildDistTypes = {
@@ -316,6 +337,7 @@ export default [
     buildViewer,
     buildGsafDecoder,
     buildSettings,
+    buildEmbedApp,
     buildDistTypes,
     buildViewerTypes,
     buildGsafDecoderTypes,

@@ -121,6 +121,38 @@ type ViewerFlags = {
     debug?: boolean;
     /** Ui language. Default: detected from the browser. */
     lang?: string;
+    /** Render with a transparent background for blending with a host page. */
+    transparent?: boolean;
+    /**
+     * Enable the postMessage embed bridge (input, transport, state events), for a page hosting
+     * the viewer in an iframe. The host page owns all input; the native input devices are not
+     * attached.
+     */
+    embed?: boolean;
+    /**
+     * The host page owns all input: the native mouse, touch, keyboard and gamepad devices are not
+     * attached, and the host feeds orbit and zoom through `ViewerHandle.input`. For a viewer
+     * under other ui, such as a flipbook. Implied by `embed`.
+     */
+    hostInput?: boolean;
+    /**
+     * World-space position of the content entity. Splats are authored at arbitrary origins, so
+     * each needs its own adjustment; this also fixes where the content sits relative to the
+     * floor in AR (y = 0). Restored when an XR session ends.
+     */
+    position?: [number, number, number];
+    /**
+     * Scale of the content entity, which is its real-world size in AR. Uniform scales are
+     * exact; `.sogst` motion follows the world transform's lossy scale. Restored when an XR
+     * session ends.
+     */
+    scale?: [number, number, number];
+    /** Decode `.sogst` groups on the GPU (WebGL2 or WebGPU). Default `true`; `false` forces the CPU pack workers. */
+    sogstGpuDecode?: boolean;
+    /** `.sogst` content rotation in degrees. Default `[0, 0, 0]`. */
+    sogstRotationDeg?: [number, number, number];
+    /** 4DGS playback loop style. Default `loop`. */
+    animLoopMode?: 'loop' | 'pingpong';
     /**
      * Publish `window.app`, `scrubTo`, `captureFrame`, `animationDuration` and the debug panel's
      * camera-state hooks. The standalone document turns this on for the thumbnail pipeline; an

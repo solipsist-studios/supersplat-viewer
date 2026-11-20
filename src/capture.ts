@@ -20,7 +20,7 @@ type GrabOptions = {
     width: number;
     height: number;
     supersample?: number;
-    scrub?: (time: number) => void | Promise<void>;
+    scrub?: (time: number) => void | Promise<unknown>;
 };
 
 type CaptureResult = { width: number; height: number; data: string };

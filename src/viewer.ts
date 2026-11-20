@@ -281,6 +281,11 @@ class Viewer {
             patchChunk(wgsl.get('skyboxPS'), 'mapRoughnessUv(uv, uniform.mipLevel)', 'uv', 'wgsl skyboxPS')
         );
 
+        // Optional screen-space 2D-covariance scale for gsplat rendering,
+        // used by .sogst files that carry a cov2d_scale manifest field (it
+        // compensates models trained under the OMG4 reference rasterizer's
+        // FoV-sentinel footprint inflation). Identity for all other content.
+
         this.origChunks = {
             glsl: {
                 gsplatOutputVS: glsl.get('gsplatOutputVS'),
@@ -431,9 +436,14 @@ class Viewer {
             if (!config.exposeGlobals) return;
 
             window.scrubTo = async (time: number) => {
+                // 4DGS formats fetch, decode and upload the target frame asynchronously, and a
+                // sequence decodes its own, so let that work settle first, or we resolve while the
+                // previous frame is still shown
                 const landed = this.seekTo(time);
                 state.animationPaused = true;
                 await this.untilDestroyed(landed);
+
+                app.renderNextFrame = true;
                 let onFrame!: () => void;
                 const rendered = new Promise<void>((resolve) => {
                     onFrame = resolve;
@@ -446,7 +456,14 @@ class Viewer {
                 }
             };
 
-            window.animationDuration = state.animationDuration;
+            // Live getter: for 4DGS the duration is published by the loader's
+            // own firstFrame handler, which is registered after this one and so
+            // has not run yet. Reading through to state keeps it correct
+            // regardless of handler order.
+            Object.defineProperty(window, 'animationDuration', {
+                get: () => state.animationDuration,
+                configurable: true
+            });
 
             // expose the app for console-driven debugging (e.g. scene.gsplat tuning)
             window.app = app;
@@ -716,6 +733,13 @@ class Viewer {
             if (config.fullload) {
                 // reveal once full quality has finished loading (used for screenshots)
                 applyPerfSettings();
+            } else {
+                // reveal once low lod has loaded for fastest possible reveal
+                const resource = gsplatComponent.resource as GSplatOctreeResourceLike | null;
+                const lodLevels = resource?.octree?.lodLevels;
+                if (lodLevels) {
+                    gsplatComponent.lodRangeMax = gsplatComponent.lodRangeMin = lodLevels - 1;
+                }
             }
 
             const eventHandler = app.systems.gsplat;
@@ -903,10 +927,22 @@ class Viewer {
     }
 
     // seek(), resolving once the frame at `time` is ready to render: at once for the camera's
-    // animation, once decoded for a sequence's
+    // animation, once decoded for a sequence's or a 4DGS clip's frame
     private seekTo(time: number): Promise<void> {
+        // seekPending throws synchronously for a bad seek, as seek() always has
+        const pending = this.seekPending(time);
+        return Promise.all(pending).then((): void => undefined);
+    }
+
+    /**
+     * Seek, and return the asynchronous work the seek started. A camera animation moves at once;
+     * a gsaf sequence returns the promise of its frame landing, and 4DGS formats fetch, decode and
+     * upload the target frame, announced to the splat animation through `scrubAnim` with a list to
+     * collect that work in.
+     */
+    private seekPending(time: number): Promise<void>[] {
         this.requireLoaded('seek');
-        const { state, app } = this.global;
+        const { state, app, events } = this.global;
         if (!state.hasAnimation) {
             throw new Error('seek: no animation track');
         }
@@ -917,10 +953,12 @@ class Viewer {
         if (this.sequence) {
             const landed = this.sequence.seek(time);
             state.animationTime = this.sequence.time;
-            return landed;
+            return [landed];
         }
         this.cameraManager.seek(time);
-        return Promise.resolve();
+        const pending: Promise<void>[] = [];
+        events.fire('scrubAnim', time, pending);
+        return pending;
     }
 
     /**
@@ -1121,6 +1159,10 @@ class Viewer {
         const { postEffectSettings } = settings;
         const { background } = settings;
 
+        // transparent embeds clear to zero alpha (rgb 0 so the premultiplied
+        // backbuffer doesn't fringe against the host page)
+        const backgroundColor = config.transparent ? new Color(0, 0, 0, 0) : new Color(background.color);
+
         // hpr override takes precedence over settings.highPrecisionRendering
         const highPrecisionRendering = config.hpr ?? settings.highPrecisionRendering;
 
@@ -1172,7 +1214,7 @@ class Viewer {
             // ensure the final compose blit doesn't perform linear->gamma conversion.
             setBackBufferSrgb(app.graphicsDevice, true);
 
-            camera.camera.clearColor = new Color(background.color);
+            camera.camera.clearColor = backgroundColor;
         } else {
             // no post effects needed, destroy camera frame if it exists
             if (this.cameraFrame) {
@@ -1192,7 +1234,7 @@ class Viewer {
             camera.camera.toneMapping = tonemapTable[settings.tonemapping];
 
             // AR composites the scene over the passthrough view
-            camera.camera.clearColor = state.xrMode === 'ar' ? new Color(0, 0, 0, 0) : new Color(background.color);
+            camera.camera.clearColor = state.xrMode === 'ar' ? new Color(0, 0, 0, 0) : backgroundColor;
         }
 
         // the sky would cover AR's passthrough view entirely, so it is hidden for the session

@@ -14,6 +14,8 @@ import { initControlsHint, readControlsOpen, writeControlsOpen } from './ui/cont
 import { initFullscreenControls } from './ui/fullscreen-controls';
 import { initJoystick } from './ui/joystick';
 import { initPlayback } from './ui/playback';
+import { initPlaybackExtras } from './ui/playback-extras';
+import { initSogstControls } from './ui/sogst-controls';
 import { initVrPrompt } from './ui/vr-prompt';
 import { initXrControls } from './ui/xr-controls';
 import { initXrHint } from './ui/xr-hint';
@@ -77,6 +79,8 @@ const initUI = (
     };
 
     // Acquire Elements
+    const element = (name: string) => root.querySelector<HTMLElement>(`.sse-${name}`);
+
     const dom = [
         'ui',
         'sceneLayer',
@@ -137,9 +141,20 @@ const initUI = (
     dom.rendererName.textContent = global.renderer === 'webgpu' ? 'WebGPU' : 'WebGL 2';
     dom.gpuName.textContent = getGpuName(global.app.graphicsDevice);
 
-    // Remove focus from buttons after click so keyboard input isn't captured by the UI
+    // loop mode and playback speed controls. Created here because the dismissal paths below
+    // (cancel, interrupt, the inactivity hide) need to close the speed dropdown too
+    const extras = initPlaybackExtras(state, events, root);
+    disposers.push(extras.dispose);
+    disposers.push(initSogstControls(global));
+
+    // Remove focus from buttons after click so keyboard input isn't captured by the UI. Skip
+    // actual text inputs (e.g. the custom playback speed field): blurring those would undo the
+    // focus the same click just gave them.
     dom.ui.addEventListener('click', () => {
-        (document.activeElement as HTMLElement)?.blur();
+        const active = document.activeElement as HTMLElement;
+        if (active && active.tagName !== 'INPUT') {
+            active.blur();
+        }
     });
 
     // Forward wheel events from UI overlays to the canvas so the camera zooms
@@ -343,8 +358,10 @@ const initUI = (
             // close info panel on cancel
             showInfo(false);
             showSettings(false);
+            extras.closeSpeedMenu();
         } else if (event === 'interrupt') {
             showSettings(false);
+            extras.closeSpeedMenu();
         }
     });
 
@@ -402,6 +419,7 @@ const initUI = (
         hovering = false;
         showInfo(false);
         showSettings(false);
+        extras.closeSpeedMenu();
         state.controlsHidden = true;
     };
 
@@ -421,6 +439,7 @@ const initUI = (
         }
         showInfo(false);
         showSettings(false);
+        extras.closeSpeedMenu();
         state.controlsHidden = false;
         dimThenHide();
     };
@@ -445,8 +464,15 @@ const initUI = (
         uiTimeout = setTimeout(() => {
             uiTimeout = null;
             // the controls stay while a panel is open or the pointer is over them; closing the
-            // panel or leaving restarts this timer
-            if (hovering || isVisible(dom.settingsPanel) || isVisible(dom.infoPanel) || isVisible(dom.controlsHint)) {
+            // panel or leaving restarts this timer. An open speed dropdown counts too: fading the
+            // controls would pull the entry field out from under the user
+            if (
+                hovering ||
+                isVisible(dom.settingsPanel) ||
+                isVisible(dom.infoPanel) ||
+                isVisible(dom.controlsHint) ||
+                extras.isSpeedMenuOpen()
+            ) {
                 return;
             }
             if (state.selectedAnnotation === null || !state.showAnnotations) {
@@ -540,6 +566,8 @@ const initUI = (
 
     tooltip.register(dom.play, localize('tooltip.play'), 'top');
     tooltip.register(dom.pause, localize('tooltip.pause'), 'top');
+    tooltip.register(element('loopMode'), localize('tooltip.loop-mode'), 'top');
+    tooltip.register(element('playbackSpeed'), localize('tooltip.playback-speed'), 'top');
     tooltip.register(dom.orbitCamera, localize('tooltip.orbit-camera'), 'top');
     tooltip.register(dom.flyCamera, localize('tooltip.fly-camera'), 'top');
     tooltip.register(dom.fpsCamera, localize('tooltip.walk-mode'), 'top');

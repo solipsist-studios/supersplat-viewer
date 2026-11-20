@@ -73,6 +73,46 @@
                         <g class="sse-fill"><use href="#pauseIcon" /></g>
                     </svg>
                 </button>
+                <button class="sse-loopMode sse-controlButton">
+                    <svg class="sse-loopRepeatSvg" xmlns="http://www.w3.org/2000/svg" width="24" height="24">
+                        <g class="sse-stroke"><use href="#loopRepeatIcon" /></g>
+                        <g class="sse-fill"><use href="#loopRepeatIcon" /></g>
+                    </svg>
+                    <svg
+                        class="sse-loopPingpongSvg sse-hidden"
+                        xmlns="http://www.w3.org/2000/svg"
+                        width="24"
+                        height="24"
+                    >
+                        <g class="sse-stroke"><use href="#loopPingpongIcon" /></g>
+                        <g class="sse-fill"><use href="#loopPingpongIcon" /></g>
+                    </svg>
+                    <svg class="sse-loopNoneSvg sse-hidden" xmlns="http://www.w3.org/2000/svg" width="24" height="24">
+                        <g class="sse-stroke"><use href="#loopNoneIcon" /></g>
+                        <g class="sse-fill"><use href="#loopNoneIcon" /></g>
+                    </svg>
+                </button>
+                <div class="sse-playbackSpeedControl">
+                    <button class="sse-playbackSpeed sse-controlButton sse-textButton">1&times;</button>
+                    <div class="sse-playbackSpeedMenu sse-hidden">
+                        <button class="sse-speedPreset" data-speed="2">2&times;</button>
+                        <button class="sse-speedPreset" data-speed="1">1&times;</button>
+                        <button class="sse-speedPreset" data-speed="0.5">0.5&times;</button>
+                        <button class="sse-speedPreset" data-speed="0.25">0.25&times;</button>
+                        <div class="sse-speedCustomRow">
+                            <input
+                                class="sse-playbackSpeedCustom"
+                                type="number"
+                                min="0.1"
+                                max="10"
+                                step="0.05"
+                                inputmode="decimal"
+                                aria-label="Custom playback speed"
+                            />
+                            <span>&times;</span>
+                        </div>
+                    </div>
+                </div>
             </div>
 
             <div class="sse-spacer"></div>
@@ -243,6 +283,36 @@
             <div class="sse-settingsRow">
                 <button class="sse-frame" data-i18n="settings.frame">Frame</button>
                 <button class="sse-reset" data-i18n="settings.reset">Reset</button>
+            </div>
+        </div>
+        <!-- .sogst rotation controls and file loading -->
+        <div class="sse-settingsGroup">
+            <div class="sse-sogstRotationBlock sse-hidden">
+                <div class="sse-settingsRow">
+                    <div class="sse-sogstRotationValue">SOGST Rotation: 0, 0, 0</div>
+                </div>
+                <div class="sse-settingsRow">
+                    <button class="sse-sogstRotateXNeg">X -90</button>
+                    <button class="sse-sogstRotateXPos">X +90</button>
+                </div>
+                <div class="sse-settingsRow">
+                    <button class="sse-sogstRotateYNeg">Y -90</button>
+                    <button class="sse-sogstRotateYPos">Y +90</button>
+                </div>
+                <div class="sse-settingsRow">
+                    <button class="sse-sogstRotateZNeg">Z -90</button>
+                    <button class="sse-sogstRotateZPos">Z +90</button>
+                </div>
+                <div class="sse-settingsRow">
+                    <button class="sse-sogstRotateReset">Reset SOGST Rot</button>
+                </div>
+                <div class="sse-settingsRow">
+                    <button class="sse-sogstClearCache">Clear SOGST Cache</button>
+                </div>
+            </div>
+            <div class="sse-settingsRow">
+                <button class="sse-load3dgsBtn">Load 3DGS</button>
+                <button class="sse-load4dgsBtn">Load 4DGS</button>
             </div>
         </div>
     </div>
@@ -468,6 +538,15 @@
     </symbol>
     <symbol id="closeIcon" viewBox="0 0 24 24">
         <path d="M6 6l12 12M18 6L6 18" />
+    </symbol>
+    <symbol id="loopRepeatIcon" viewBox="0 0 24 24">
+        <path d="M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4z" />
+    </symbol>
+    <symbol id="loopPingpongIcon" viewBox="0 0 24 24">
+        <path d="M6.99 11L3 15l3.99 4v-3H14v-2H6.99v-3zM21 9l-3.99-4v3H10v2h7.01v3L21 9z" />
+    </symbol>
+    <symbol id="loopNoneIcon" viewBox="0 0 24 24">
+        <path d="M3 11h10.17l-3.58-3.59L11 6l6 6-6 6-1.41-1.41L13.17 13H3v-2zm16-5h2v12h-2V6z" />
     </symbol>
     <symbol id="chevronLeftIcon" viewBox="0 0 24 24">
         <path d="M15 19l-7-7 7-7" />
