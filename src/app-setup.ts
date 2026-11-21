@@ -16,6 +16,7 @@ import { isSogstFilename } from './parsers/sogst';
 import { readPreferences } from './preferences';
 import { canvasPixelRatio } from './quality';
 import type { Config, Global, LoopMode, State } from './types';
+import { registerZstdDecoder } from './zstd-decoder';
 
 // Shared application bootstrap used by both the standalone web app (index.ts)
 // and the embeddable library entry (embed-app.ts).
@@ -26,6 +27,11 @@ import type { Config, Global, LoopMode, State } from './types';
 const contentName = (contentUrl: string, contentFilename?: string | null) =>
     contentFilename || new URL(contentUrl, location.href).pathname.split('/').pop();
 
+// gsaf is an animated splat sequence, which the viewer decodes and plays itself rather than
+// through an engine parser
+const isGsaf = (contentUrl: string, contentFilename?: string | null) =>
+    contentName(contentUrl, contentFilename)?.toLowerCase().endsWith('.gsaf');
+
 const loadGsplat = async (
     app: AppBase,
     config: Config,
@@ -33,13 +39,19 @@ const loadGsplat = async (
     cancelled: () => boolean
 ) => {
     const { contents, contentUrl, contentFilename } = config;
-    const c = contents as unknown as ArrayBuffer;
     const filename = contentName(contentUrl, contentFilename);
-    const data = filename.toLowerCase() === 'meta.json' ? await (await contents).json() : undefined;
+    const name = filename.toLowerCase();
+    const data = name === 'meta.json' ? await (await contents).json() : undefined;
+    // The spz parser reads `asset.file.contents` only as an ArrayBuffer, so a fetch the caller
+    // started is read to one here (the viewer starts none for spz, see `isPrefetchable`)
+    const c = (name.endsWith('.spz') && contents
+        ? await (await contents).arrayBuffer()
+        : contents) as unknown as ArrayBuffer;
 
-    // Reading that metadata spans a network round trip, so a destroy can land in the middle of
-    // it. `app.destroy()` nulls the asset registry, so registering the asset now would throw
-    // from the engine's internals; reject instead, which the viewer's load chains expect.
+    // Reading that metadata or those bytes spans a network round trip, so a destroy can land in
+    // the middle of it. `app.destroy()` nulls the asset registry, so registering the asset now
+    // would throw from the engine's internals; reject instead, which the viewer's load chains
+    // expect.
     if (cancelled()) {
         throw new Error('loadGsplat: the viewer was destroyed while loading');
     }
@@ -51,7 +63,12 @@ const loadGsplat = async (
             // always name the app: the engine's default is the most recently created one,
             // which is another viewer's when two share a page
             const entity = new Entity('gsplat', app);
-            entity.setLocalEulerAngles(0, 0, 180);
+            // LCC2 scenes are stored +Z up, spz files +Y up, the other formats -Y up
+            if (name.endsWith('.lcc2')) {
+                entity.setLocalEulerAngles(270, 0, 0);
+            } else if (!name.endsWith('.spz')) {
+                entity.setLocalEulerAngles(0, 0, 180);
+            }
             entity.addComponent('gsplat', {
                 unified: true,
                 asset
@@ -104,14 +121,13 @@ const setupSogst = (app: AppBase, config: Config, global: Global, data: SogstDat
 // long to an install's latency.
 const MIN_SORTER_REFRESH_MS = 200;
 
-// The .sogst splat budget in splats, from the config's millions: undefined
-// for the automatic budget (unset or not a number), 0 for no budget.
-const sogstBudgetSplats = (config: Config): number | undefined => {
-    const millions = config.sogstBudget;
-    if (millions === undefined || !Number.isFinite(millions)) {
-        return undefined;
-    }
-    return millions > 0 ? Math.round(millions * 1000000) : 0;
+// The .sogst splat budget in splats: the Quality slider's position now. A clip's segment
+// window is sized when it loads, so a later move of the slider applies to the next load.
+const sogstBudgetSplats = (global: Global): number => {
+    const { quality } = global;
+    const budget = Math.round(quality.budget * 1000000);
+    console.debug(`sogst: budget ${quality.budget}M splats (quality ${quality.level})`);
+    return budget;
 };
 
 // Progressive load of a streamed archive: reveal the scene once the
@@ -315,7 +331,7 @@ const loadSogstGsplat = async (
     const cacheKey = await fullFileCacheKey(config.contentUrl);
     const fromNetwork = () =>
         loadSogstStreaming(app, config, global, cacheKey, progressCallback, (callbacks) =>
-            streamSogst(app, config.contentUrl, callbacks, cacheKey, sogstBudgetSplats(config), config.sogstGpuDecode)
+            streamSogst(app, config.contentUrl, callbacks, cacheKey, sogstBudgetSplats(global), config.sogstGpuDecode)
         );
 
     // A streamed archive cached by unit replays through the streaming path,
@@ -333,7 +349,7 @@ const loadSogstGsplat = async (
                     manifest,
                     callbacks,
                     config.contentUrl,
-                    sogstBudgetSplats(config),
+                    sogstBudgetSplats(global),
                     config.sogstGpuDecode
                 )
             );
@@ -514,6 +530,8 @@ const createApp = async (canvas: HTMLCanvasElement, config: Config) => {
         keyboard: new Keyboard(window)
     });
 
+    registerZstdDecoder(config.zstdDecoderUrl);
+
     // The per-splat centres the engine reads back for its cpu sort (12 bytes each, plus a gpu
     // readback per file) serve only that sort and non-unified rendering. On WebGPU the viewer
     // renders unified, and neither renderer sorts on the cpu (the engine's sorts on the gpu, the
@@ -640,6 +658,7 @@ const createViewerState = (events: EventHandler, config?: Config): State => {
         inputMode: platform.mobile ? 'touch' : 'desktop',
         cameraMode: 'orbit',
         hasAnimation: false,
+        hasSequence: false,
         has4DAnimation: false,
         animationDuration: 0,
         animationTime: 0,
@@ -668,6 +687,7 @@ export {
     measureCanvas,
     resizeCanvas,
     createViewerState,
+    isGsaf,
     isPrefetchable,
     isStatic3dgsFilename,
     loadContent,

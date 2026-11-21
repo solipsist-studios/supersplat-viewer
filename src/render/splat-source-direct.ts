@@ -7,7 +7,7 @@
 // 11/11/10 bits (shaders/packed-source.ts), so the projector reads one texel per active splat,
 // a second per survivor and no codebook per coefficient; measured on the Pixel 7 Pro against
 // reading the six textures as they are: house 11.3 to 9.3 ms, large 11.2 to 9.4. Other formats
-// (sog v1, ply, compressed ply) are read through the engine's format read chunks as they are.
+// (sog v1, sog v3, ply, compressed ply) are read through the engine's format read chunks as they are.
 //
 // The engine's work buffer is not read by this path, so its copy passes are switched off on
 // the buffer this source sees and its textures are kept at 1x1 (shrunk if the engine sized them
@@ -282,10 +282,10 @@ class DirectSplatSource implements SplatSource {
         this.decodedSH.set(resource, { texture, compute });
     }
 
-    // the packed layout applies to sog v2 files, the only ones the repack reads
+    // the packed layout applies to sog v2 files, the only ones the repack reads. Sog v3 files have
+    // the same textures, but a different rotation and opacity encoding and 24-bit sh labels
     private packedActive() {
-        const textures = this.resource?.streams.textures;
-        return !!textures && textures.has('sogCodebook');
+        return this.resource?.gsplatData?.meta?.version === 2;
     }
 
     private hasSH() {
@@ -571,6 +571,11 @@ fn srcCenter() -> vec3f {
 fn srcOpacity() -> f32 {
     srcColorCache = getColor();
     return srcColorCache.a;
+}
+
+// the file's training mode: one file per dispatch, so the renderer sets it per dispatch
+fn srcAntiAlias() -> bool {
+    return uniforms.fileAntiAlias != 0u;
 }
 
 // the format returns (w, x, y, z); world = model * source

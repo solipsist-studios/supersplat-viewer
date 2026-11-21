@@ -28,6 +28,19 @@ type ViewerAssets = {
     skyboxUrl?: string;
     /** Collision data url, for walk mode. A `.glb` is treated as a mesh, otherwise voxels. */
     collisionUrl?: string;
+    /**
+     * The gsaf decoder's wasm, fetched only when the content is a `.gsaf` file. Defaults to the
+     * `gsaf-decoder.wasm` shipped beside the viewer's bundle. A document with no sibling files
+     * (an inlined bundle) sets it to the `data:` url the `@playcanvas/supersplat-viewer/gsaf-decoder`
+     * export provides.
+     */
+    gsafDecoderUrl?: string;
+    /**
+     * The ZSTD decoder's wasm, fetched only when a version 4 `.spz` file loads, on its own or as
+     * a chunk of an `.lcc2` scene. Defaults to the `zstd-decoder.wasm` shipped beside the viewer's
+     * bundle. A document with no sibling files (an inlined bundle) sets it to a `data:` url.
+     */
+    zstdDecoderUrl?: string;
 };
 
 /** Per-instance switches. Every one is optional and off unless stated. */
@@ -46,14 +59,6 @@ type ViewerFlags = {
      * fallback prompt live in that ui, so a headless host owns those affordances too.
      */
     ui?: boolean;
-    /**
-     * Css pixels by which the toolbar, and everything else anchored to the viewer's bottom edge,
-     * is lifted, so chrome a host app draws over the bottom of the viewer does not cover it. On
-     * touch devices (a coarse primary pointer) only; elsewhere the toolbar stays at the edge.
-     * Clamped to 0–200. Defaults to `0`. Experimental: it may be renamed or removed in a minor
-     * release.
-     */
-    experimentalTouchInsetBottom?: number;
     /** Show the centre reticle in desktop fly/walk mode with gaming controls. Defaults to `false`. */
     reticle?: boolean;
     /** Start with the camera animation paused. */
@@ -76,7 +81,11 @@ type ViewerFlags = {
      * Defaults to `false`.
      */
     vr?: boolean;
-    /** Render with antialiasing. */
+    /**
+     * Override the anti-aliasing compensation that splats trained with anti-aliasing need: `true`
+     * renders every splat with it, `false` without. When not set, the engine follows the training
+     * mode each splat file records (PlayCanvas Engine 2.24 and later).
+     */
     aa?: boolean;
     /**
      * Developer override of the Performance Mode setting: `true` forces the stochastic splat
@@ -138,12 +147,6 @@ type ViewerFlags = {
      * session ends.
      */
     scale?: [number, number, number];
-    /**
-     * `.sogst` splat budget in millions. A segmented clip larger than this plays through a
-     * segment window, with only the segments near the playhead decoded. Unset: chosen from the
-     * device and the clip. 0: every clip fully resident.
-     */
-    sogstBudget?: number;
     /** Decode `.sogst` groups on the GPU (WebGL2 or WebGPU). Default `true`; `false` forces the CPU pack workers. */
     sogstGpuDecode?: boolean;
     /** `.sogst` content rotation in degrees. Default `[0, 0, 0]`. */

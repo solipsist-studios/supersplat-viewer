@@ -1,6 +1,6 @@
 {
   "name": "@playcanvas/supersplat-viewer",
-  "version": "1.40.0",
+  "version": "1.43.3",
   "author": "PlayCanvas <support@playcanvas.com>",
   "homepage": "https://github.com/playcanvas/supersplat-viewer#readme",
   "description": "Viewer for https://superspl.at",
@@ -27,6 +27,10 @@
       "import": "./dist/viewer.js"
     },
     "./viewer.css": "./dist/viewer.css",
+    "./gsaf-decoder": {
+      "types": "./dist/gsaf-decoder.d.ts",
+      "import": "./dist/gsaf-decoder.js"
+    },
     "./settings": {
       "types": "./dist/settings.d.ts",
       "import": "./dist/settings.js"
@@ -48,13 +52,16 @@
     "public/index.css",
     "public/index.js",
     "public/index.js.map",
+    "public/gsaf-decoder.wasm",
+    "public/zstd-decoder.wasm",
     "docs/api.md",
     "LICENSE",
+    "THIRD_PARTY_NOTICES.md",
     "package.json",
     "README.md"
   ],
   "peerDependencies": {
-    "playcanvas": "^2.23.0"
+    "playcanvas": "^2.24.1"
   },
   "peerDependenciesMeta": {
     "playcanvas": {
@@ -62,24 +69,23 @@
     }
   },
   "devDependencies": {
-    "@playcanvas/eslint-config": "3.0.0-beta.8",
+    "@playcanvas/eslint-config": "3.0.0",
     "@rollup/plugin-json": "6.1.0",
     "@rollup/plugin-node-resolve": "16.0.3",
-    "@rollup/plugin-typescript": "12.3.0",
-    "autoprefixer": "10.6.1",
+    "@rollup/plugin-typescript": "12.3.1",
+    "autoprefixer": "10.6.2",
     "concurrently": "9.2.5",
     "eslint": "9.39.5",
-    "globals": "17.13.0",
-    "playcanvas": "2.23.3",
-    "postcss": "8.5.31",
+    "playcanvas": "2.24.1",
+    "postcss": "8.5.32",
     "prettier": "3.9.10",
     "publint": "0.3.25",
-    "rollup": "4.64.12",
+    "rollup": "4.68.2",
     "rollup-plugin-dts": "6.5.1",
     "rollup-plugin-scss": "4.0.1",
     "rollup-plugin-string": "3.0.0",
-    "sass": "1.106.0",
-    "serve": "14.2.6",
+    "sass": "1.108.1",
+    "serve": "14.2.7",
     "typescript": "5.9.3"
   },
   "scripts": {

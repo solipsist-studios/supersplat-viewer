@@ -53,7 +53,6 @@ function htmlPlugin() {
             this.addWatchFile('src/dev/mount-loop.html');
             this.addWatchFile('src/dev/custom-ui.html');
             this.addWatchFile('src/dev/bench.html');
-            this.addWatchFile('src/dev/card.html');
         },
         generateBundle() {
             const contents = readFileSync('src/index.html', 'utf-8');
@@ -82,14 +81,6 @@ function htmlPlugin() {
                 type: 'asset',
                 fileName: 'custom-ui.html',
                 source: readFileSync('src/dev/custom-ui.html', 'utf-8')
-            });
-
-            // Development page that frames the viewer as a social card player does, with host
-            // chrome over its bottom, for the `experimentalTouchInsetBottom` option.
-            this.emitFile({
-                type: 'asset',
-                fileName: 'card.html',
-                source: readFileSync('src/dev/card.html', 'utf-8')
             });
 
             // Development page that measures the splat renderers (docs/stochastic-renderer.md).
@@ -153,6 +144,47 @@ const buildCss = {
 
 const debugEngine = process.env.ENGINE === 'debug';
 
+// The committed gsaf decoder (scripts/build-gsaf.sh). Its glue is bundled as a string, the source
+// of the decoder worker started from a blob when a gsaf file loads; its wasm ships beside the bundle
+// and is fetched only then (src/gsaf/gsaf-worker.ts resolves it against the bundle's url).
+const GSAF_WASM = 'lib/gsaf/gsaf-decoder.wasm';
+const gsafDecoder = () => [
+    string({ include: ['lib/gsaf/*.js'] }),
+    {
+        name: 'gsaf-decoder-wasm',
+        generateBundle() {
+            this.emitFile({ type: 'asset', fileName: 'gsaf-decoder.wasm', source: readFileSync(GSAF_WASM) });
+        }
+    }
+];
+
+// The engine's ZSTD decoder (lib/zstd/VERSION), which the spz parser needs for version 4 files.
+// Its glue is bundled as a string, loaded from a blob url when a version 4 file loads; its wasm
+// ships beside the bundle and is fetched only then (src/zstd-decoder.ts resolves it against the
+// bundle's url).
+const ZSTD_WASM = 'lib/zstd/zstd-decoder.wasm';
+const zstdDecoder = () => [
+    string({ include: ['lib/zstd/*.js'] }),
+    {
+        name: 'zstd-decoder-wasm',
+        generateBundle() {
+            this.emitFile({ type: 'asset', fileName: 'zstd-decoder.wasm', source: readFileSync(ZSTD_WASM) });
+        }
+    }
+];
+
+// Imports a .wasm as a `data:` url, for the entry that hands it to single-file documents.
+function wasmDataUrlPlugin() {
+    return {
+        name: 'wasm-data-url',
+        load(id) {
+            if (!id.endsWith('.wasm')) return null;
+            const base64 = readFileSync(id).toString('base64');
+            return `export default ${JSON.stringify(`data:application/wasm;base64,${base64}`)};`;
+        }
+    };
+}
+
 const buildPublic = {
     input: 'src/index.ts',
     output: {
@@ -162,6 +194,8 @@ const buildPublic = {
     },
     plugins: [
         resolve(debugEngine ? { exportConditions: ['development'] } : {}),
+        ...gsafDecoder(),
+        ...zstdDecoder(),
         typescriptPlugin(),
         json(),
         htmlTemplatePlugin(),
@@ -202,6 +236,8 @@ const buildViewer = {
     external: engineExternal,
     plugins: [
         resolve(),
+        ...gsafDecoder(),
+        ...zstdDecoder(),
         typescriptPlugin(),
         json(),
         htmlTemplatePlugin(),
@@ -214,6 +250,17 @@ const buildViewer = {
             }
         }
     ]
+};
+
+// The gsaf decoder's wasm as a data: url (src/module/gsaf-decoder.ts), its own entry so nothing
+// else bundles it.
+const buildGsafDecoder = {
+    input: 'src/module/gsaf-decoder.ts',
+    output: {
+        file: 'dist/gsaf-decoder.js',
+        format: 'esm'
+    },
+    plugins: [wasmDataUrlPlugin(), typescriptPlugin({ noEmit: true })]
 };
 
 const buildSettings = {
@@ -239,7 +286,11 @@ const buildEmbedApp = {
         resolve(debugEngine ? { exportConditions: ['development'] } : {}),
         typescript(),
         json(),
-        htmlTemplatePlugin()
+        htmlTemplatePlugin(),
+        // the app setup this entry shares with the standalone page reaches the gsaf and zstd
+        // decoders, whose glue is bundled as a string and whose wasm ships beside the bundle
+        ...gsafDecoder(),
+        ...zstdDecoder()
     ]
 };
 
@@ -261,7 +312,15 @@ const buildDistTypes = {
 const buildViewerTypes = {
     input: 'src/index.ts',
     output: { file: 'dist/viewer.d.ts', format: 'es' },
-    external: [...engineExternal, /\.html$/, /package\.json$/],
+    external: [...engineExternal, /\.html$/, /package\.json$/, /lib\/gsaf\//],
+    plugins: [dts()]
+};
+
+// the entry's value is typed `string`, so the declaration needs nothing from the wasm import
+const buildGsafDecoderTypes = {
+    input: 'src/module/gsaf-decoder.ts',
+    output: { file: 'dist/gsaf-decoder.d.ts', format: 'es' },
+    external: [/\.wasm$/],
     plugins: [dts()]
 };
 
@@ -276,9 +335,11 @@ export default [
     buildPublic,
     buildDist,
     buildViewer,
+    buildGsafDecoder,
     buildSettings,
     buildEmbedApp,
     buildDistTypes,
     buildViewerTypes,
+    buildGsafDecoderTypes,
     buildSettingsTypes
 ];

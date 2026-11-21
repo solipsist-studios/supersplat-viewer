@@ -8,6 +8,52 @@ import { warpWGSL } from './warp';
 /** Words per cache entry: ndc, depth, axis1, len2 | alpha | bucket, rgb, id (or the coverage draw). */
 const CACHE_WORDS = 6;
 
+// The cached alpha and the splat's shape, shared by the projector and the raster. The alpha byte
+// is sog v3's encoding, alpha = (1.25 b / 255)^2, so it holds the alpha above 1 a sog v3 file
+// stores (up to 1.5625); every other source's alpha converts to it. Above 1 a splat draws as the
+// engine's does: a plateau at full alpha out to plateauCore of the quad's half extent, and the
+// falloff stretched over the rest (the engine's gsplatPlateauCore, clipCorner and splat shader).
+const cacheAlphaWGSL = /* wgsl */ `
+fn encodeCacheAlpha(alpha: f32) -> u32 {
+    return u32(sqrt(clamp(alpha, 0.0, 1.5625)) * (255.0 / 1.25) + 0.5);
+}
+
+fn decodeCacheAlpha(bits: u32) -> f32 {
+    let o = f32(bits & 0xffu) * (1.25 / 255.0);
+    return o * o;
+}
+
+// the radius, in units of the quad's half extent, out to which alpha above 1 holds at full alpha
+fn plateauCore(alpha: f32) -> f32 {
+    if (alpha <= 1.0) {
+        return 0.0;
+    }
+    let t = min(alpha - 1.0, 0.5625);
+    return sqrt(0.28986718 + 0.62504992 * t) - 0.53839315;
+}
+
+// the splat's alpha at r^2, in units of the quad's half extent:
+// alpha * falloff(r^2) with falloff(x) = (exp(-4 x) - exp(-4)) / (1 - exp(-4)), or above 1 the plateau
+fn splatAlpha(r2: f32, alpha: f32) -> f32 {
+    var x = r2;
+    if (alpha > 1.0) {
+        let core = plateauCore(alpha);
+        let c = max(0.0, sqrt(r2) - core) / (1.0 - core);
+        x = c * c;
+    }
+    let e4 = exp(-4.0);
+    return (exp(x * -4.0) - e4) / (1.0 - e4) * min(alpha, 1.0);
+}
+
+// the radius, in units of the quad's half extent, where splatAlpha falls to a threshold
+fn radiusAt(threshold: f32, alpha: f32) -> f32 {
+    let e4 = exp(-4.0);
+    let core = plateauCore(alpha);
+    let r = sqrt(max(-log(threshold / min(alpha, 1.0) * (1.0 - e4) + e4) * 0.25, 0.0));
+    return core + (1.0 - core) * r;
+}
+`;
+
 const PROJECTOR_WORKGROUP_SIZE = 256;
 
 /** Buckets of the counting order (shaders/order.ts); the workgroup size, so each thread owns one. */
@@ -34,6 +80,12 @@ const polygonScale = (circumscribed = false) =>
 
 /** Where the coverage threshold varies: per pixel, per splat, or per splat and interleaved pixel set. */
 type CoverageMode = 'pixel' | 'splat' | 'interleaved';
+
+/**
+ * The anti-aliasing compensation splats trained with anti-aliasing need (the engine's
+ * GSplatParams#antiAlias): none, every splat, or the splats whose source flags them.
+ */
+type AntiAliasMode = 'off' | 'on' | 'mixed';
 
 /**
  * Draw groups with coverage:interleaved: the four pixel sets (0-3) and the full target (4),
@@ -168,7 +220,7 @@ struct FootprintEye1 {
     determinant: f32
 }
 
-fn footprintEye1(center: vec3f, rot: vec4f, scale: vec3f, viewport: vec2f) -> FootprintEye1 {
+fn footprintEye1(center: vec3f, rot: vec4f, scale: vec3f, viewport: vec2f, lowpass: f32) -> FootprintEye1 {
     var f: FootprintEye1;
     f.visible = false;
     f.ndc = vec2f(1e4);
@@ -242,22 +294,26 @@ ${
     f.ndc = clip.xy / clip.w;
 `
 }
+    // the culls measure the footprint with the cull filter, and the drawn one takes the view's
+    // filter (see project() below)
     let us2 = uniforms.unitScale * uniforms.unitScale;
-    cov00 += 0.3 / us2;
-    cov11 += 0.3 / us2;
-    f.determinant = cov00 * cov11 - cov01 * cov01;
+    let cullDilation = 0.3 / us2;
+    f.determinant = (cov00 + cullDilation) * (cov11 + cullDilation) - cov01 * cov01;
     if (f.determinant <= 0.0) {
         f.ndc = vec2f(1e4);
         return f;
     }
+    f.lambda1 = 0.5 * (cov00 + cov11) + cullDilation + length(vec2f(0.5 * (cov00 - cov11), cov01));
+    cov00 += lowpass;
+    cov11 += lowpass;
     let mid = 0.5 * (cov00 + cov11);
     let radius = length(vec2f(0.5 * (cov00 - cov11), cov01));
-    f.lambda1 = mid + radius;
+    let lambda1 = mid + radius;
     let lambda2 = max(mid - radius, 0.1 / us2);
-    let eigenVec = vec2f(cov01, f.lambda1 - cov00);
+    let eigenVec = vec2f(cov01, lambda1 - cov00);
     let eigenLen = length(eigenVec);
     let direction = select(vec2f(1.0, 0.0), eigenVec / eigenLen, eigenLen > 1e-9);
-    let len1 = 2.0 * sqrt(2.0 * f.lambda1);
+    let len1 = 2.0 * sqrt(2.0 * lambda1);
     let clampScale = min(1.0, min(1024.0, min(viewport.x, viewport.y)) / len1);
     f.axis1 = len1 * clampScale * direction;
     f.len2 = 2.0 * sqrt(2.0 * lambda2) * clampScale;
@@ -271,174 +327,15 @@ const projectorWGSL = (
     occlusion: boolean,
     coverage: CoverageMode,
     warp: boolean,
-    stereo: boolean
-) => /* wgsl */ `
-struct ProjectorUniforms {
-    view: mat4x4f,
-    viewProj: mat4x4f,
-    // the previous frame, for the occlusion cull: its view and view-projection, its clip-z
-    // mapping (a, b, isOrtho, 0), viewport and focal length
-    prevViewProj: mat4x4f,
-    prevView: mat4x4f,
-    prevClipZ: vec4f,
-    viewport: vec2f,
-    focal: vec2f,
-    prevViewport: vec2f,
-    prevFocal: vec2f,
-    numChunks: u32,
-    splatTextureSize: u32,
-    isOrtho: u32,
-    minPixelSize: f32,
-    alphaClip: f32,
-    minContribution: f32,
-    // the occlusion grid: level 1 (8 px) and level 2 (32 px) block counts
-    occBlocksX1: u32,
-    occBlocksY1: u32,
-    occBlocksX2: u32,
-    occBlocksY2: u32,
-    // 0 off, 1 level 1 only, 2 both levels
-    occlusionMode: u32,
-    // -1 when the previous depth texture's rows run bottom-up (an offscreen target), else 1
-    prevFlip: f32,
-    // the order key: bucket = (log(depth) - keyLogNear) * keyInvLogRange, over [0, 1)
-    keyLogNear: f32,
-    keyInvLogRange: f32,
-    // first chunk-table entry of this dispatch (per-file sources dispatch one run each)
-    chunkBase: u32,
-    // the file's model transform, for sources that read splats in the file's own space
-    model: mat4x4f,
-    modelRotation: vec4f,
-    modelScale: vec4f,
-    cameraPosition: vec4f,
-    // 1: covariance in true pixels. 2: the engine's convention (its focal is viewport * proj[0][0],
-    // twice the pixel focal), which makes its 0.3 dilation 0.075 px^2 and scales its culls
-    unitScale: f32,
-    // the coverage seed (variant coverage:splat; see the raster's frameSeed)
-    frameSeed: u32,
-    // variant jitter: sub-strata a stratum splits into (0: no jitter), and the strata a per-splat
-    // threshold draws from (coverage:splat, and the full target's splats of the interleaved mode)
-    jitterSubs: u32,
-    strata: u32,
-    // coverage:interleaved: splats whose footprint at the alpha clip is below this many pixels
-    // draw per splat into the full target instead of into the pixel sets (0: none)
-    interleaveArea: f32,
-    // stereo: the second eye this projection also serves, which shapes and places the splats by
-    // its own view, focal length and warp and culls against its own previous frame
-    viewEye1: mat4x4f,
-    viewProjEye1: mat4x4f,
-    prevViewProjEye1: mat4x4f,
-    prevViewEye1: mat4x4f,
-    focalEye1: vec2f,
-    prevFocalEye1: vec2f,
-    // where level 2 starts in a view's grid; where the second eye's words start in the cache
-    // and its warp table in warpTable
-    occL2Base: u32,
-    stereoBase: u32,
-    warpBaseEye1: u32
-}
-
-// chunk table entry: slotBase, count, node, lod | file << 16
-@group(0) @binding(0) var<storage, read> chunks: array<vec4u>;
-// one bit per node: 1 = inside the frustum this frame
-@group(0) @binding(1) var<storage, read> nodeVisible: array<u32>;
-@group(0) @binding(2) var<storage, read_write> cache: array<u32>;
-// [0] survivors this frame, [1] splats the occlusion cull removed
-@group(0) @binding(3) var<storage, read_write> counter: array<atomic<u32>>;
-@group(0) @binding(4) var<uniform> uniforms: ProjectorUniforms;
-// the previous frame's farthest depth per block, as f32 bits, level 1 then level 2 (see
-// shaders/reduce.ts)
-@group(0) @binding(5) var<storage, read> occ: array<u32>;
-// survivors per depth bucket (see shaders/order.ts)
-@group(0) @binding(6) var<storage, read_write> buckets: array<atomic<u32>>;
-
-struct Splat {
-    index: u32,
-    uv: vec2i
-}
-var<private> splat: Splat;
-fn setSplat(idx: u32) {
-    splat.index = idx;
-    splat.uv = vec2i(i32(idx % uniforms.splatTextureSize), i32(idx / uniforms.splatTextureSize));
-}
-
-${
-    warp
-        ? `
-// variant warp: the view's table (shaders/warp.ts), and in stereo the second eye's after it
-@group(0) @binding(7) var<storage, read> warpTable: array<f32>;
-${warpWGSL}`
-        : ''
-}
-${
-    stereo
-        ? `
-// stereo: the second eye's occlusion grid, and its warp's lookups
-@group(0) @binding(8) var<storage, read> occEye1: array<u32>;
-${warp ? warpEye1WGSL : ''}
-`
-        : ''
-}
-${readChunk}
-${
-    coverage !== 'pixel'
-        ? `
-// integer hash (Wellons' prospector mix), as the raster's
-fn hashU32(x: u32) -> u32 {
-    var v = x;
-    v ^= v >> 16u;
-    v *= 0x7feb352du;
-    v ^= v >> 15u;
-    v *= 0x846ca68bu;
-    v ^= v >> 16u;
-    return v;
-}
-
-// the radius, in units of the quad's half extent, where alpha = opacity * falloff(r^2) falls to
-// a threshold, with falloff(x) = (exp(-4 x) - exp(-4)) / (1 - exp(-4))
-fn radiusAt(threshold: f32, opacity: f32) -> f32 {
-    let e4 = exp(-4.0);
-    return sqrt(max(-log(threshold / opacity * (1.0 - e4) + e4) * 0.25, 0.0));
-}
-
-// the 24 orders of four strata, 2 bits a set
-const PERMUTATIONS = array<u32, 24>(${permutations.map((p) => `${p}u`).join(', ')});
-`
-        : ''
-}
-// quaternion (x, y, z, w) to a rotation matrix (columns)
-fn rotationMatrix(qIn: vec4f) -> mat3x3f {
-    let q = normalize(qIn);
-    let x = q.x;
-    let y = q.y;
-    let z = q.z;
-    let w = q.w;
-    return mat3x3f(
-        vec3f(1.0 - 2.0 * (y * y + z * z), 2.0 * (x * y + w * z), 2.0 * (x * z - w * y)),
-        vec3f(2.0 * (x * y - w * z), 1.0 - 2.0 * (x * x + z * z), 2.0 * (y * z + w * x)),
-        vec3f(2.0 * (x * z + w * y), 2.0 * (y * z - w * x), 1.0 - 2.0 * (x * x + y * y))
-    );
-}
-
-struct Projected {
-    valid: bool,
-    occluded: bool,
-    words: array<u32, ${CACHE_WORDS}>
-}
-${occlusion ? occlusionWGSL('', warp) : ''}${occlusion && stereo ? occlusionWGSL('Eye1', warp) : ''}${stereo ? footprintEye1WGSL(warp) : ''}
-fn project(slot: u32, file: u32${stereo ? ', local: u32' : ''}) -> Projected {
-    var result: Projected;
-    result.valid = false;
-    result.occluded = false;
-
-    setSplat(slot);
-    let center = srcCenter();
-    let opacity = srcOpacity();
-    if (opacity < uniforms.alphaClip) {
-        return result;
-    }
-${
-    coverage !== 'pixel'
-        ? `
+    stereo: boolean,
+    antiAlias: AntiAliasMode
+) => {
+    const aa = antiAlias !== 'off';
+    // the coverage thresholds, drawn from the splat's alpha: before the projection, or with
+    // anti-aliasing after it, once the compensation has set the alpha
+    const coverageWGSL =
+        coverage !== 'pixel'
+            ? `
     // Variant coverage:splat: one coverage threshold per splat and frame instead of one per
     // pixel. The pixels where alpha exceeds it form a solid ellipse, which the raster draws as a
     // polygon of the same area with no discard, so a gpu updates depth early and rejects what
@@ -510,8 +407,172 @@ ${
 `
 }
 `
+            : '';
+    return /* wgsl */ `
+struct ProjectorUniforms {
+    view: mat4x4f,
+    viewProj: mat4x4f,
+    // the previous frame, for the occlusion cull: its view and view-projection, its clip-z
+    // mapping (a, b, isOrtho, 0), viewport and focal length
+    prevViewProj: mat4x4f,
+    prevView: mat4x4f,
+    prevClipZ: vec4f,
+    viewport: vec2f,
+    focal: vec2f,
+    prevViewport: vec2f,
+    prevFocal: vec2f,
+    numChunks: u32,
+    splatTextureSize: u32,
+    isOrtho: u32,
+    minPixelSize: f32,
+    alphaClip: f32,
+    minContribution: f32,
+    // the occlusion grid: level 1 (8 px) and level 2 (32 px) block counts
+    occBlocksX1: u32,
+    occBlocksY1: u32,
+    occBlocksX2: u32,
+    occBlocksY2: u32,
+    // 0 off, 1 level 1 only, 2 both levels
+    occlusionMode: u32,
+    // -1 when the previous depth texture's rows run bottom-up (an offscreen target), else 1
+    prevFlip: f32,
+    // the order key: bucket = (log(depth) - keyLogNear) * keyInvLogRange, over [0, 1)
+    keyLogNear: f32,
+    keyInvLogRange: f32,
+    // first chunk-table entry of this dispatch (per-file sources dispatch one run each)
+    chunkBase: u32,
+    // the file's model transform, for sources that read splats in the file's own space
+    model: mat4x4f,
+    modelRotation: vec4f,
+    modelScale: vec4f,
+    cameraPosition: vec4f,
+    // 1: covariance in true pixels. 2: the engine's convention (its focal is viewport * proj[0][0],
+    // twice the pixel focal), which scales its culls and makes their 0.3 filter 0.075 px^2
+    unitScale: f32,
+    // the coverage seed (variant coverage:splat; see the raster's frameSeed)
+    frameSeed: u32,
+    // variant jitter: sub-strata a stratum splits into (0: no jitter), and the strata a per-splat
+    // threshold draws from (coverage:splat, and the full target's splats of the interleaved mode)
+    jitterSubs: u32,
+    strata: u32,
+    // coverage:interleaved: splats whose footprint at the alpha clip is below this many pixels
+    // draw per splat into the full target instead of into the pixel sets (0: none)
+    interleaveArea: f32,
+    // stereo: the second eye this projection also serves, which shapes and places the splats by
+    // its own view, focal length and warp and culls against its own previous frame
+    viewEye1: mat4x4f,
+    viewProjEye1: mat4x4f,
+    prevViewProjEye1: mat4x4f,
+    prevViewEye1: mat4x4f,
+    focalEye1: vec2f,
+    prevFocalEye1: vec2f,
+    // where level 2 starts in a view's grid; where the second eye's words start in the cache
+    // and its warp table in warpTable
+    occL2Base: u32,
+    stereoBase: u32,
+    warpBaseEye1: u32,
+    // the variance, in pixels squared, of the filter splats trained with anti-aliasing were
+    // trained with (GSplatParams#antiAliasFilterSize), and the dispatched file's training mode
+    // for the sources that dispatch per file (1: anti-aliased)
+    antiAliasFilterSize: f32,
+    fileAntiAlias: u32
+}
+
+// chunk table entry: slotBase, count, node, lod | file << 16
+@group(0) @binding(0) var<storage, read> chunks: array<vec4u>;
+// one bit per node: 1 = inside the frustum this frame
+@group(0) @binding(1) var<storage, read> nodeVisible: array<u32>;
+@group(0) @binding(2) var<storage, read_write> cache: array<u32>;
+// [0] survivors this frame, [1] splats the occlusion cull removed
+@group(0) @binding(3) var<storage, read_write> counter: array<atomic<u32>>;
+@group(0) @binding(4) var<uniform> uniforms: ProjectorUniforms;
+// the previous frame's farthest depth per block, as f32 bits, level 1 then level 2 (see
+// shaders/reduce.ts)
+@group(0) @binding(5) var<storage, read> occ: array<u32>;
+// survivors per depth bucket (see shaders/order.ts)
+@group(0) @binding(6) var<storage, read_write> buckets: array<atomic<u32>>;
+
+struct Splat {
+    index: u32,
+    uv: vec2i
+}
+var<private> splat: Splat;
+fn setSplat(idx: u32) {
+    splat.index = idx;
+    splat.uv = vec2i(i32(idx % uniforms.splatTextureSize), i32(idx / uniforms.splatTextureSize));
+}
+
+${
+    warp
+        ? `
+// variant warp: the view's table (shaders/warp.ts), and in stereo the second eye's after it
+@group(0) @binding(7) var<storage, read> warpTable: array<f32>;
+${warpWGSL}`
         : ''
 }
+${
+    stereo
+        ? `
+// stereo: the second eye's occlusion grid, and its warp's lookups
+@group(0) @binding(8) var<storage, read> occEye1: array<u32>;
+${warp ? warpEye1WGSL : ''}
+`
+        : ''
+}
+${readChunk}
+${cacheAlphaWGSL}
+${
+    coverage !== 'pixel'
+        ? `
+// integer hash (Wellons' prospector mix), as the raster's
+fn hashU32(x: u32) -> u32 {
+    var v = x;
+    v ^= v >> 16u;
+    v *= 0x7feb352du;
+    v ^= v >> 15u;
+    v *= 0x846ca68bu;
+    v ^= v >> 16u;
+    return v;
+}
+
+// the 24 orders of four strata, 2 bits a set
+const PERMUTATIONS = array<u32, 24>(${permutations.map((p) => `${p}u`).join(', ')});
+`
+        : ''
+}
+// quaternion (x, y, z, w) to a rotation matrix (columns)
+fn rotationMatrix(qIn: vec4f) -> mat3x3f {
+    let q = normalize(qIn);
+    let x = q.x;
+    let y = q.y;
+    let z = q.z;
+    let w = q.w;
+    return mat3x3f(
+        vec3f(1.0 - 2.0 * (y * y + z * z), 2.0 * (x * y + w * z), 2.0 * (x * z - w * y)),
+        vec3f(2.0 * (x * y - w * z), 1.0 - 2.0 * (x * x + z * z), 2.0 * (y * z + w * x)),
+        vec3f(2.0 * (x * z + w * y), 2.0 * (y * z - w * x), 1.0 - 2.0 * (x * x + y * y))
+    );
+}
+
+struct Projected {
+    valid: bool,
+    occluded: bool,
+    words: array<u32, ${CACHE_WORDS}>
+}
+${occlusion ? occlusionWGSL('', warp) : ''}${occlusion && stereo ? occlusionWGSL('Eye1', warp) : ''}${stereo ? footprintEye1WGSL(warp) : ''}
+fn project(slot: u32, file: u32${stereo ? ', local: u32' : ''}) -> Projected {
+    var result: Projected;
+    result.valid = false;
+    result.occluded = false;
+
+    setSplat(slot);
+    let center = srcCenter();
+    // the file's alpha; the compensation for anti-aliasing (aa) only lowers it, after the culls
+    let opacityRaw = srcOpacity();
+    if (opacityRaw < uniforms.alphaClip) {
+        return result;
+    }
+${aa ? '' : `    let opacity = opacityRaw;\n${coverageWGSL}`}
     let viewCenter = uniforms.view * vec4f(center, 1.0);
     let depth = -viewCenter.z;
     if (uniforms.isOrtho == 0u && depth <= 0.0) {
@@ -598,33 +659,47 @@ ${
     let pixelScale = vec2f(1.0);
 `
 }
-    // the low-pass dilation every splat renderer applies, 0.3 in the chosen units
+    // The low-pass filter, a variance added to the footprint. The culls measure the footprint
+    // with 0.3 in the chosen units, so in the engine's units with the 0.075 px^2 its culls still
+    // measure; the drawn footprint takes the filter splats are trained with, in true pixels
+    // whatever the units: 0.3 px^2, as the engine's renderer draws them since 2.24
     let us2 = uniforms.unitScale * uniforms.unitScale;
-    cov00 += 0.3 / us2;
-    cov11 += 0.3 / us2;
+    let cullDilation = 0.3 / us2;
+    cov00 += cullDilation;
+    cov11 += cullDilation;
     let determinant = cov00 * cov11 - cov01 * cov01;
     if (determinant <= 0.0) {
         return result;
     }
-
-    let mid = 0.5 * (cov00 + cov11);
-    let radius = length(vec2f(0.5 * (cov00 - cov11), cov01));
-    let lambda1 = mid + radius;
-    let lambda2 = max(mid - radius, 0.1 / us2);
+    let cullLambda1 = 0.5 * (cov00 + cov11) + length(vec2f(0.5 * (cov00 - cov11), cov01));
 ${
-    stereo
+    aa
         ? `
+    // Anti-aliasing compensation, as the engine's projector applies it: a splat trained with
+    // anti-aliasing draws with the filter it was trained with (antiAliasFilterSize), its alpha
+    // scaled by the square root of the unfiltered footprint's determinant over the filtered one's,
+    // which keeps a small splat's alpha mass what it was in training. The culls below still
+    // measure the footprint with the file's alpha, as the engine's do
+    let compensated = ${antiAlias === 'mixed' ? 'srcAntiAlias()' : 'true'};
+    let lowpass = select(0.3, uniforms.antiAliasFilterSize, compensated);
+`
+        : `
+    let lowpass = 0.3;
+`
+}${
+        stereo
+            ? `
     // Stereo: one projection serves both eyes, as the engine's own stereo projector does: the
     // second eye takes this view's depth, colour, coverage and order and its own footprint, and
     // every cull keeps what either eye would
-    let eye1 = footprintEye1(center, rot, scale, viewport);
+    let eye1 = footprintEye1(center, rot, scale, viewport, lowpass);
 `
-        : ''
-}
+            : ''
+    }
     // size cull on the footprint's radius in pixels. minPixelSize is a diameter: the engine's
     // projector is dispatched with half of it, and its quad path tests the full extent
     // (2 sqrt(2 lambda)) against the whole value, so both cut at the same place
-    if (uniforms.unitScale * sqrt(2.0 * lambda1) < 0.5 * uniforms.minPixelSize${
+    if (uniforms.unitScale * sqrt(2.0 * cullLambda1) < 0.5 * uniforms.minPixelSize${
         stereo
             ? ' && (!eye1.visible || uniforms.unitScale * sqrt(2.0 * eye1.lambda1) < 0.5 * uniforms.minPixelSize)'
             : ''
@@ -633,13 +708,41 @@ ${
     }
 
     // contribution cull: the splat's alpha mass in pixels (the engine's minContribution rule)
-    if (opacity * 6.283185 * sqrt(determinant) * us2 < uniforms.minContribution${
+    if (opacityRaw * 6.283185 * sqrt(determinant) * us2 < uniforms.minContribution${
         stereo
-            ? ' && (!eye1.visible || opacity * 6.283185 * sqrt(eye1.determinant) * us2 < uniforms.minContribution)'
+            ? ' && (!eye1.visible || opacityRaw * 6.283185 * sqrt(eye1.determinant) * us2 < uniforms.minContribution)'
             : ''
     }) {
         return result;
     }
+
+    // the drawn footprint
+    let raw00 = cov00 - cullDilation;
+    let raw11 = cov11 - cullDilation;
+    cov00 = raw00 + lowpass;
+    cov11 = raw11 + lowpass;
+${
+    aa
+        ? `
+    var opacity = opacityRaw;
+    if (compensated) {
+        opacity *= sqrt(max((raw00 * raw11 - cov01 * cov01) / (cov00 * cov11 - cov01 * cov01), 0.0));
+    }
+    // a splat the compensation faded below the clip is dropped, as the engine's projector drops it.
+    // In stereo the second eye takes this eye's compensated alpha, its clip and its coverage, as it
+    // does in the engine's stereo projector (which shares the footprint too): the factor depends
+    // on the view, so a thin splat edge-on to this eye but not to the other is fainter there than
+    // it should be, or gone. Separate projections (variant stereo:separate) compensate per eye
+    if (opacity < uniforms.alphaClip) {
+        return result;
+    }
+${coverageWGSL}`
+        : ''
+}
+    let mid = 0.5 * (cov00 + cov11);
+    let radius = length(vec2f(0.5 * (cov00 - cov11), cov01));
+    let lambda1 = mid + radius;
+    let lambda2 = max(mid - radius, 0.1 / us2);
 
     // principal axis; a circular footprint has no defined eigenvector, any axis is right
     let eigenVec = vec2f(cov01, lambda1 - cov00);
@@ -759,11 +862,11 @@ ${
         ? `
     // the full quad's axes (clamped to the radius limit); the raster scales them to each polygon
     result.words[2] = pack2x16float(len1 * clampScale * direction);
-    result.words[3] = pack2x16float(vec2f(len2Full * clampScale, 0.0)) | (u32(clamp(opacity, 0.0, 1.0) * 255.0 + 0.5) << 16u);
+    result.words[3] = pack2x16float(vec2f(len2Full * clampScale, 0.0)) | (encodeCacheAlpha(opacity) << 16u);
 `
         : `
     result.words[2] = pack2x16float(axis1);
-    result.words[3] = pack2x16float(vec2f(len2, 0.0)) | (u32(clamp(opacity, 0.0, 1.0) * 255.0 + 0.5) << 16u);
+    result.words[3] = pack2x16float(vec2f(len2, 0.0)) | (encodeCacheAlpha(opacity) << 16u);
 `
 }
     // the depth bucket, log-spaced from the near plane, in the flags byte
@@ -790,8 +893,8 @@ ${
     result.words[5] = drawnBits | (splatNibble << 16u);
 `
 }${
-    stereo
-        ? `
+        stereo
+            ? `
     // the second eye's centre, in the same range, and its full quad's axes (shaders/raster.ts),
     // stashed in workgroup memory rather than returned: three more words in the per-thread state
     // that main() holds across its barriers put the Adreno 740's compiler on a slow path, 6-9x
@@ -801,8 +904,8 @@ ${
         pack2x16float(eye1.axis1),
         pack2x16float(vec2f(eye1.len2, 0.0))
     );`
-        : ''
-}
+            : ''
+    }
     return result;
 }
 
@@ -810,12 +913,12 @@ var<workgroup> wgCount: atomic<u32>;
 var<workgroup> wgOccluded: atomic<u32>;
 var<workgroup> wgBase: u32;
 var<workgroup> wgBuckets: array<atomic<u32>, ${ORDER_BUCKETS}>;${
-    stereo
-        ? `
+        stereo
+            ? `
 // stereo: each thread's second-eye words, from project() to the cache write
 var<workgroup> wgEye1: array<vec3u, ${PROJECTOR_WORKGROUP_SIZE}>;`
-        : ''
-}
+            : ''
+    }
 
 @compute @workgroup_size(${PROJECTOR_WORKGROUP_SIZE})
 fn main(
@@ -897,10 +1000,12 @@ ${
     }
 }
 `;
+};
 
 export {
     CACHE_WORDS,
     CHUNK_SIZE,
+    cacheAlphaWGSL,
     DRAW_BITS,
     FULL_ENTRY_BIT,
     ORDER_BUCKETS,
@@ -911,4 +1016,4 @@ export {
     polygonScale,
     projectorWGSL
 };
-export type { CoverageMode };
+export type { AntiAliasMode, CoverageMode };

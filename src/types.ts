@@ -21,8 +21,7 @@ type LoopMode = 'none' | 'repeat' | 'pingpong';
 type XrMode = 'ar' | 'vr';
 
 // the flags that have no default: unset means the viewer decides, or nothing applies
-type OptionalFlag =
-    'hpr' | 'budget' | 'lang' | 'sogstBudget' | 'sogstRotationDeg' | 'animLoopMode' | 'position' | 'scale';
+type OptionalFlag = 'hpr' | 'aa' | 'budget' | 'lang' | 'sogstRotationDeg' | 'animLoopMode' | 'position' | 'scale';
 
 /**
  * A position of the Quality slider, left to right. Each picks the splat budget from the device
@@ -74,10 +73,16 @@ type State = {
     /** The active camera controller. `anim` is the authored camera animation. */
     cameraMode: CameraMode;
     /**
-     * Whether the experience has an animation to play: an authored camera animation, or 4DGS
-     * file playback, where the timeline drives the clip instead of the camera.
+     * Whether there is an animation for the timeline to play: an authored camera animation, the
+     * frames of an animated splat sequence ({@link ViewerState.hasSequence}), or a 4DGS clip
+     * ({@link ViewerState.has4DAnimation}).
      */
     hasAnimation: boolean;
+    /**
+     * Whether the content is an animated splat sequence (a gsaf file). The timeline plays its
+     * frames in every camera mode, and the camera has no animation of its own.
+     */
+    hasSequence: boolean;
     /**
      * Whether the content is a 4DGS clip, which owns its timeline: the transport drives file
      * playback, not the camera. Read-only: set when the clip loads.
@@ -85,7 +90,7 @@ type State = {
     has4DAnimation: boolean;
     /** Length of that animation in seconds, or 0. */
     animationDuration: number;
-    /** Playhead position in seconds. Read-only: the animation cursor owns it. */
+    /** Playhead position in seconds. Read-only: the animation cursor or the sequence owns it. */
     animationTime: number;
     /** Whether the animation is paused. */
     animationPaused: boolean;
@@ -124,7 +129,8 @@ type State = {
     /**
      * In XR with tracked hands, a left fist held upright for two seconds, the right hand open,
      * puts the scene or object in miniature on top of the fist, like an ice cream in its cone,
-     * until the hand opens. Persisted; off by default. The XR menu offers it as Ice Cream.
+     * until the hand opens; with controllers, the left grip squeezed does the same on the
+     * controller's top face. Persisted; on by default. The XR menu offers it as Ice Cream.
      */
     iceCream: boolean;
     /**

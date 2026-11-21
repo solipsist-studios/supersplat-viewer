@@ -4,7 +4,6 @@ import type { SogstMeta } from '../parsers/sogst';
 
 import { loadSogst } from './load-sogst';
 import { SerialQueue } from './serial-queue';
-import { sogstBudgetFor } from './sogst-budget';
 import { FillHistory, gateOpen, gateQuotients, monolithicProgress, streamProgress } from './sogst-buffer-gate';
 import type { GateQuotients } from './sogst-buffer-gate';
 import { EntryUnitWriter, idbGetEntryUnit } from './sogst-cache';
@@ -64,11 +63,10 @@ type SogstStreamOptions = {
     url: string;
     // IndexedDB key the entry units are (or were) cached under.
     cacheKey: string | null;
-    // Splat budget, in splats. A segmented clip larger than this plays
-    // through a segment window (sogst-window.ts) instead of fully resident.
-    // Unset, the budget is automatic (sogst-budget.ts); 0 plays every clip
-    // fully resident.
-    budget?: number;
+    // Splat budget, in splats: the Quality slider's position when the clip
+    // loads (quality.ts). A segmented clip larger than this plays through a
+    // segment window (sogst-window.ts) instead of fully resident.
+    budget: number;
     // Decode on the GPU (sogst-gpu-decode.ts) where supported.
     gpuDecode?: boolean;
 };
@@ -286,7 +284,7 @@ const createSogstDriver = (
                     return;
                 }
                 const meta = step.meta;
-                const plan = planSogstCapacity(meta, sogstBudgetFor(meta, options.budget));
+                const plan = planSogstCapacity(meta, options.budget);
                 decoder = new SogstDecoder(app, meta, new SogstTarget(app, meta, plan.capacity), {
                     gpu: options.gpuDecode
                 });
@@ -458,7 +456,7 @@ const streamSogst = (
     url: string,
     callbacks: SogstStreamCallbacks,
     cacheKey: string | null = null,
-    budget?: number,
+    budget: number,
     gpuDecode?: boolean
 ): SogstStream => {
     const writer = cacheKey ? new EntryUnitWriter(cacheKey) : null;
@@ -511,7 +509,7 @@ const replaySogst = (
     manifest: EntryManifest,
     callbacks: SogstStreamCallbacks,
     url: string,
-    budget?: number,
+    budget: number,
     gpuDecode?: boolean
 ): SogstStream => {
     return runSogstStream(app, callbacks, null, { url, cacheKey, budget, gpuDecode }, async (driver) => {

@@ -48,15 +48,6 @@ type EmbedViewerOptions = {
     /** 4DGS playback loop style (default 'loop'). */
     loopMode?: 'loop' | 'pingpong';
     /**
-     * Splat budget for .sogst content, in millions of splats. A segmented
-     * clip larger than this plays through a segment window: only the
-     * segments near the playhead stay decoded, and the rest are re-read from
-     * the IndexedDB cache (or the network) as playback reaches them. Unset,
-     * the viewer picks a budget from the device type and the clip's cost per
-     * splat; 0 plays every clip fully resident.
-     */
-    sogstBudget?: number;
-    /**
      * Decode .sogst content on the GPU (WebGL2 or WebGPU). Default true;
      * false forces the CPU pack workers.
      */
@@ -163,7 +154,6 @@ const createEmbedViewer = async (options: EmbedViewerOptions): Promise<EmbedView
         noanim: options.noanim,
         sogstRotationDeg: options.sogstRotationDeg,
         animLoopMode: options.loopMode,
-        sogstBudget: options.sogstBudget,
         sogstGpuDecode: options.sogstGpuDecode,
         position: options.position,
         scale: options.scale,

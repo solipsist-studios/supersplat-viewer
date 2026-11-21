@@ -102,10 +102,21 @@ class CameraManager {
     // and the mode the camera falls back to when an animation is interrupted.
     setCollision: (collision: Collision | null) => void;
 
+    // Whether the start camera is outside the scene bounds: an object to orbit rather than a
+    // scene to be in. XR holds and grabs the splat by the same test
+    readonly isObjectExperience: boolean;
+
     // holds the camera state
     camera = new Camera();
 
-    constructor(global: Global, bbox: BoundingBox, collision: Collision | null = null) {
+    /**
+     * @param global - The viewer's globals.
+     * @param bbox - The scene bounds.
+     * @param collision - Collision data, if it has already loaded.
+     * @param cameraAnimation - Whether the camera has an animation. Off for an animated splat
+     * sequence, whose frames the timeline plays instead; the timeline state is then the viewer's.
+     */
+    constructor(global: Global, bbox: BoundingBox, collision: Collision | null = null, cameraAnimation = true) {
         const { events, settings, state } = global;
 
         let walkAllowed = isWalkAllowed(bbox, collision);
@@ -136,7 +147,8 @@ class CameraManager {
 
         // object experience starts outside the bounding box
         const isObjectExperience = !bbox.containsPoint(resetCamera.position);
-        const animTrack = getAnimTrack(resetCamera, isObjectExperience);
+        this.isObjectExperience = isObjectExperience;
+        const animTrack = cameraAnimation ? getAnimTrack(resetCamera, isObjectExperience) : null;
 
         const controllers = {
             orbit: new OrbitController(),
@@ -164,23 +176,27 @@ class CameraManager {
             return controllers[cameraMode] as CameraController;
         };
 
-        // state.has4DAnimation is true only for 4DGS content (set by setupSplatAnim
-        // before this constructor runs) — its timeline belongs to the splat
-        // animation, so leave animationDuration/cameraMode defaults alone here.
-        // 3D content always has a camera track (authored, or the generated
-        // rotate/figure-8 fallback below) and keeps the existing auto-orbit
-        // "turntable" behaviour.
+        // 4DGS content (state.has4DAnimation, set by setupSplatAnim before this constructor
+        // runs) owns its timeline: the transport drives file playback, not the camera, so leave
+        // animationDuration and cameraMode defaults alone for it. A gsaf sequence also owns its
+        // timeline, and passes cameraAnimation = false. 3D content always has a camera track
+        // (authored, or the generated rotate/figure-8 fallback below) and keeps the existing
+        // auto-orbit "turntable" behaviour.
         const has4DAnim = state.has4DAnimation;
-        state.hasAnimation = has4DAnim || !!controllers.anim;
         const hasCameraAnim = !!controllers.anim && !has4DAnim;
 
-        if (!has4DAnim) {
-            state.animationDuration = controllers.anim ? controllers.anim.animState.cursor.duration : 0;
+        // set the global animation flag
+        if (cameraAnimation) {
+            state.hasAnimation = has4DAnim || !!controllers.anim;
 
-            // seed the transport loop-mode control from the track (authored or
-            // generated); the control then owns it for the rest of the session
-            if (controllers.anim) {
-                state.animationLoopMode = controllers.anim.animState.cursor.loopMode;
+            if (!has4DAnim) {
+                state.animationDuration = controllers.anim ? controllers.anim.animState.cursor.duration : 0;
+
+                // seed the transport loop-mode control from the track (authored or
+                // generated); the control then owns it for the rest of the session
+                if (controllers.anim) {
+                    state.animationLoopMode = controllers.anim.animState.cursor.loopMode;
+                }
             }
         }
 
@@ -336,16 +352,17 @@ class CameraManager {
                     }
                     break;
                 case 'playPause':
-                    if (has4DAnim) {
-                        // 4DGS content — toggle file playback, leave the camera alone
-                        state.animationPaused = !state.animationPaused;
-                    } else if (state.cameraMode === 'anim') {
-                        // 3D content always has a camera track (authored or the
-                        // generated turntable fallback)
-                        state.animationPaused = !state.animationPaused;
-                    } else {
-                        state.cameraMode = 'anim';
-                        state.animationPaused = false;
+                    if (has4DAnim || !controllers.anim) {
+                        // a 4DGS clip or a gsaf sequence owns its timeline: toggle its playback in
+                        // every camera mode and leave the camera alone
+                        if (state.hasAnimation) state.animationPaused = !state.animationPaused;
+                    } else if (state.hasAnimation) {
+                        if (state.cameraMode === 'anim') {
+                            state.animationPaused = !state.animationPaused;
+                        } else {
+                            state.cameraMode = 'anim';
+                            state.animationPaused = false;
+                        }
                     }
                     break;
                 case 'requestFirstPerson':
@@ -382,6 +399,13 @@ class CameraManager {
 
         // handle camera mode switching
         events.on('cameraMode:changed', (value: CameraMode, prev: CameraMode) => {
+            // no animation to enter: a host's write is undone, and the undo has nothing to exit
+            if (!getController(value)) {
+                state.cameraMode = prev;
+                return;
+            }
+            if (!getController(prev)) return;
+
             // Host state writes and the walk toggle must remember the same return mode.
             if (value === 'walk') {
                 preWalkMode = prev;
@@ -513,4 +537,4 @@ class CameraManager {
     }
 }
 
-export { CameraManager, isWalkableSize, isWalkAllowed };
+export { CameraManager, isWalkAllowed };

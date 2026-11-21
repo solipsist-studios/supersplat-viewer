@@ -14,13 +14,14 @@ const initPlayback = (
     const time = root.querySelector<HTMLElement>('.sse-time');
 
     const available = () => state.loaded && state.hasAnimation;
+    // a sequence or a 4DGS clip owns its timeline, so it plays in every camera mode; the camera's
+    // animation only in its own
+    const animating = () => state.hasSequence || state.has4DAnimation || state.cameraMode === 'anim';
     const updateControls = () => {
-        // a 4DGS clip owns its timeline, so its transport is live whatever the camera is doing
-        const driven = state.has4DAnimation || state.cameraMode === 'anim';
-        const playing = driven && !state.animationPaused;
+        const playing = animating() && !state.animationPaused;
         play.classList.toggle('sse-hidden', !available() || playing);
         pause.classList.toggle('sse-hidden', !available() || !playing);
-        timeline.classList.toggle('sse-hidden', !available() || !driven);
+        timeline.classList.toggle('sse-hidden', !available() || !animating());
     };
     const updateSlider = () => {
         const position = state.animationDuration > 0 ? (state.animationTime / state.animationDuration) * 100 : 0;
@@ -31,8 +32,8 @@ const initPlayback = (
 
     const onPlay = () => {
         if (!available()) return;
-        // 4DGS playback leaves the camera alone; a camera animation needs its camera
-        if (!state.has4DAnimation) state.cameraMode = 'anim';
+        // 4DGS playback and a sequence leave the camera alone; a camera animation needs its camera
+        if (!state.hasSequence && !state.has4DAnimation) state.cameraMode = 'anim';
         // play-once holds at the end; pressing play again restarts it
         if (
             state.animationLoopMode === 'none' &&
@@ -45,7 +46,7 @@ const initPlayback = (
     };
     const onPause = () => {
         if (!available()) return;
-        if (!state.has4DAnimation) state.cameraMode = 'anim';
+        if (!state.hasSequence && !state.has4DAnimation) state.cameraMode = 'anim';
         state.animationPaused = true;
     };
     const scrub = (event: PointerEvent) => {
@@ -88,6 +89,7 @@ const initPlayback = (
     const subscriptions = [
         events.on('loaded:changed', updateControls),
         events.on('hasAnimation:changed', updateControls),
+        events.on('hasSequence:changed', updateControls),
         events.on('has4DAnimation:changed', updateControls),
         events.on('cameraMode:changed', updateControls),
         events.on('animationPaused:changed', updateControls),

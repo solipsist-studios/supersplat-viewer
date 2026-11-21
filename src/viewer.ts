@@ -24,7 +24,7 @@ import {
 } from 'playcanvas';
 import type { CameraComponent, Entity, GraphicsDevice, GSplatComponent, Layer } from 'playcanvas';
 
-import { CameraManager, isWalkableSize, isWalkAllowed } from './camera-manager';
+import { CameraManager, isWalkAllowed } from './camera-manager';
 import type { Camera } from './cameras/camera';
 import { Capture } from './capture';
 import type { CaptureResult } from './capture';
@@ -34,6 +34,7 @@ import { nearlyEquals } from './core/math';
 import { DebugPanel } from './debug';
 import { FrameGate } from './frame-gate';
 import { initFullscreen } from './fullscreen';
+import type { GsafPlayer } from './gsaf/gsaf-player';
 import { InputController } from './input-controller';
 import { MeshDebugOverlay } from './mesh-debug-overlay';
 import { NavCursor } from './nav-cursor';
@@ -206,6 +207,9 @@ class Viewer {
     /** Set once {@link destroy} has run. Load continuations check it and bail. */
     destroyed = false;
 
+    /** An animated splat sequence the timeline plays, once loaded; null for other content. */
+    private sequence: GsafPlayer | null = null;
+
     private disposers: (() => void)[] = [];
 
     private fullscreen: ReturnType<typeof initFullscreen>;
@@ -247,7 +251,8 @@ class Viewer {
         global: Global,
         gsplatLoad: Promise<Entity>,
         skyboxLoad: Promise<void> | undefined,
-        collisionLoad: Promise<Collision> | undefined
+        collisionLoad: Promise<Collision> | undefined,
+        sequenceLoad: Promise<GsafPlayer> | null = null
     ) {
         this.global = global;
 
@@ -385,7 +390,11 @@ class Viewer {
             const dist = vec.dot(cameraEntity.forward);
 
             const far = Math.max(dist + boundRadius, 1e-2);
-            const near = Math.max(dist - boundRadius, far / (1024 * 16));
+            // the near plane's floor is capped at the orbit's closest zoom: a few stray splats far
+            // outside a scene stretch its bound, and a floor of far / 16k would then cull the
+            // streamed nodes just in front of the camera, and flatten the stochastic renderer's
+            // depths there
+            const near = Math.max(dist - boundRadius, Math.min(far / (1024 * 16), 0.01));
 
             cameraEntity.camera.farClip = far;
             cameraEntity.camera.nearClip = Math.min(1.0, near);
@@ -427,11 +436,12 @@ class Viewer {
             if (!config.exposeGlobals) return;
 
             window.scrubTo = async (time: number) => {
-                // 4DGS formats fetch, decode and upload the target frame asynchronously, so let
-                // that work settle first, or we resolve while the previous frame is still shown
-                const pending = this.seekPending(time);
+                // 4DGS formats fetch, decode and upload the target frame asynchronously, and a
+                // sequence decodes its own, so let that work settle first, or we resolve while the
+                // previous frame is still shown
+                const landed = this.seekTo(time);
                 state.animationPaused = true;
-                await this.untilDestroyed(Promise.all(pending));
+                await this.untilDestroyed(landed);
 
                 app.renderNextFrame = true;
                 let onFrame!: () => void;
@@ -567,9 +577,26 @@ class Viewer {
         }, ignoreLoadFailure);
 
         // wait for the model to load
-        Promise.all([gsplatLoad, skyboxLoad]).then((results) => {
+        Promise.all([gsplatLoad, skyboxLoad, sequenceLoad]).then((results) => {
             // destroyed while loading: the app is gone, so there is nothing to wire up
             if (this.destroyed) return;
+
+            // A sequence's frames are the timeline, in every camera mode, and the camera has no
+            // animation of its own. The firstFrame handler starts it, as it would the camera's
+            const sequence = results[2];
+            if (sequence?.animated) {
+                this.sequence = sequence;
+                state.hasSequence = true;
+                state.hasAnimation = true;
+                state.animationDuration = sequence.duration;
+                sequence.paused = state.animationPaused;
+                events.on('animationPaused:changed', (paused: boolean) => {
+                    sequence.paused = paused;
+                });
+                app.on('update', () => {
+                    state.animationTime = sequence.time;
+                });
+            }
 
             const gsplatComponent = results[0].gsplat as GSplatComponent;
 
@@ -578,8 +605,6 @@ class Viewer {
             if (gsplatBbox) {
                 sceneBound.setFromTransformedAabb(gsplatBbox, results[0].getWorldTransform());
             }
-
-            this.xr.setGrabTarget(results[0], isWalkableSize(sceneBound));
 
             // the stochastic renderer leaves its frame's depth behind, so no pick pass is needed
             // while it draws; the pass picker serves the sorted renderer. Each is made on first
@@ -608,8 +633,10 @@ class Viewer {
             events.fire('picker:ready', this.picker);
             this.inputController = new InputController(global, this.picker);
 
-            this.cameraManager = new CameraManager(global, sceneBound);
+            this.cameraManager = new CameraManager(global, sceneBound, null, !sequence);
             applyCamera(this.cameraManager.camera);
+
+            this.xr.setGrabTarget(results[0], !this.cameraManager.isObjectExperience);
 
             // the vr flag's prompt (ui/vr-prompt.ts) can start a session from here on, where
             // startXR waits for the scene to finish loading: the camera is where the session
@@ -894,13 +921,24 @@ class Viewer {
     }
 
     seek(time: number): void {
-        this.seekPending(time);
+        this.seekTo(time).catch(() => {
+            // a sequence's failed decode, which the player has already reported
+        });
+    }
+
+    // seek(), resolving once the frame at `time` is ready to render: at once for the camera's
+    // animation, once decoded for a sequence's or a 4DGS clip's frame
+    private seekTo(time: number): Promise<void> {
+        // seekPending throws synchronously for a bad seek, as seek() always has
+        const pending = this.seekPending(time);
+        return Promise.all(pending).then((): void => undefined);
     }
 
     /**
      * Seek, and return the asynchronous work the seek started. A camera animation moves at once;
-     * 4DGS formats fetch, decode and upload the target frame, announced to the splat animation
-     * through `scrubAnim` with a list to collect that work in.
+     * a gsaf sequence returns the promise of its frame landing, and 4DGS formats fetch, decode and
+     * upload the target frame, announced to the splat animation through `scrubAnim` with a list to
+     * collect that work in.
      */
     private seekPending(time: number): Promise<void>[] {
         this.requireLoaded('seek');
@@ -911,10 +949,15 @@ class Viewer {
         if (!Number.isFinite(time)) {
             throw new Error('seek: time must be finite');
         }
+        app.renderNextFrame = true;
+        if (this.sequence) {
+            const landed = this.sequence.seek(time);
+            state.animationTime = this.sequence.time;
+            return [landed];
+        }
         this.cameraManager.seek(time);
         const pending: Promise<void>[] = [];
         events.fire('scrubAnim', time, pending);
-        app.renderNextFrame = true;
         return pending;
     }
 
@@ -939,10 +982,10 @@ class Viewer {
                 width,
                 height,
                 supersample,
-                scrub: (t) => {
+                scrub: async (t) => {
                     if (state.hasAnimation) {
                         state.animationPaused = true;
-                        return Promise.all(this.seekPending(t));
+                        await this.seekTo(t);
                     }
                 }
             });

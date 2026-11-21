@@ -125,6 +125,9 @@
             const settingsUrl = url.searchParams.get('settings') ?? bootstrap.settingsUrl ?? defaultSettingsUrl;
             const contentUrl = url.searchParams.get('content') ?? bootstrap.contentUrl ?? './coffee_martini.sogst';
             const sogstRotationDeg = parseRotationParam(url.searchParams.get('sogstrot'), [0, 0, 0]);
+            // the bootstrap's alone: a url param would let a link run any wasm in this origin
+            const gsafDecoderUrl = bootstrap.gsafDecoderUrl ?? null;
+            const zstdDecoderUrl = bootstrap.zstdDecoderUrl ?? null;
 
             // Names the bootstrap's contentUrl when the url itself has no usable name (a data:
             // uri, say) — the splat format is chosen by the name's extension. Ignored when a
@@ -138,16 +141,8 @@
                   ? 'webgpu'
                   : undefined;
 
-            // css pixels to lift the toolbar by on touch devices; createViewer clamps it, and treats
-            // a value that is not a number as 0
-            const experimentalTouchInsetBottom = url.searchParams.has('experimental-touch-inset-bottom')
-                ? Number(url.searchParams.get('experimental-touch-inset-bottom'))
-                : undefined;
-
             const budgetParam = url.searchParams.get('budget');
             const budget = budgetParam !== null ? Number(budgetParam) : undefined;
-            const sogstBudgetParam = url.searchParams.get('sogstbudget');
-            const sogstBudget = sogstBudgetParam !== null ? Number(sogstBudgetParam) : undefined;
 
             // Only the static 3DGS path consumes the eager `contents` prefetch. 4DGS archives
             // manage their own streaming and cached fetches, and an unrecognised extension is
@@ -174,10 +169,11 @@
                 posterUrl,
                 skyboxUrl,
                 collisionUrl,
+                gsafDecoderUrl,
+                zstdDecoderUrl,
                 poster: posterUrl && createImage(posterUrl),
                 contents: prefetchContent ? fetch(contentUrl) : undefined,
                 ui: !url.searchParams.has('noui'),
-                experimentalTouchInsetBottom,
                 reticle: url.searchParams.has('reticle'),
                 noanim: url.searchParams.has('noanim'),
                 nofx: url.searchParams.has('nofx'),
@@ -187,7 +183,9 @@
                 ministats: url.searchParams.has('ministats'),
                 colorize: url.searchParams.has('colorize'),
                 renderer,
-                aa: url.searchParams.has('aa'),
+                aa: url.searchParams.has('aa')
+                    ? ['', '1', 'true', 'enable'].includes(url.searchParams.get('aa'))
+                    : undefined,
                 stochastic: url.searchParams.has('stochastic')
                     ? url.searchParams.get('stochastic') === 'mobile'
                         ? 'mobile'
@@ -198,7 +196,6 @@
                 splatSource: url.searchParams.get('splatSource') ?? undefined,
                 variant: url.searchParams.get('variant') ?? undefined,
                 budget,
-                sogstBudget,
                 sogstGpuDecode: !url.searchParams.has('sogstcpu'),
                 sogstRotationDeg,
                 embed: url.searchParams.has('embed'),

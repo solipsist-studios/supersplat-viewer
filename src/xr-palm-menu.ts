@@ -11,6 +11,7 @@ import {
 } from 'playcanvas';
 import type { AppBase, XrInputSource } from 'playcanvas';
 
+import { isHand } from './xr-input';
 import { XR_OVERLAY_DRAW_BUCKET } from './xr-teleport-arc';
 
 // The menu's rows, a column centred on its anchor (meters, at real size), each ROW_HEIGHT tall and
@@ -24,7 +25,8 @@ const PIXELS = 4000;
 // of its four fingers' tips more than FINGER_REACH from their knuckles, its palm facing the eyes
 // within PALM_FACING (the cosine), puts the menu PALM_OFFSET out from the middle of the palm,
 // facing the eyes; a controller's TOGGLE_BUTTON opens and closes it on that controller,
-// CONTROLLER_OFFSET towards the user. It follows its anchor at FOLLOW_SPEED (a lerp a second)
+// CONTROLLER_OFFSET towards the eyes and facing them, however the controller is held. It follows
+// its anchor at FOLLOW_SPEED (a lerp a second)
 const FINGER_REACH = 0.06;
 const FINGERS_OPEN = 3;
 const PALM_FACING = 0.6;
@@ -320,6 +322,22 @@ class XrPalmMenu {
         this.hide();
     }
 
+    /** Whether the menu is open. */
+    get isOpen() {
+        return this.open;
+    }
+
+    /**
+     * Whether a select from an input source would be the menu's, as {@link XrPalmMenu#select}
+     * takes it, without pressing anything.
+     *
+     * @param source - The input source.
+     * @returns Whether it points at the open menu.
+     */
+    pointsAt(source: XrInputSource) {
+        return this.open && !isHand(source) && !!this.pointedAt(source);
+    }
+
     /**
      * Takes a select that starts on a row of the open menu, pressing it. A hand's select is left
      * alone: its fingertip pokes instead.
@@ -328,7 +346,7 @@ class XrPalmMenu {
      * @returns True when the menu took the select.
      */
     select(source: XrInputSource) {
-        if (!this.open || source.hand) return false;
+        if (!this.open || isHand(source)) return false;
         const quad = this.pointedAt(source);
         if (!quad) return false;
         // a second select while one is held is taken, and does nothing, as is one on a stepper's
@@ -533,7 +551,7 @@ class XrPalmMenu {
     // stays an input source, and would keep the menu closed on the other
     private preferred() {
         const usable = this.app.xr.input.inputSources.filter(
-            (source) => source.handedness !== 'none' && (!source.hand || source.hand.tracking)
+            (source) => source.handedness !== 'none' && (!isHand(source) || source.hand.tracking)
         );
         return usable.find((source) => source.handedness === 'left') ?? usable[0] ?? null;
     }
@@ -547,7 +565,7 @@ class XrPalmMenu {
             this.setOpen(false);
         }
         if (!source) return;
-        if (source.hand) {
+        if (isHand(source)) {
             this.setOpen(this.palmFacing(source));
             return;
         }
@@ -586,29 +604,29 @@ class XrPalmMenu {
     }
 
     // where the menu goes for its anchor, into `position` and `rotation`: out from the middle of
-    // a palm facing the eyes, or towards the user from a controller, turned as it is
+    // a palm, or towards the eyes from a controller, facing the eyes either way
     private anchorPose(source: XrInputSource) {
         const scale = this.scale;
         const hand = source.hand;
-        if (hand) {
+        if (isHand(source)) {
             const knuckle = hand.getJointById('middle-finger-metacarpal');
             const proximal = hand.getJointById('middle-finger-phalanx-proximal');
             if (!knuckle || !proximal || !this.palmNormal(source)) return false;
             position.lerp(knuckle.getPosition(), proximal.getPosition(), 0.5);
             position.add(target.copy(normal).mulScalar(PALM_OFFSET * scale));
+        } else {
+            if (!source.grip) return false;
+            position.copy(source.getPosition());
             toEyes.sub2(this.camera.getPosition(), position);
-            if (toEyes.lengthSq() > 1e-6) {
-                toEyes.normalize();
-                const yaw = Math.atan2(toEyes.x, toEyes.z) * (180 / Math.PI);
-                const pitch = -Math.asin(toEyes.y) * (180 / Math.PI);
-                rotation.setFromEulerAngles(pitch, yaw, 0);
-            }
-            return true;
+            if (toEyes.lengthSq() > 1e-6) position.add(toEyes.normalize().mulScalar(CONTROLLER_OFFSET * scale));
         }
-        if (!source.grip) return false;
-        rotation.copy(source.getRotation());
-        rotation.transformVector(target.set(0, 0, CONTROLLER_OFFSET * scale), target);
-        position.add2(source.getPosition(), target);
+        toEyes.sub2(this.camera.getPosition(), position);
+        if (toEyes.lengthSq() > 1e-6) {
+            toEyes.normalize();
+            const yaw = Math.atan2(toEyes.x, toEyes.z) * (180 / Math.PI);
+            const pitch = -Math.asin(toEyes.y) * (180 / Math.PI);
+            rotation.setFromEulerAngles(pitch, yaw, 0);
+        }
         return true;
     }
 
@@ -625,7 +643,7 @@ class XrPalmMenu {
 
     // whether a source's ray points at the menu: a controller's
     private pointing(source: XrInputSource) {
-        return source.targetRayMode === 'tracked-pointer' && !source.hand;
+        return source.targetRayMode === 'tracked-pointer' && !isHand(source);
     }
 
     // controllers' rays, and the other hand's fingertip, highlight the row they are on; the
@@ -642,7 +660,7 @@ class XrPalmMenu {
                     side = this.sideOf(quad);
                 }
             }
-            if (!hovered && this.anchor?.hand) {
+            if (!hovered && this.anchor && isHand(this.anchor)) {
                 const poked = this.poke(this.anchor);
                 if (poked) {
                     hovered = poked;
@@ -666,7 +684,9 @@ class XrPalmMenu {
 
     // the row the other hand's index fingertip is on, pressing it once it reaches it
     private poke(anchor: XrInputSource) {
-        const poking = this.app.xr.input.inputSources.find((source) => source !== anchor && source.hand?.tracking);
+        const poking = this.app.xr.input.inputSources.find(
+            (source) => source !== anchor && isHand(source) && source.hand.tracking
+        );
         const tip = poking?.hand.getJointById('index-finger-tip');
         if (!poking || !tip) {
             this.pokeReady = true;

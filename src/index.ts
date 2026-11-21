@@ -5,6 +5,7 @@ import {
     createApp,
     createViewerState,
     initCanvas,
+    isGsaf,
     isPrefetchable,
     loadContent,
     loadSkybox,
@@ -14,13 +15,13 @@ import {
 import { MeshCollision, loadVoxelCollision } from './collision';
 import type { Collision } from './collision';
 import { initEmbed } from './embed';
+import { loadGsaf } from './gsaf/gsaf-player';
 import { EmbedInputDevice } from './input/devices/external';
 import { initLocalization } from './localization';
 import type { CreateViewerOptions } from './options';
 import { persistPreferences, readPreferences } from './preferences';
 import { Quality, resolutionScaleFor } from './quality';
 import { importSettings } from './settings';
-import { resolveTouchInsetBottom } from './touch-inset-bottom';
 import type { Config, Global, ViewerHandle } from './types';
 import { initPoster, initUI } from './ui';
 import uiHtml from './ui.html';
@@ -40,13 +41,14 @@ const resolveConfig = (options: CreateViewerOptions): Config => ({
     posterUrl: options.posterUrl,
     skyboxUrl: options.skyboxUrl,
     collisionUrl: options.collisionUrl,
+    gsafDecoderUrl: options.gsafDecoderUrl,
+    zstdDecoderUrl: options.zstdDecoderUrl,
     poster: options.poster ?? (options.posterUrl ? createImage(options.posterUrl) : undefined),
     contents:
         options.contents ??
         (isPrefetchable(options.contentUrl, options.contentFilename) ? fetch(options.contentUrl) : undefined),
     renderer: options.renderer,
     ui: options.ui ?? true,
-    experimentalTouchInsetBottom: resolveTouchInsetBottom(options.experimentalTouchInsetBottom),
     reticle: options.reticle ?? false,
     noanim: options.noanim ?? false,
     nofx: options.nofx ?? false,
@@ -55,10 +57,18 @@ const resolveConfig = (options: CreateViewerOptions): Config => ({
     colorize: options.colorize ?? false,
     fullload: options.fullload ?? false,
     vr: options.vr ?? false,
-    aa: options.aa ?? false,
+    aa: options.aa,
     stochastic: options.stochastic ?? false,
-    splatSource: options.splatSource ?? 'direct',
-    variant: options.variant ?? '',
+    // the direct source reads the engine's own splat files, not the container a gsaf sequence
+    // plays through; the work buffer source reads whatever the engine copied
+    splatSource: isGsaf(options.contentUrl, options.contentFilename) ? 'workbuffer' : (options.splatSource ?? 'direct'),
+    // The stochastic renderer's temporal passes assume splats move only with the camera: an
+    // animated sequence would ghost in the accumulation, and the occlusion cull, which forgets the
+    // previous frame's depth only when a node goes away, would test a frame against the one before
+    // it, which keeps its allocation. An explicit variant still overrides both
+    variant: isGsaf(options.contentUrl, options.contentFilename)
+        ? `taa:off,cull:off,${options.variant ?? ''}`
+        : (options.variant ?? ''),
     budget: options.budget,
     framesInFlight: options.framesInFlight ?? 2,
     heatmap: options.heatmap ?? false,
@@ -69,7 +79,6 @@ const resolveConfig = (options: CreateViewerOptions): Config => ({
     hostInput: options.hostInput ?? false,
     position: options.position,
     scale: options.scale,
-    sogstBudget: options.sogstBudget,
     sogstGpuDecode: options.sogstGpuDecode ?? true,
     sogstRotationDeg: options.sogstRotationDeg,
     animLoopMode: options.animLoopMode,
@@ -90,9 +99,6 @@ const createViewer = async (options: CreateViewerOptions): Promise<ViewerHandle>
     } else {
         root.appendChild(document.createElement('canvas'));
     }
-
-    // the stylesheet lifts what sits on the bottom edge by this, on touch devices alone
-    root.style.setProperty('--sse-experimental-touch-inset-bottom', `${config.experimentalTouchInsetBottom}px`);
 
     container.appendChild(root);
     const canvas = root.querySelector('canvas');
@@ -158,17 +164,29 @@ const createViewer = async (options: CreateViewerOptions): Promise<ViewerHandle>
     // this before touching the app
     let destroyed = false;
 
-    // Load model: loadContent picks the handler from the filename and rejects an unrecognised
-    // extension without fetching the body
-    const gsplatLoad = loadContent(
-        app,
-        config,
-        global,
-        (progress: number) => {
-            state.progress = progress;
-        },
-        () => destroyed
-    );
+    // Load model: a gsaf sequence plays through its own player, which the viewer's timeline drives;
+    // every other content goes through loadContent, which picks the handler from the filename and
+    // rejects an unrecognised extension without fetching the body
+    const onProgress = (progress: number) => {
+        state.progress = progress;
+    };
+    // aborted by the viewer's destroy, which lets a gsaf load release its worker mid-wait
+    const loading = new AbortController();
+    const sequenceLoad = isGsaf(config.contentUrl, config.contentFilename)
+        ? loadGsaf(
+              app,
+              config.contents ?? fetch(config.contentUrl),
+              config.gsafDecoderUrl,
+              onProgress,
+              loading.signal
+          ).catch((err: Error) => {
+              if (!destroyed) console.log(err);
+              throw err;
+          })
+        : null;
+    const gsplatLoad = sequenceLoad
+        ? sequenceLoad.then((player) => player.entity)
+        : loadContent(app, config, global, onProgress, () => destroyed);
 
     // Load skybox (continue without if it fails — e.g. CORS, 404)
     const skyboxLoad =
@@ -219,7 +237,7 @@ const createViewer = async (options: CreateViewerOptions): Promise<ViewerHandle>
     }
 
     // Create the viewer
-    const viewer = new Viewer(global, gsplatLoad, skyboxLoad, collisionLoad);
+    const viewer = new Viewer(global, gsplatLoad, skyboxLoad, collisionLoad, sequenceLoad);
     viewer.onDestroy(persistPreferences(events));
     viewer.onDestroy(() => quality.destroy());
 
@@ -317,6 +335,7 @@ const createViewer = async (options: CreateViewerOptions): Promise<ViewerHandle>
         : null;
     viewer.onDestroy(() => {
         destroyed = true;
+        loading.abort();
     });
     viewer.onDestroy(disposeCanvas);
     if (disposeUI) {
