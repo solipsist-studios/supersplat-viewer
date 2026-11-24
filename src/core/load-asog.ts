@@ -1,5 +1,6 @@
-import { AsogPlayer } from 'animated-sog/playcanvas';
 import type { Entity, AppBase } from 'playcanvas';
+
+import { AsogPlayer } from 'animated-sog/playcanvas';
 
 import { ClockAnimation } from '../animation/clock-animation';
 import type { Config, Global } from '../types';

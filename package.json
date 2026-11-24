@@ -73,6 +73,7 @@
     "@rollup/plugin-json": "6.1.0",
     "@rollup/plugin-node-resolve": "16.0.3",
     "@rollup/plugin-typescript": "12.3.1",
+    "animated-sog": "file:third_party/animated-sog",
     "autoprefixer": "10.6.2",
     "concurrently": "9.2.5",
     "eslint": "9.39.5",
@@ -107,8 +108,5 @@
   },
   "engines": {
     "node": ">=20.0.0"
-  },
-  "dependencies": {
-    "animated-sog": "file:third_party/animated-sog"
   }
 }
