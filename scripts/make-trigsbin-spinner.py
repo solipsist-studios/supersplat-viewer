@@ -2,7 +2,9 @@
 cumuli_core + gsplat from the camera the viewer is given in settings.json. usage: PYTHONPATH=<cumuli-core>/src python scripts/make-trigsbin-spinner.py <out dir> <open4dgs-core checkout>
 
 Then serve <out dir> together with public/ (index.html, index.js, index.css), open index.html?content=./spinner.trigsbin&settings=./settings.json
-&noui and scrub to t; the viewer's picture should match expected_<t>.png (about 36 dB PSNR on WebGL: the floor is the two rasterisers'
+&noui and scrub to t (window.scrubTo(t)) only once the viewer has settled: wait for window.animationDuration > 0 and about 2.5 s
+more, and about 0.5 s after the scrub before the screenshot. A scrub made while the page is still starting up can be lost, and the
+picture is then the autoplay's, which looks like a motion bug and is not one. The viewer's picture should match expected_<t>.png (about 36 dB PSNR on WebGL: the floor is the two rasterisers'
 own differences, which show at t = 0.5 too, where nothing moves)."""
 import json
 import math
