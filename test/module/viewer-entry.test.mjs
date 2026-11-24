@@ -35,7 +35,7 @@ describe('the /viewer entry', () => {
             'the runtime entry should import nothing but the engine'
         );
         // a bundled engine is several megabytes; the viewer alone (with its 4D formats and their player) is well under two
-        assert.ok(source.length < 1_750_000,`dist/viewer.js is ${source.length} bytes — is the engine bundled?`);
+        assert.ok(source.length < 1_750_000, `dist/viewer.js is ${source.length} bytes — is the engine bundled?`);
     });
 
     it('ships every file its package exports name', () => {
