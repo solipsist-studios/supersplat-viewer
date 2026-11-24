@@ -2,10 +2,13 @@ import { Asset, Color, createGraphicsDevice, Entity, Keyboard, Mouse, platform, 
 import type { AppBase, EventHandler, GSplatResource, TextureHandler } from 'playcanvas';
 
 import { SogstSplatAnimation } from './animation/sogst-splat-animation';
+import { TrigsSplatAnimation } from './animation/trigs-splat-animation';
 import { App } from './app';
 import { fullFileCacheKey, fullFileKeyPrefix } from './core/fetch-splat-anim-buffer';
 import { loadSogst, setAabbFromMeta } from './core/load-sogst';
 import { setupSplatAnim } from './core/load-splat-anim';
+import { loadTrigsbin } from './core/load-trigsbin';
+import type { TrigsData } from './core/load-trigsbin';
 import { observe } from './core/observe';
 import { idbDeleteByPrefix, idbGetBuffer, idbGetEntryManifest, idbSetBuffer } from './core/sogst-cache';
 import type { SogstData } from './core/sogst-data';
@@ -13,6 +16,7 @@ import { SogstPatchFence, SogstSortFence } from './core/sogst-sort-fence';
 import { installSogstSorter } from './core/sogst-sorter';
 import { replaySogst, streamSogst } from './core/stream-sogst';
 import { isSogstFilename } from './parsers/sogst';
+import { isTrigsbinFilename } from './parsers/trigsbin';
 import { readPreferences } from './preferences';
 import { canvasPixelRatio } from './quality';
 import type { Config, Global, LoopMode, State } from './types';
@@ -370,6 +374,61 @@ const loadSogstGsplat = async (
     return fromNetwork();
 };
 
+// Put a loaded .trigsbin's resource on an entity and attach its animation driver. The twist is evaluated on the GPU
+// (core/trigs-motion.ts), so nothing else follows the resource.
+const setupTrigs = (app: AppBase, config: Config, global: Global, data: TrigsData) => {
+    const animation = new TrigsSplatAnimation(data);
+    const entity = setupSplatAnim(app, config, global, data.resource, animation, {
+        rotationEulerDeg: config.sogstRotationDeg ?? [0, 0, 0],
+        alphaClip: 1 / 1024
+    });
+    animation.bind(entity);
+    return entity;
+};
+
+// Read a response body with progress, as an ArrayBuffer.
+const fetchWithProgress = async (url: string, onProgress: (progress: number) => void): Promise<ArrayBuffer> => {
+    const response = await fetch(url);
+    if (!response.ok) {
+        throw new Error(`Failed to fetch ${url}: ${response.status} ${response.statusText}`);
+    }
+    const total = Number(response.headers.get('content-length')) || 0;
+    if (!response.body || !total) {
+        return response.arrayBuffer();
+    }
+    const reader = response.body.getReader();
+    const chunks: Uint8Array[] = [];
+    let received = 0;
+    for (;;) {
+        const { done, value } = await reader.read();
+        if (done) {
+            break;
+        }
+        chunks.push(value);
+        received += value.length;
+        onProgress(Math.min(39, Math.trunc((received / total) * 39)));
+    }
+    const out = new Uint8Array(received);
+    let at = 0;
+    for (const chunk of chunks) {
+        out.set(chunk, at);
+        at += chunk.length;
+    }
+    return out.buffer;
+};
+
+// Load and animate a .trigsbin (Open4DGS runtime file, TRiGS motion).
+const loadTrigsGsplat = async (
+    app: AppBase,
+    config: Config,
+    global: Global,
+    progressCallback: (progress: number) => void
+) => {
+    const buffer = await fetchWithProgress(config.contentUrl, progressCallback);
+    const data = loadTrigsbin(app, buffer, progressCallback);
+    return setupTrigs(app, config, global, data);
+};
+
 // Load a static 3DGS scene (PLY / LOD / meta.json etc.)
 const load3dgs = (
     app: AppBase,
@@ -396,7 +455,7 @@ const contentFilename = (config: Config) =>
 
 // True for formats driven by SplatAnimationBase rather than by the engine's
 // gsplat asset handler.
-const is4dgsFilename = (filename: string) => isSogstFilename(filename.toLowerCase());
+const is4dgsFilename = (filename: string) => isSogstFilename(filename.toLowerCase()) || isTrigsbinFilename(filename);
 
 // True for content the eager `contents` prefetch is actually useful for —
 // only the static 3DGS handler reads it. Deciding this as "not 4DGS" would
@@ -432,6 +491,9 @@ const loadContent = (
     cancelled: () => boolean
 ): Promise<Entity> => {
     const filename = contentFilename(config);
+    if (isTrigsbinFilename(filename)) {
+        return loadTrigsGsplat(app, config, global, progressCallback);
+    }
     if (is4dgsFilename(filename)) {
         return loadSogstGsplat(app, config, global, progressCallback);
     }
@@ -444,7 +506,7 @@ const loadContent = (
     return Promise.reject(
         new Error(
             `Unsupported content format '${ext}' (${filename}). ` +
-                'Supported: .ply, .compressed.ply, .sog, .json (meta.json / lod-meta.json), .sogst'
+                'Supported: .ply, .compressed.ply, .sog, .json (meta.json / lod-meta.json), .sogst, .trigsbin'
         )
     );
 };

@@ -1,4 +1,5 @@
 import { isSogstFilename } from '../parsers/sogst';
+import { isTrigsbinFilename } from '../parsers/trigsbin';
 import type { Global } from '../types';
 
 // The `.sogst` rotation block of the settings panel (rotate the clip in 90 degree steps, with the
@@ -14,7 +15,9 @@ const initSogstControls = (global: Global) => {
     const defaultRotation: [number, number, number] = config.sogstRotationDeg ?? [0, 0, 0];
     const rotation: [number, number, number] = [...defaultRotation];
 
-    const isSogstContent = isSogstFilename(config.contentFilename ?? config.contentUrl ?? '');
+    // the rotation block turns any 4D clip, so a .trigsbin gets it as well
+    const contentName = config.contentFilename ?? config.contentUrl ?? '';
+    const isSogstContent = isSogstFilename(contentName) || isTrigsbinFilename(contentName);
     block.classList.toggle('sse-hidden', !isSogstContent);
 
     const normalizeDegrees = (degrees: number) => {
