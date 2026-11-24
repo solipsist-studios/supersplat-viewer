@@ -93,6 +93,27 @@ declare module '*.wasm' {
     export default content;
 }
 
+// animated-sog ships JavaScript with JSDoc only; this is the part the viewer uses.
+declare module 'animated-sog/playcanvas' {
+    export class AsogPlayer {
+        static load(app: pc.AppBase, source: string | URL | Response | Blob | ArrayBuffer | ArrayBufferView, parent: pc.Entity, options?: {
+            getTime?: () => number;
+            audio?: boolean;
+            volume?: number;
+            positional?: boolean;
+            layers?: number[];
+            onProgress?: (progress: number) => void;
+            name?: string;
+        }): Promise<AsogPlayer>;
+        entity: pc.Entity | null;
+        duration: number;
+        numSplats: number;
+        time: number;
+        bounds: { min: number[]; max: number[] } | null;
+        destroy(): void;
+    }
+}
+
 // Engine internals the .sogst sorter (src/core/sogst-sorter.ts) builds its
 // worker from. Not part of the engine's public API: they are imported by
 // path from the package's build tree, and only their source text and the
