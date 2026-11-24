@@ -5,6 +5,7 @@ import { SogstSplatAnimation } from './animation/sogst-splat-animation';
 import { TrigsSplatAnimation } from './animation/trigs-splat-animation';
 import { App } from './app';
 import { fullFileCacheKey, fullFileKeyPrefix } from './core/fetch-splat-anim-buffer';
+import { loadAsog } from './core/load-asog';
 import { loadSogst, setAabbFromMeta } from './core/load-sogst';
 import { setupSplatAnim } from './core/load-splat-anim';
 import { loadTrigsbin } from './core/load-trigsbin';
@@ -15,6 +16,7 @@ import type { SogstData } from './core/sogst-data';
 import { SogstPatchFence, SogstSortFence } from './core/sogst-sort-fence';
 import { installSogstSorter } from './core/sogst-sorter';
 import { replaySogst, streamSogst } from './core/stream-sogst';
+import { isAsogFilename } from './parsers/asog';
 import { isSogstFilename } from './parsers/sogst';
 import { isTrigsbinFilename } from './parsers/trigsbin';
 import { readPreferences } from './preferences';
@@ -455,7 +457,7 @@ const contentFilename = (config: Config) =>
 
 // True for formats driven by SplatAnimationBase rather than by the engine's
 // gsplat asset handler.
-const is4dgsFilename = (filename: string) => isSogstFilename(filename.toLowerCase()) || isTrigsbinFilename(filename);
+const is4dgsFilename = (filename: string) => isSogstFilename(filename.toLowerCase()) || isTrigsbinFilename(filename) || isAsogFilename(filename);
 
 // True for content the eager `contents` prefetch is actually useful for —
 // only the static 3DGS handler reads it. Deciding this as "not 4DGS" would
@@ -491,6 +493,9 @@ const loadContent = (
     cancelled: () => boolean
 ): Promise<Entity> => {
     const filename = contentFilename(config);
+    if (isAsogFilename(filename)) {
+        return loadAsog(app, config, global, progressCallback);
+    }
     if (isTrigsbinFilename(filename)) {
         return loadTrigsGsplat(app, config, global, progressCallback);
     }
@@ -506,7 +511,7 @@ const loadContent = (
     return Promise.reject(
         new Error(
             `Unsupported content format '${ext}' (${filename}). ` +
-                'Supported: .ply, .compressed.ply, .sog, .json (meta.json / lod-meta.json), .sogst, .trigsbin'
+                'Supported: .ply, .compressed.ply, .sog, .json (meta.json / lod-meta.json), .sogst, .trigsbin, .asog'
         )
     );
 };

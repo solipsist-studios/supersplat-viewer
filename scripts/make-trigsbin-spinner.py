@@ -32,6 +32,13 @@ def sphere(n, radius, centre):
 
 
 def group(means, rgb, omega, nu, anchor, c0t=(0, 0, 0), c1t=(0, 0, 0), c2t=(0, 0, 0), scale=0.02):
+    # Every twist's translation runs along its own rotation axis, the paper's Eq. 10 gauge that trained models are in and that the
+    # .asog encoder relies on (it drops the perpendicular part). A translation with no rotation has no axis to ride on, so a twist
+    # that translates is given a small rotation about the direction it translates in.
+    def axis(t):
+        t = np.asarray(t, np.float32)
+        return 0.2 * t / max(float(np.linalg.norm(t)), 1e-9)
+
     n = len(means)
     z = lambda v: np.tile(np.asarray(v, np.float32), (n, 1))  # noqa: E731
     sh0 = ((np.asarray(rgb, np.float32) - 0.5) / 0.28209479177387814).reshape(-1, 1, 3) if np.ndim(rgb) == 2 else \
@@ -40,8 +47,8 @@ def group(means, rgb, omega, nu, anchor, c0t=(0, 0, 0), c1t=(0, 0, 0), c2t=(0, 0
         "means": means, "scales": np.full((n, 3), math.log(scale), np.float32), "quats": np.tile(np.array([0, 0, 0, 1], np.float32), (n, 1)),
         "opacities": np.full(n, 6.0, np.float32), "sh0": sh0.astype(np.float32), "shN": np.zeros((n, 0, 3), np.float32),
         "times": np.full(n, 0.5, np.float32), "log_durations": np.full(n, math.log(0.5), np.float32), "anchors": z(anchor),
-        "zeta_base_r": z(omega), "zeta_base_t": z(nu), "zeta_c0_r": z((0, 0, 0)), "zeta_c0_t": z(c0t), "zeta_c1_r": z((0, 0, 0)),
-        "zeta_c1_t": z(c1t), "zeta_c2_r": z((0, 0, 0)), "zeta_c2_t": z(c2t)}
+        "zeta_base_r": z(omega), "zeta_base_t": z(nu), "zeta_c0_r": z(axis(c0t)), "zeta_c0_t": z(c0t), "zeta_c1_r": z(axis(c1t)),
+        "zeta_c1_t": z(c1t), "zeta_c2_r": z(axis(c2t)), "zeta_c2_t": z(c2t)}
 
 
 a_pts = sphere(4000, 0.5, (0, 0, 0))

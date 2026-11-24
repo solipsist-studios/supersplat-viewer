@@ -187,6 +187,8 @@ function wasmDataUrlPlugin() {
 
 const buildPublic = {
     input: 'src/index.ts',
+    // animated-sog is a linked folder outside this project: resolve its `playcanvas` import from here, not from beside it
+    preserveSymlinks: true,
     output: {
         dir: 'public',
         format: 'esm',
