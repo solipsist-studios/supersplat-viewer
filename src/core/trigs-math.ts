@@ -2,7 +2,8 @@
 // checked against, and what the loader uses to bound the scene. It follows cumuli_core.trigs.slice_at, which is
 // written from the TRiGS paper (arXiv 2604.00538, Sec. 3, Eqs. 1 and 4-10):
 //
-//   gamma(t) = exp(-0.5 (dt / s)^2),  alpha(t) = sigmoid(opacity) gamma     dt = t - t_c,  s = exp(log_duration)
+//   gamma(t) = exp(-0.5 (dt / s)^2),  w(t) = max((gamma - 0.05) / 0.95, 0),  alpha(t) = sigmoid(opacity) w
+//                                                                           dt = t - t_c,  s = exp(log_duration)
 //   tau      = clamp((dt + 2 s) / (4 s), 0, 1)
 //   zeta(t)  = base + (1-tau)^2 c0 + 2 (1-tau) tau c1 + tau^2 c2           zeta = (omega, nu)
 //   phi = omega dt,  upsilon = nu dt,  R = exp([phi]x),  p = J(phi) upsilon
@@ -17,6 +18,9 @@ import type { TrigsArrays } from '../parsers/trigsbin';
 const OMEGA_EPS = 1e-12;
 const SMALL_ANGLE = 1e-3;
 const T_SIGMA_FLOOR = 1e-6;
+// The temporal gaussian is cut where it falls under 5% and renormalised: the weight the file format applies (the animated-sog
+// spec, and Open4DGS's "smooth_cull_renormalized"), not the paper's plain gamma.
+const WEIGHT_FLOOR = 0.05;
 
 type Vec3 = [number, number, number];
 type Quat = [number, number, number, number];
@@ -116,7 +120,8 @@ const evalSplat = (arrays: TrigsArrays, i: number, t: number): SplatState => {
     const q = row(arrays.quats, i, 4) as Quat;
     const quat = quatMul(rotvecToQuat(phi), q);
     const logit = arrays.opacities[i];
-    const alpha = (1 / (1 + Math.exp(-logit))) * Math.exp(-0.5 * (dt / sigma) ** 2);
+    const weight = Math.max((Math.exp(-0.5 * (dt / sigma) ** 2) - WEIGHT_FLOOR) / (1 - WEIGHT_FLOOR), 0);
+    const alpha = (1 / (1 + Math.exp(-logit))) * weight;
     return { mean, quat, alpha };
 };
 

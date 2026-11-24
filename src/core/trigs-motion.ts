@@ -61,7 +61,8 @@ void trigsEval(out vec3 disp, out vec4 turn, out float gamma) {
     vec4 H = texelFetch(trigsH, splat.uv, 0);
     float sigma = max(B.w, 1e-6);
     float dt = trigsTime - A.w;
-    gamma = exp(-0.5 * (dt / sigma) * (dt / sigma));
+    // the format's weight: the temporal gaussian cut at 5% and renormalised (animated-sog spec, Open4DGS "smooth_cull_renormalized")
+    gamma = max((exp(-0.5 * (dt / sigma) * (dt / sigma)) - 0.05) / 0.95, 0.0);
     float tau = clamp((dt + 2.0 * sigma) / (4.0 * sigma), 0.0, 1.0);
     float b = 1.0 - tau;
     float w0 = b * b;
@@ -161,7 +162,7 @@ fn trigsEval() -> TrigsState {
     let H = textureLoad(trigsH, splat.uv, 0);
     let sigma = max(B.w, 1e-6);
     let dt = uniform.trigsTime - A.w;
-    let gamma = exp(-0.5 * (dt / sigma) * (dt / sigma));
+    let gamma = max((exp(-0.5 * (dt / sigma) * (dt / sigma)) - 0.05) / 0.95, 0.0);
     let tau = clamp((dt + 2.0 * sigma) / (4.0 * sigma), 0.0, 1.0);
     let b = 1.0 - tau;
     let w0 = b * b;
