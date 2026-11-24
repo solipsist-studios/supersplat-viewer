@@ -30,8 +30,25 @@ describe('.trigsbin reader', () => {
     });
 
     it('reads every tensor the model needs, as float32', () => {
-        for (const key of ['means', 'scales', 'quats', 'opacities', 'sh0', 'shN', 'times', 'log_durations', 'anchors',
-            'zeta_base_r', 'zeta_base_t', 'zeta_c0_r', 'zeta_c0_t', 'zeta_c1_r', 'zeta_c1_t', 'zeta_c2_r', 'zeta_c2_t']) {
+        for (const key of [
+            'means',
+            'scales',
+            'quats',
+            'opacities',
+            'sh0',
+            'shN',
+            'times',
+            'log_durations',
+            'anchors',
+            'zeta_base_r',
+            'zeta_base_t',
+            'zeta_c0_r',
+            'zeta_c0_t',
+            'zeta_c1_r',
+            'zeta_c1_t',
+            'zeta_c2_r',
+            'zeta_c2_t'
+        ]) {
             assert.ok(file.clips[0].arrays[key] instanceof Float32Array, key);
         }
     });

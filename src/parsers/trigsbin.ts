@@ -41,7 +41,12 @@ type TrigsClip = {
 type TensorSpec = { dtype: string; shape: number[]; byteOffset: number };
 type ClipManifest = {
     id: string;
-    global: { coreFrameStart: number; coreFrameEndExclusive: number; activeFrameStart: number; activeFrameEndExclusive: number };
+    global: {
+        coreFrameStart: number;
+        coreFrameEndExclusive: number;
+        activeFrameStart: number;
+        activeFrameEndExclusive: number;
+    };
     render?: { fadeInFrames?: number; fadeOutFrames?: number };
     training: { globalFrameStart: number };
     source?: { temporalSelection?: { timesRebasedBySeconds?: number } };
@@ -98,7 +103,11 @@ const readTensor = (buffer: ArrayBuffer, payloadOffset: number, spec: TensorSpec
     throw new Error(`trigsbin: unsupported tensor dtype ${spec.dtype}`);
 };
 
-const readGroup = (buffer: ArrayBuffer, payloadOffset: number, tensors: Record<string, TensorSpec> | undefined): TrigsArrays => {
+const readGroup = (
+    buffer: ArrayBuffer,
+    payloadOffset: number,
+    tensors: Record<string, TensorSpec> | undefined
+): TrigsArrays => {
     const out: TrigsArrays = {};
     for (const [name, spec] of Object.entries(tensors ?? {})) {
         if (spec.dtype === 'float32' || spec.dtype === 'float16') {
@@ -124,7 +133,9 @@ const parseTrigsbin = (buffer: ArrayBuffer): TrigsFile => {
     const manifestOffset = Number(view.getBigUint64(16, true));
     const manifestLength = Number(view.getBigUint64(24, true));
     const payloadOffset = Number(view.getBigUint64(32, true));
-    const manifest: Manifest = JSON.parse(new TextDecoder().decode(new Uint8Array(buffer, manifestOffset, manifestLength)));
+    const manifest: Manifest = JSON.parse(
+        new TextDecoder().decode(new Uint8Array(buffer, manifestOffset, manifestLength))
+    );
     if (manifest.format !== 'trigs.runtime') {
         throw new Error(`trigsbin: the manifest says format ${JSON.stringify(manifest.format)}`);
     }
@@ -159,10 +170,5 @@ const parseTrigsbin = (buffer: ArrayBuffer): TrigsFile => {
     };
 };
 
-export {
-    TRIGSBIN_MOTION_MODEL,
-    f16ToF32,
-    isTrigsbinFilename,
-    parseTrigsbin
-};
+export { TRIGSBIN_MOTION_MODEL, f16ToF32, isTrigsbinFilename, parseTrigsbin };
 export type { TrigsArrays, TrigsClip, TrigsFile };

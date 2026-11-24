@@ -68,7 +68,9 @@ class TrigsSplatAnimation {
         this.data.resource.centersVersion++;
         this.centersTime = time;
         this.lastCentersAt = performance.now();
-        const instance = (global.app.root.findComponents('gsplat') as { instance?: { sort(camera: unknown): void } }[])[0]?.instance;
+        const instance = (
+            global.app.root.findComponents('gsplat') as { instance?: { sort(camera: unknown): void } }[]
+        )[0]?.instance;
         instance?.sort(global.camera);
         global.app.renderNextFrame = true;
     }

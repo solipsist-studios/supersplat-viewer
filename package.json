@@ -109,6 +109,6 @@
     "node": ">=20.0.0"
   },
   "dependencies": {
-    "animated-sog": "file:../../animated-sog/js"
+    "animated-sog": "file:third_party/animated-sog"
   }
 }

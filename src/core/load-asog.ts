@@ -1,6 +1,5 @@
 import { AsogPlayer } from 'animated-sog/playcanvas';
-import type { Entity, AppBase  } from 'playcanvas';
-
+import type { Entity, AppBase } from 'playcanvas';
 
 import { ClockAnimation } from '../animation/clock-animation';
 import type { Config, Global } from '../types';
@@ -16,7 +15,12 @@ import type { Config, Global } from '../types';
 //
 // The player needs the engine's unified gsplat renderer and some of its internals (it names PlayCanvas 2.22.6 and later).
 
-const loadAsog = async (app: AppBase, config: Config, global: Global, onProgress: (progress: number) => void): Promise<Entity> => {
+const loadAsog = async (
+    app: AppBase,
+    config: Config,
+    global: Global,
+    onProgress: (progress: number) => void
+): Promise<Entity> => {
     const { state, events } = global;
     const player = await AsogPlayer.load(app, config.contentUrl, app.root, {
         audio: false,

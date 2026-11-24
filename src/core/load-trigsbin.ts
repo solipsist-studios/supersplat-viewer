@@ -40,8 +40,22 @@ const concatenate = (file: TrigsFile): { count: number; arrays: TrigsArrays } =>
     const nStatic = stat.means ? stat.means.length / 3 : 0;
     const n = nClip + nStatic;
     const sizes: Record<string, number> = {
-        means: 3, scales: 3, quats: 4, opacities: 1, sh0: 3, times: 1, log_durations: 1, anchors: 3,
-        zeta_base_r: 3, zeta_base_t: 3, zeta_c0_r: 3, zeta_c0_t: 3, zeta_c1_r: 3, zeta_c1_t: 3, zeta_c2_r: 3, zeta_c2_t: 3
+        means: 3,
+        scales: 3,
+        quats: 4,
+        opacities: 1,
+        sh0: 3,
+        times: 1,
+        log_durations: 1,
+        anchors: 3,
+        zeta_base_r: 3,
+        zeta_base_t: 3,
+        zeta_c0_r: 3,
+        zeta_c0_t: 3,
+        zeta_c1_r: 3,
+        zeta_c1_t: 3,
+        zeta_c2_r: 3,
+        zeta_c2_t: 3
     };
     const shN = clip.shN ?? new Float32Array(0);
     const k = nClip ? shN.length / (nClip * 3) : 0;
@@ -56,7 +70,10 @@ const concatenate = (file: TrigsFile): { count: number; arrays: TrigsArrays } =>
     // a static splat does not move and is always there: no twist, and a window far wider than any clip
     for (let i = nClip; i < n; i++) {
         out.log_durations[i] = 20;
-        out.anchors.set([stat.means[(i - nClip) * 3], stat.means[(i - nClip) * 3 + 1], stat.means[(i - nClip) * 3 + 2]], i * 3);
+        out.anchors.set(
+            [stat.means[(i - nClip) * 3], stat.means[(i - nClip) * 3 + 1], stat.means[(i - nClip) * 3 + 2]],
+            i * 3
+        );
     }
     out.shN = new Float32Array(n * k * 3);
     out.shN.set(shN, 0);
@@ -67,7 +84,22 @@ const concatenate = (file: TrigsFile): { count: number; arrays: TrigsArrays } =>
 };
 
 const propertyNames = (shCoefficients: number): string[] => {
-    const names = ['x', 'y', 'z', 'f_dc_0', 'f_dc_1', 'f_dc_2', 'opacity', 'scale_0', 'scale_1', 'scale_2', 'rot_0', 'rot_1', 'rot_2', 'rot_3'];
+    const names = [
+        'x',
+        'y',
+        'z',
+        'f_dc_0',
+        'f_dc_1',
+        'f_dc_2',
+        'opacity',
+        'scale_0',
+        'scale_1',
+        'scale_2',
+        'rot_0',
+        'rot_1',
+        'rot_2',
+        'rot_3'
+    ];
     for (let i = 0; i < 3 * shCoefficients; i++) {
         names.push(`f_rest_${i}`);
     }
@@ -106,7 +138,12 @@ const buildGsplatData = (count: number, a: TrigsArrays, shCoefficients: number):
         {
             name: 'vertex',
             count,
-            properties: Object.entries(cols).map(([name, storage]) => ({ name, type: 'float' as const, byteSize: 4, storage }))
+            properties: Object.entries(cols).map(([name, storage]) => ({
+                name,
+                type: 'float' as const,
+                byteSize: 4,
+                storage
+            }))
         }
     ]);
 };

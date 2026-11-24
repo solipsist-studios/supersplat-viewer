@@ -457,7 +457,8 @@ const contentFilename = (config: Config) =>
 
 // True for formats driven by SplatAnimationBase rather than by the engine's
 // gsplat asset handler.
-const is4dgsFilename = (filename: string) => isSogstFilename(filename.toLowerCase()) || isTrigsbinFilename(filename) || isAsogFilename(filename);
+const is4dgsFilename = (filename: string) =>
+    isSogstFilename(filename.toLowerCase()) || isTrigsbinFilename(filename) || isAsogFilename(filename);
 
 // True for content the eager `contents` prefetch is actually useful for —
 // only the static 3DGS handler reads it. Deciding this as "not 4DGS" would

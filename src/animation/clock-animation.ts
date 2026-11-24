@@ -2,7 +2,6 @@ import type { Global } from '../types';
 
 import { Playhead } from './playhead';
 
-
 // The transport of a clip that plays itself: this owns only the playhead (play, pause, loop mode, speed, scrubbing) and writes it
 // to `state.animationTime`. Something else reads that time and moves the splats: for .asog, animated-sog's player, which is given
 // `() => state.animationTime` as its clock. Nothing is uploaded or applied here.
